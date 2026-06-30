@@ -1,0 +1,137 @@
+name: Release (Windows)
+
+# 第二条线：版本发布
+# 手动打 tag（如 v0.1.0-alpha.1）时触发，编译 Windows 版本，
+# 在 GitHub Releases 创建预发行版（Pre-release）并附上 zip 包。
+# 开发版不会污染 Releases 页面。
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "模拟触发的 tag 名（如 v0.1.0-alpha.1）"
+        required: true
+        type: string
+
+permissions:
+  contents: write # 创建 Release 需要写权限
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  release-windows:
+    name: Release Windows
+    runs-on: ubuntu-22.04
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Resolve tag name
+        id: tag
+        shell: bash
+        run: |
+          # workflow_dispatch 模拟触发时用 input，否则用 git tag
+          if [ -n "${{ inputs.tag }}" ]; then
+            TAG="${{ inputs.tag }}"
+          else
+            TAG="${GITHUB_REF#refs/tags/}"
+          fi
+          echo "tag=${TAG}" >> "$GITHUB_OUTPUT"
+          echo "Releasing tag: ${TAG}"
+
+          # 从 tag 名提取版本号（去掉前导 v）
+          VERSION="${TAG#v}"
+          echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
+          echo "Version: ${VERSION}"
+
+          # 判断是否为预发行版（含 -alpha / -beta / -rc / -pre 等）
+          if [[ "$VERSION" =~ -(alpha|beta|rc|pre)(\.|$) ]]; then
+            echo "prerelease=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "prerelease=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: "1.92.0"
+          targets: x86_64-pc-windows-gnu
+
+      - name: Cache cargo registry
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-windows-rel-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-windows-rel-
+
+      - name: Install MinGW cross compiler
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y mingw-w64 zip
+
+      - name: Patch version into Cargo.toml
+        shell: bash
+        run: |
+          sed -i -E "s/^version = \".*\"/version = \"${{ steps.tag.outputs.version }}\"/" Cargo.toml
+          grep -E "^version" Cargo.toml | head -1
+
+      - name: Build Windows release
+        run: cargo build --workspace --release --target x86_64-pc-windows-gnu
+
+      - name: Stage release package
+        shell: bash
+        run: |
+          STAGE="akrs-windows"
+          mkdir -p "$STAGE/scripts" "$STAGE/assets/fonts"
+          mkdir -p "$STAGE/assets/bg" "$STAGE/assets/characters"
+          mkdir -p "$STAGE/assets/music" "$STAGE/assets/sound" "$STAGE/assets/title"
+
+          cp target/x86_64-pc-windows-gnu/release/akrs.exe "$STAGE/"
+          cp target/x86_64-pc-windows-gnu/release/akrs-game.exe "$STAGE/"
+
+          find target/x86_64-pc-windows-gnu/release/deps -name "lewton.dll" -exec cp {} "$STAGE/lewton.dll" \;
+          rm -f "$STAGE"/lewton-*.dll
+
+          cp scripts/demo.akrs "$STAGE/scripts/"
+          cp assets/fonts/NotoSansSC-Regular-subset.ttf "$STAGE/assets/fonts/"
+
+          # 启动脚本（ANSI 编码，无 BOM）
+          printf 'cd /d "%%~dp0"\r\nstart akrs-game.exe\r\n' > "$STAGE/启动游戏.bat"
+
+          # README
+          cat > "$STAGE/README.txt" <<EOF
+          Akizuki*Rustgal ${{ steps.tag.outputs.version }}
+
+          运行方式：双击 启动游戏.bat
+
+          命令行工具：akrs.exe check scripts/demo.akrs
+          EOF
+
+      - name: Create zip
+        id: zip
+        shell: bash
+        run: |
+          ZIP_NAME="akrs-windows-${{ steps.tag.outputs.version }}.zip"
+          zip -r "$ZIP_NAME" akrs-windows/ -x "*.DS_Store"
+          echo "zip_name=${ZIP_NAME}" >> "$GITHUB_OUTPUT"
+          ls -lh "$ZIP_NAME"
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.tag.outputs.tag }}
+          name: ${{ steps.tag.outputs.tag }}
+          prerelease: ${{ steps.tag.outputs.prerelease }}
+          generate_release_notes: true
+          files: ${{ steps.zip.outputs.zip_name }}
