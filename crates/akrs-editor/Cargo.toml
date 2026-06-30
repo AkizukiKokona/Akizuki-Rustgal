@@ -9,3 +9,6 @@ akrs-core = { workspace = true }
 akrs-runtime = { workspace = true }
 eframe = { workspace = true }
 egui = { workspace = true }
+
+[build-dependencies]
+winres = "0.1"

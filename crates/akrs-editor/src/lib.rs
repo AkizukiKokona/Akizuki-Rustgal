@@ -1,16 +1,14 @@
-//! Visual script editor for the Akizuki*Rustgal engine.
+//! Akizuki*Rustgal 剧本编辑器
 //!
-//! Built with `egui 0.21` + `eframe 0.21`. Provides a three-panel layout:
+//! 基于 `egui 0.21` + `eframe 0.21` 构建的视觉小说剧本编辑器。提供三栏布局：
 //!
-//! - **Left panel**: file list of `.akrs` files in the working directory, with
-//!   new / open / save operations.
-//! - **Center panel**: multiline script editor with basic syntax highlighting.
-//! - **Right panel**: live preview powered by `akrs_runtime::Engine`.
-//! - **Top toolbar**: New / Open / Save / Run buttons.
-//! - **Bottom status bar**: compile diagnostics (errors / warnings / notes).
+//! - **左栏**：工作目录中的 `.akrs` 文件列表，支持新建 / 打开 / 保存。
+//! - **中栏**：多行脚本编辑器，带基础语法高亮。
+//! - **右栏**：由 `akrs_runtime::Engine` 驱动的实时预览。
+//! - **顶部工具栏**：新建 / 打开 / 保存 / 运行等操作。
+//! - **底部状态栏**：编译诊断信息（错误 / 警告 / 提示）。
 //!
-//! All file operations use `Result`-style error handling and never panic; any
-//! failure is reported in the bottom status bar.
+//! 所有文件操作使用 `Result` 风格的错误处理，不会 panic；失败信息显示在底部状态栏。
 
 use std::path::PathBuf;
 
@@ -20,34 +18,34 @@ use akrs_core::{compile, format_location, CompileError, ErrSeverity, Position};
 use akrs_runtime::{Engine, EnginePhase};
 
 // ---------------------------------------------------------------------------
-// Syntax highlighting color palette (opaque RGB, derived from the spec's RGBA).
+// 语法高亮调色板（不透明 RGB，源自规格文档的 RGBA 值）
 // ---------------------------------------------------------------------------
 
-/// `#` section headers -> (0.9, 0.8, 1.0)
+/// `#` 章节标题 -> (0.9, 0.8, 1.0)
 const COLOR_SECTION: egui::Color32 = egui::Color32::from_rgb(229, 204, 255);
-/// `->` `=>` `<=` `~~` flow control -> (1.0, 0.6, 0.3)
+/// `->` `=>` `<=` `~~` 流程控制 -> (1.0, 0.6, 0.3)
 const COLOR_FLOW: egui::Color32 = egui::Color32::from_rgb(255, 153, 76);
-/// `@` commands -> (0.3, 0.8, 0.3)
+/// `@` 指令 -> (0.3, 0.8, 0.3)
 const COLOR_COMMAND: egui::Color32 = egui::Color32::from_rgb(76, 204, 76);
-/// `+` `-` character directions -> (0.3, 0.7, 1.0)
+/// `+` `-` 角色方向 -> (0.3, 0.7, 1.0)
 const COLOR_DIRECTION: egui::Color32 = egui::Color32::from_rgb(76, 178, 255);
-/// `$` variable ops -> (1.0, 0.8, 0.3)
+/// `$` 变量操作 -> (1.0, 0.8, 0.3)
 const COLOR_VARIABLE: egui::Color32 = egui::Color32::from_rgb(255, 204, 76);
-/// `?` `|` choice blocks -> (0.8, 0.3, 0.8)
+/// `?` `|` 选择分支 -> (0.8, 0.3, 0.8)
 const COLOR_CHOICE: egui::Color32 = egui::Color32::from_rgb(204, 76, 204);
-/// `--` comments -> (0.4, 0.4, 0.4)
+/// `--` 注释 -> (0.4, 0.4, 0.4)
 const COLOR_COMMENT: egui::Color32 = egui::Color32::from_rgb(102, 102, 102);
-/// `"..."` strings -> (0.9, 0.9, 0.4)
+/// `"..."` 字符串 -> (0.9, 0.9, 0.4)
 const COLOR_STRING: egui::Color32 = egui::Color32::from_rgb(229, 229, 102);
-/// default text -> white
+/// 默认文字 -> 白色
 const COLOR_DEFAULT: egui::Color32 = egui::Color32::from_rgb(255, 255, 255);
 
 const FONT_SIZE: f32 = 14.0;
 
-/// A small valid template used by the "New" action.
+/// 「新建」操作使用的小型有效模板。
 const NEW_TEMPLATE: &str = "# Start\n\n~~\n";
 
-/// A richer sample loaded on first launch so the editor is never empty.
+/// 首次启动或点击「打开示例剧本」时加载的丰富示例。
 const SAMPLE_SCRIPT: &str = r#"# Start
 
 @bg school with fade
@@ -77,6 +75,7 @@ Aki: "I think we'll be great friends."
 
 ~~
 
+
 # BadEnding
 
 Aki: "Oh. I see."
@@ -84,48 +83,57 @@ Aki: "Oh. I see."
 ~~
 "#;
 
+/// GitHub 仓库链接
+const GITHUB_URL: &str = "https://github.com/AkizukiKokona/Akizuki-Rustgal";
+
 // ---------------------------------------------------------------------------
-// Editor application state
+// 编辑器应用状态
 // ---------------------------------------------------------------------------
 
-/// The egui application backing the editor.
+/// 编辑器的 egui 应用主体。
 pub struct EditorApp {
-    /// Current script text shown in the center editor.
+    /// 中栏编辑器中显示的当前脚本文本。
     editor_content: String,
-    /// Path of the file currently loaded/saved (`None` when unsaved).
+    /// 当前加载/保存的文件路径（未保存时为 `None`）。
     current_file: Option<PathBuf>,
-    /// Directory scanned for the file list and used for save/open.
+    /// 扫描文件列表和保存/打开使用的工作目录。
     work_dir: PathBuf,
-    /// Name of the file to open/save (edited in the left panel).
+    /// 左栏中编辑的文件名输入。
     file_name_input: String,
-    /// Cached list of `.akrs` files in `work_dir`.
+    /// `work_dir` 中 `.akrs` 文件的缓存列表。
     file_list: Vec<String>,
-    /// Running preview engine (created by "Run").
+    /// 运行中的预览引擎（由「运行」创建）。
     engine: Option<Engine>,
-    /// Human-readable status line shown at the bottom.
+    /// 底部显示的可读状态信息。
     status: String,
-    /// Formatted compile diagnostics (errors / warnings / notes).
+    /// 格式化后的编译诊断信息（错误 / 警告 / 提示）。
     diagnostics: Vec<String>,
-    /// Last frame's time (seconds), used to derive a delta for the engine.
+    /// 上一帧的时间（秒），用于计算引擎的增量时间。
     last_time: f64,
-    /// Whether the dark theme has been applied yet.
+    /// 是否已应用暗色主题。
     theme_applied: bool,
+    /// 是否显示首次启动欢迎面板。
+    show_welcome: bool,
+    /// 是否显示「关于」对话框。
+    show_about: bool,
 }
 
 impl Default for EditorApp {
     fn default() -> Self {
         let work_dir = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
         let mut app = Self {
-            editor_content: SAMPLE_SCRIPT.to_string(),
+            editor_content: String::new(),
             current_file: None,
             work_dir,
             file_name_input: "untitled.akrs".to_string(),
             file_list: Vec::new(),
             engine: None,
-            status: "Ready".to_string(),
+            status: "就绪".to_string(),
             diagnostics: Vec::new(),
             last_time: 0.0,
             theme_applied: false,
+            show_welcome: true,
+            show_about: false,
         };
         app.refresh_file_list();
         app
@@ -133,9 +141,9 @@ impl Default for EditorApp {
 }
 
 impl EditorApp {
-    // -- File operations (all fallible, never panic) ------------------------
+    // -- 文件操作（全部可失败，不 panic）-----------------------------------
 
-    /// Re-scan `work_dir` for `.akrs` files.
+    /// 重新扫描 `work_dir` 中的 `.akrs` 文件。
     fn refresh_file_list(&mut self) {
         self.file_list.clear();
         if let Ok(entries) = std::fs::read_dir(&self.work_dir) {
@@ -155,17 +163,18 @@ impl EditorApp {
         }
     }
 
-    /// Start a new (unsaved) script from a minimal template.
+    /// 从最小模板新建（未保存的）脚本。
     fn new_file(&mut self) {
         self.editor_content = NEW_TEMPLATE.to_string();
         self.current_file = None;
         self.file_name_input = "untitled.akrs".to_string();
         self.engine = None;
         self.diagnostics.clear();
-        self.status = "New file (unsaved)".to_string();
+        self.show_welcome = false;
+        self.status = "新文件（未保存）".to_string();
     }
 
-    /// Open `name` from `work_dir` into the editor.
+    /// 从 `work_dir` 打开 `name` 到编辑器。
     fn open_file(&mut self, name: &str) {
         let path = self.work_dir.join(name);
         match std::fs::read_to_string(&path) {
@@ -175,21 +184,33 @@ impl EditorApp {
                 self.file_name_input = name.to_string();
                 self.engine = None;
                 self.diagnostics.clear();
-                self.status = format!("Opened {}", name);
+                self.show_welcome = false;
+                self.status = format!("已打开 {}", name);
             }
             Err(e) => {
-                self.status = format!("Failed to open {}: {}", name, e);
+                self.status = format!("打开失败：{} - {}", name, e);
             }
         }
     }
 
-    /// Open whatever name is currently in `file_name_input`.
+    /// 打开 `file_name_input` 中当前输入的文件名。
     fn open_current_name(&mut self) {
         let name = sanitize_filename(&self.file_name_input);
         self.open_file(&name);
     }
 
-    /// Save the editor content to `work_dir/file_name_input`.
+    /// 加载内置示例剧本。
+    fn load_sample(&mut self) {
+        self.editor_content = SAMPLE_SCRIPT.to_string();
+        self.current_file = None;
+        self.file_name_input = "sample.akrs".to_string();
+        self.engine = None;
+        self.diagnostics.clear();
+        self.show_welcome = false;
+        self.status = "已加载示例剧本".to_string();
+    }
+
+    /// 将编辑器内容保存到 `work_dir/file_name_input`。
     fn save_file(&mut self) {
         let name = sanitize_filename(&self.file_name_input);
         let path = self.work_dir.join(&name);
@@ -197,19 +218,18 @@ impl EditorApp {
             Ok(()) => {
                 self.current_file = Some(path);
                 self.file_name_input = name.clone();
-                self.status = format!("Saved {}", name);
+                self.status = format!("已保存 {}", name);
                 self.refresh_file_list();
             }
             Err(e) => {
-                self.status = format!("Failed to save {}: {}", name, e);
+                self.status = format!("保存失败：{} - {}", name, e);
             }
         }
     }
 
-    // -- Compilation + preview ----------------------------------------------
+    // -- 编译 + 预览 -------------------------------------------------------
 
-    /// Compile the current editor content and (on success) start a preview
-    /// engine. Diagnostics are always reflected in the status bar.
+    /// 编译当前编辑器内容并（成功时）启动预览引擎。诊断信息始终反映在状态栏。
     fn run_script(&mut self) {
         let (program, errors) = compile(&self.editor_content);
         self.diagnostics = format_errors(&errors);
@@ -217,22 +237,21 @@ impl EditorApp {
         match program {
             Some(_) => match Engine::start_running(&self.editor_content) {
                 Ok(mut engine) => {
-                    // Instant text in the preview so dialogue is readable.
+                    // 预览中即时显示文字，便于阅读对话。
                     engine.settings_mut().text_speed = 999.0;
                     self.engine = Some(engine);
                     let n = self.diagnostics.len();
                     if n == 0 {
-                        self.status = "Running".to_string();
+                        self.status = "运行中".to_string();
                     } else {
-                        self.status = format!("Running ({} diagnostic(s))", n);
+                        self.status = format!("运行中（{} 条诊断）", n);
                     }
                 }
                 Err(errs) => {
-                    // Defensive: `compile` returned a program, so this should
-                    // not happen, but surface it regardless.
+                    // 防御性处理：`compile` 返回了程序，所以这不应该发生，但仍需呈现。
                     self.diagnostics = format_errors(&errs);
                     self.engine = None;
-                    self.status = "Engine failed to start".to_string();
+                    self.status = "引擎启动失败".to_string();
                 }
             },
             None => {
@@ -240,14 +259,88 @@ impl EditorApp {
                 let n = self
                     .diagnostics
                     .iter()
-                    .filter(|d| d.starts_with("[error]"))
+                    .filter(|d| d.starts_with("[错误]"))
                     .count();
-                self.status = format!("Compile failed ({} error(s))", n);
+                self.status = format!("编译失败（{} 个错误）", n);
             }
         }
     }
 
-    // -- Panel rendering ----------------------------------------------------
+    // -- 面板渲染 ----------------------------------------------------------
+
+    /// 渲染首次启动欢迎面板。
+    fn show_welcome_panel(&mut self, ui: &mut egui::Ui) {
+        ui.vertical_centered(|ui| {
+            ui.add_space(50.0);
+            ui.heading(
+                egui::RichText::new("欢迎使用 Akizuki*Rustgal 剧本编辑器").size(26.0),
+            );
+            ui.add_space(8.0);
+            ui.label(
+                egui::RichText::new("为视觉小说设计的轻量级剧本编写工具")
+                    .size(16.0)
+                    .color(egui::Color32::from_rgb(180, 190, 210)),
+            );
+            ui.add_space(28.0);
+
+            ui.horizontal(|ui| {
+                ui.add_space(80.0);
+                let btn = egui::Button::new(egui::RichText::new("新建剧本").size(15.0))
+                    .min_size(egui::Vec2::new(130.0, 38.0));
+                if ui.add(btn).clicked() {
+                    self.new_file();
+                }
+                let btn = egui::Button::new(egui::RichText::new("打开已有剧本").size(15.0))
+                    .min_size(egui::Vec2::new(130.0, 38.0));
+                if ui.add(btn).clicked() {
+                    self.show_welcome = false;
+                    self.status = "请从左侧文件列表选择文件".to_string();
+                }
+                let btn = egui::Button::new(egui::RichText::new("打开示例剧本").size(15.0))
+                    .min_size(egui::Vec2::new(130.0, 38.0));
+                if ui.add(btn).clicked() {
+                    self.load_sample();
+                }
+            });
+
+            ui.add_space(36.0);
+
+            // 语法示例
+            ui.label(egui::RichText::new("语法示例").size(18.0));
+            ui.add_space(8.0);
+
+            egui::Frame::group(ui.style())
+                .inner_margin(16.0)
+                .show(ui, |ui| {
+                    ui.set_max_width(560.0);
+                    let example = "# 章节标题\n\
+                        @bg 背景名 with fade\n\
+                        + 角色名 enters from left\n\
+                        角色名: \"对话内容\"\n\
+                        $变量 = 1\n\
+                        ? \"选择提示\"\n\
+                        | \"选项1\"  -> 分支A\n\
+                        | \"选项2\"  -> 分支B\n\
+                        ?\n\
+                        ~~  -- 章节结束";
+                    ui.label(
+                        egui::RichText::new(example)
+                            .monospace()
+                            .size(14.0)
+                            .color(egui::Color32::from_rgb(200, 220, 255)),
+                    );
+                });
+
+            ui.add_space(12.0);
+            ui.label(
+                egui::RichText::new(
+                    "提示：# 定义章节  @ 场景指令  + 角色上场  $ 变量操作  ? 选择分支  ~~ 章节结束",
+                )
+                .size(12.0)
+                .color(egui::Color32::from_rgb(140, 150, 170)),
+            );
+        });
+    }
 
     fn show_editor(&mut self, ui: &mut egui::Ui) {
         egui::ScrollArea::vertical()
@@ -268,29 +361,28 @@ impl EditorApp {
     }
 
     fn show_preview(&mut self, ui: &mut egui::Ui) {
-        // Snapshot the scene so choice buttons can mutate the engine below
-        // without holding an immutable borrow of `self.engine`.
+        // 快照场景，以便下方的选择按钮可以修改引擎而不持有 `self.engine` 的不可变借用。
         let (phase, scene) = match self.engine.as_ref() {
             Some(engine) => (engine.phase(), engine.scene().clone()),
             None => {
-                ui.label("Click \"Run\" to preview the script.");
+                ui.label("点击「运行」预览剧本。");
                 return;
             }
         };
 
-        ui.label(format!("Phase: {}", phase_label(phase)));
+        ui.label(format!("状态：{}", phase_label(phase)));
         ui.add_space(4.0);
 
-        ui.strong("Background");
+        ui.strong("背景");
         match &scene.background {
-            Some(bg) => ui.label(format!("name = {}", bg.name)),
-            None => ui.label("(none)"),
+            Some(bg) => ui.label(format!("名称 = {}", bg.name)),
+            None => ui.label("（无）"),
         };
         ui.add_space(4.0);
 
-        ui.strong("Characters");
+        ui.strong("角色");
         if scene.characters.is_empty() {
-            ui.label("(none on stage)");
+            ui.label("（舞台上无角色）");
         } else {
             for c in &scene.characters {
                 ui.label(format!("- {} [{}]", c.name, position_label(&c.position)));
@@ -298,44 +390,44 @@ impl EditorApp {
         }
         ui.add_space(4.0);
 
-        ui.strong("Dialogue");
+        ui.strong("对话");
         match &scene.dialogue {
             Some(d) => {
                 if d.speaker.is_empty() {
-                    ui.label(egui::RichText::new("(narration)").italics());
+                    ui.label(egui::RichText::new("（旁白）").italics());
                 } else {
                     ui.strong(d.speaker.as_str());
                 }
                 let shown: String = d.full_text.chars().take(d.displayed_chars).collect();
                 ui.label(shown);
                 ui.label(format!(
-                    "({}/{} chars, complete={})",
+                    "（{}/{} 字，完成={}）",
                     d.displayed_chars,
                     d.full_text.chars().count(),
                     d.complete
                 ));
             }
             None => {
-                ui.label("(none)");
+                ui.label("（无）");
             }
         };
         ui.add_space(4.0);
 
-        ui.strong("Choices");
+        ui.strong("选项");
         match &scene.choices {
             Some(ch) => {
                 if let Some(p) = &ch.prompt {
-                    ui.label(format!("prompt: {}", p));
+                    ui.label(format!("提示：{}", p));
                 }
                 if ch.options.is_empty() {
-                    ui.label("(no options)");
+                    ui.label("（无选项）");
                 }
                 for (i, opt) in ch.options.iter().enumerate() {
                     let label = format!(
                         "{}. {}{}",
                         i + 1,
                         opt.text,
-                        if opt.available { "" } else { " (disabled)" }
+                        if opt.available { "" } else { "（禁用）" }
                     );
                     if ui.button(label).clicked() {
                         if let Some(engine) = self.engine.as_mut() {
@@ -345,7 +437,7 @@ impl EditorApp {
                 }
             }
             None => {
-                ui.label("(none)");
+                ui.label("（无）");
             }
         };
 
@@ -353,7 +445,7 @@ impl EditorApp {
             ui.add_space(4.0);
             ui.colored_label(
                 egui::Color32::from_rgb(255, 150, 150),
-                "Story ended.",
+                "故事已结束。",
             );
         }
     }
@@ -366,7 +458,7 @@ impl eframe::App for EditorApp {
             self.theme_applied = true;
         }
 
-        // Frame delta for engine animation (typewriter / transitions).
+        // 引擎动画的帧增量（打字机 / 过渡）。
         let now: f64 = ctx.input(|i| i.time);
         let dt = if self.last_time > 0.0 {
             ((now - self.last_time) as f32).clamp(0.0, 0.1)
@@ -375,11 +467,33 @@ impl eframe::App for EditorApp {
         };
         self.last_time = now;
 
+        // 键盘快捷键
+        ctx.input(|i| {
+            if i.modifiers.ctrl && !i.modifiers.shift {
+                if i.key_pressed(egui::Key::N) {
+                    self.new_file();
+                }
+                if i.key_pressed(egui::Key::O) {
+                    if self.show_welcome {
+                        self.show_welcome = false;
+                        self.status = "请从左侧文件列表选择文件".to_string();
+                    } else {
+                        self.open_current_name();
+                    }
+                }
+                if i.key_pressed(egui::Key::S) {
+                    self.save_file();
+                }
+                if i.key_pressed(egui::Key::R) {
+                    self.run_script();
+                }
+            }
+        });
+
         if let Some(engine) = self.engine.as_mut() {
             let _ = engine.update(dt);
         }
-        // Keep animating while the engine is mid-transition / waiting or the
-        // typewriter has not finished revealing the current line.
+        // 在引擎过渡中 / 等待中或打字机未完成时持续动画。
         if let Some(engine) = &self.engine {
             let animating = matches!(
                 engine.phase(),
@@ -394,41 +508,66 @@ impl eframe::App for EditorApp {
             }
         }
 
-        // ---- Top toolbar --------------------------------------------------
+        // ---- 顶部工具栏 --------------------------------------------------
         egui::TopBottomPanel::top("toolbar").show(ctx, |ui| {
             ui.horizontal_wrapped(|ui| {
-                if ui.button("New").clicked() {
+                if ui.button("新建 (Ctrl+N)").clicked() {
                     self.new_file();
                 }
-                if ui.button("Open").clicked() {
-                    self.open_current_name();
+                if ui.button("打开 (Ctrl+O)").clicked() {
+                    if self.show_welcome {
+                        self.show_welcome = false;
+                        self.status = "请从左侧文件列表选择文件".to_string();
+                    } else {
+                        self.open_current_name();
+                    }
                 }
-                if ui.button("Save").clicked() {
+                if ui.button("保存 (Ctrl+S)").clicked() {
                     self.save_file();
                 }
                 ui.separator();
-                if ui.button("Run").clicked() {
+                if ui.button("运行 (Ctrl+R)").clicked() {
                     self.run_script();
                 }
+                if self.engine.is_some() {
+                    if ui.button("停止").clicked() {
+                        self.engine = None;
+                        self.status = "预览已停止".to_string();
+                    }
+                }
                 ui.separator();
-                ui.label(format!("File: {}", self.file_name_input));
+                if ui.button("首页").clicked() {
+                    self.show_welcome = true;
+                    self.engine = None;
+                    self.status = "就绪".to_string();
+                }
+                if ui.button("关于").clicked() {
+                    self.show_about = true;
+                }
+                ui.separator();
+                ui.label(format!("文件：{}", self.file_name_input));
             });
         });
 
-        // ---- Bottom status bar -------------------------------------------
+        // ---- 底部状态栏 --------------------------------------------------
         egui::TopBottomPanel::bottom("status").show(ctx, |ui| {
             ui.horizontal(|ui| {
-                ui.label(format!("Status: {}", self.status));
+                ui.label(format!("状态：{}", self.status));
                 ui.separator();
-                ui.label(format!("Diagnostics: {}", self.diagnostics.len()));
+                ui.label(format!("诊断：{}", self.diagnostics.len()));
+                ui.separator();
+                match &self.current_file {
+                    Some(path) => ui.label(format!("路径：{}", path.display())),
+                    None => ui.label("路径：（未保存）"),
+                };
             });
             if !self.diagnostics.is_empty() {
                 ui.separator();
                 let shown = self.diagnostics.len().min(8);
                 for msg in self.diagnostics.iter().take(shown) {
-                    let color = if msg.starts_with("[error]") {
+                    let color = if msg.starts_with("[错误]") {
                         egui::Color32::from_rgb(255, 120, 120)
-                    } else if msg.starts_with("[warning]") {
+                    } else if msg.starts_with("[警告]") {
                         egui::Color32::from_rgb(220, 200, 120)
                     } else {
                         egui::Color32::from_rgb(150, 170, 200)
@@ -436,40 +575,40 @@ impl eframe::App for EditorApp {
                     ui.label(egui::RichText::new(msg).color(color).monospace());
                 }
                 if self.diagnostics.len() > shown {
-                    ui.label(format!("...and {} more", self.diagnostics.len() - shown));
+                    ui.label(format!("……还有 {} 条", self.diagnostics.len() - shown));
                 }
             }
         });
 
-        // ---- Left panel: file list ---------------------------------------
+        // ---- 左栏：文件列表 ---------------------------------------------
         egui::SidePanel::left("files")
             .resizable(true)
             .default_width(210.0)
             .show(ctx, |ui| {
-                ui.heading("Files");
-                ui.label(format!("Dir: {}", self.work_dir.display()));
+                ui.heading("文件");
+                ui.label(format!("目录：{}", self.work_dir.display()));
                 ui.horizontal(|ui| {
-                    ui.label("Name:");
+                    ui.label("文件名：");
                     ui.text_edit_singleline(&mut self.file_name_input);
                 });
                 ui.horizontal(|ui| {
-                    if ui.button("New").clicked() {
+                    if ui.button("新建").clicked() {
                         self.new_file();
                     }
-                    if ui.button("Save").clicked() {
+                    if ui.button("保存").clicked() {
                         self.save_file();
                     }
-                    if ui.button("Refresh").clicked() {
+                    if ui.button("刷新").clicked() {
                         self.refresh_file_list();
                     }
                 });
                 ui.separator();
-                ui.label("Open a file:");
+                ui.label("打开文件：");
                 egui::ScrollArea::vertical().show(ui, |ui| {
                     if self.file_list.is_empty() {
-                        ui.label("(no .akrs files)");
+                        ui.label("（无 .akrs 文件）");
                     }
-                    // Clone so we can mutate `self` while iterating.
+                    // 克隆以便在迭代时修改 `self`。
                     let files = self.file_list.clone();
                     for name in &files {
                         let selected = self
@@ -484,25 +623,25 @@ impl eframe::App for EditorApp {
                 });
             });
 
-        // ---- Right panel: preview ----------------------------------------
+        // ---- 右栏：预览 --------------------------------------------------
         egui::SidePanel::right("preview")
             .resizable(true)
             .default_width(330.0)
             .show(ctx, |ui| {
-                ui.heading("Preview");
+                ui.heading("预览");
                 ui.horizontal(|ui| {
-                    if ui.button("Run").clicked() {
+                    if ui.button("运行").clicked() {
                         self.run_script();
                     }
                     if self.engine.is_some() {
-                        if ui.button("Advance").clicked() {
+                        if ui.button("前进").clicked() {
                             if let Some(engine) = self.engine.as_mut() {
                                 let _ = engine.advance();
                             }
                         }
-                        if ui.button("Stop").clicked() {
+                        if ui.button("停止").clicked() {
                             self.engine = None;
-                            self.status = "Preview stopped".to_string();
+                            self.status = "预览已停止".to_string();
                         }
                     }
                 });
@@ -510,36 +649,80 @@ impl eframe::App for EditorApp {
                 self.show_preview(ui);
             });
 
-        // ---- Central panel: editor ---------------------------------------
+        // ---- 中央面板：编辑器或欢迎页 -----------------------------------
         egui::CentralPanel::default().show(ctx, |ui| {
-            self.show_editor(ui);
+            if self.show_welcome {
+                self.show_welcome_panel(ui);
+            } else {
+                self.show_editor(ui);
+            }
         });
+
+        // ---- 关于对话框 --------------------------------------------------
+        if self.show_about {
+            egui::Window::new("关于")
+                .open(&mut self.show_about)
+                .resizable(false)
+                .collapsible(false)
+                .default_width(380.0)
+                .show(ctx, |ui| {
+                    ui.add_space(8.0);
+                    ui.heading("Akizuki*Rustgal 剧本编辑器");
+                    ui.add_space(12.0);
+                    ui.label(format!("引擎版本：v{}", env!("CARGO_PKG_VERSION")));
+                    ui.label(format!("编辑器版本：v{}", env!("CARGO_PKG_VERSION")));
+                    ui.add_space(8.0);
+                    ui.label("为视觉小说设计的轻量级剧本编写工具。");
+                    ui.add_space(12.0);
+                    ui.horizontal(|ui| {
+                        ui.label("GitHub：");
+                        ui.hyperlink_to("AkizukiKokona/Akizuki-Rustgal", GITHUB_URL);
+                    });
+                });
+        }
     }
 }
 
 // ---------------------------------------------------------------------------
-// Entry point
+// 入口点
 // ---------------------------------------------------------------------------
 
-/// Launch the GUI editor application.
+/// 启动 GUI 编辑器应用。
 pub fn run_editor() -> Result<(), eframe::Error> {
+    let icon = load_icon();
     let options = eframe::NativeOptions {
         initial_window_size: Some(egui::Vec2::new(1280.0, 820.0)),
+        icon_data: icon,
         ..Default::default()
     };
     eframe::run_native(
-        "Akizuki*Rustgal Editor",
+        "Akizuki*Rustgal 剧本编辑器",
         options,
         Box::new(|_cc| Box::new(EditorApp::default())),
     )
 }
 
+/// 从嵌入的 RGBA 数据加载窗口图标。
+fn load_icon() -> Option<eframe::IconData> {
+    let data = include_bytes!("../../../assets/icon_kokona_64.bin");
+    const W: u32 = 64;
+    const H: u32 = 64;
+    if data.len() == (W * H * 4) as usize {
+        Some(eframe::IconData {
+            rgba: data.to_vec(),
+            width: W,
+            height: H,
+        })
+    } else {
+        None
+    }
+}
+
 // ---------------------------------------------------------------------------
-// Helpers: filename sanitization, diagnostics, labels
+// 辅助函数：文件名清理、诊断格式化、标签
 // ---------------------------------------------------------------------------
 
-/// Normalize a user-typed filename: strip path separators and ensure the
-/// `.akrs` extension is present.
+/// 规范化用户输入的文件名：去除路径分隔符并确保有 `.akrs` 扩展名。
 fn sanitize_filename(input: &str) -> String {
     let mut name: String = input
         .trim()
@@ -555,69 +738,68 @@ fn sanitize_filename(input: &str) -> String {
     name
 }
 
-/// Format compile diagnostics into single-line strings tagged by severity.
+/// 将编译诊断格式化为带严重性标签的单行字符串。
 fn format_errors(errors: &[CompileError]) -> Vec<String> {
     errors
         .iter()
         .map(|e| {
             let sev = match e.severity {
-                ErrSeverity::Error => "error",
-                ErrSeverity::Warning => "warning",
-                ErrSeverity::Note => "note",
+                ErrSeverity::Error => "错误",
+                ErrSeverity::Warning => "警告",
+                ErrSeverity::Note => "提示",
             };
             let loc = format_location(&e.span);
             match &e.hint {
-                Some(h) => format!("[{}] {} - at {} (hint: {})", sev, e.message, loc, h),
-                None => format!("[{}] {} - at {}", sev, e.message, loc),
+                Some(h) => format!("[{}] {} - 位于 {}（提示：{}）", sev, e.message, loc, h),
+                None => format!("[{}] {} - 位于 {}", sev, e.message, loc),
             }
         })
         .collect()
 }
 
-/// Human-readable name for an engine phase.
+/// 引擎阶段的可读名称。
 fn phase_label(phase: EnginePhase) -> &'static str {
     match phase {
-        EnginePhase::Title => "Title",
-        EnginePhase::Running => "Running",
-        EnginePhase::Transitioning => "Transitioning",
-        EnginePhase::Waiting => "Waiting",
-        EnginePhase::ChoicePending => "ChoicePending",
-        EnginePhase::StoryEnded => "StoryEnded",
+        EnginePhase::Title => "标题",
+        EnginePhase::Running => "运行中",
+        EnginePhase::Transitioning => "过渡中",
+        EnginePhase::Waiting => "等待",
+        EnginePhase::ChoicePending => "等待选择",
+        EnginePhase::StoryEnded => "故事结束",
     }
 }
 
-/// Human-readable label for a character position.
+/// 角色位置的可读标签。
 fn position_label(p: &Position) -> String {
     match p {
-        Position::Left => "Left".to_string(),
-        Position::Center => "Center".to_string(),
-        Position::Right => "Right".to_string(),
-        Position::Custom(x) => format!("Custom({:.2})", x),
+        Position::Left => "左侧".to_string(),
+        Position::Center => "中央".to_string(),
+        Position::Right => "右侧".to_string(),
+        Position::Custom(x) => format!("自定义({:.2})", x),
     }
 }
 
 // ---------------------------------------------------------------------------
-// Syntax highlighting
+// 语法高亮
 // ---------------------------------------------------------------------------
 
-/// Build a `LayoutJob` with per-token coloring for the whole buffer.
+/// 为整个缓冲区构建带逐 token 着色的 `LayoutJob`。
 fn highlight_code(text: &str) -> egui::text::LayoutJob {
     let mut job = egui::text::LayoutJob::default();
     let lines: Vec<&str> = text.split('\n').collect();
     for (idx, line) in lines.iter().enumerate() {
         highlight_line(&mut job, line);
         if idx + 1 < lines.len() {
-            // Re-insert the newline that `split` consumed.
+            // 重新插入被 `split` 消耗的换行符。
             job.append("\n", 0.0, text_format(COLOR_DEFAULT));
         }
     }
     job
 }
 
-/// Choose the base color for a line based on its first non-whitespace token.
+/// 根据行首非空白 token 选择基础颜色。
 fn line_base_color(trimmed: &str) -> egui::Color32 {
-    // Two-char markers starting with `-` must be checked before the single
-    // `-` direction marker.
+    // 以 `-` 开头的双字符标记必须先于单字符 `-` 方向标记检查。
     if trimmed.starts_with('#') {
         COLOR_SECTION
     } else if trimmed.starts_with("--") {
@@ -643,12 +825,10 @@ fn line_base_color(trimmed: &str) -> egui::Color32 {
     }
 }
 
-/// Append a single line's colored segments to `job`.
+/// 将单行的着色片段追加到 `job`。
 ///
-/// Within a line, `"..."` string literals and trailing `--` comments are
-/// always colored with their dedicated colors; everything else takes the
-/// line's base color. Operates on `char`s (via `char_indices`) so multi-byte
-/// UTF-8 content is preserved.
+/// 在一行内，`"..."` 字符串字面量和行尾 `--` 注释始终使用各自的专用颜色；
+/// 其余内容使用行的基础颜色。基于 `char` 操作（通过 `char_indices`）以保留多字节 UTF-8 内容。
 fn highlight_line(job: &mut egui::text::LayoutJob, line: &str) {
     let trimmed = line.trim_start();
     let leading_ws = &line[..line.len() - trimmed.len()];
@@ -668,13 +848,13 @@ fn highlight_line(job: &mut egui::text::LayoutJob, line: &str) {
         let (bofs, c) = chars[i];
 
         if c == '"' {
-            // Flush pending base-colored text, then consume a string literal.
+            // 刷新待处理的基础着色文本，然后消费字符串字面量。
             if let Some(s) = buf_start {
                 job.append(&trimmed[s..buf_end], 0.0, text_format(base));
                 buf_start = None;
             }
             let start = bofs;
-            let mut end_byte = bofs + 1; // include the opening quote
+            let mut end_byte = bofs + 1; // 包含开引号
             i += 1;
             while i < n {
                 let (eb, cc) = chars[i];
@@ -689,7 +869,7 @@ fn highlight_line(job: &mut egui::text::LayoutJob, line: &str) {
         }
 
         if c == '-' && i + 1 < n && chars[i + 1].1 == '-' {
-            // `--` comment runs to the end of the line.
+            // `--` 注释延续到行尾。
             if let Some(s) = buf_start {
                 job.append(&trimmed[s..buf_end], 0.0, text_format(base));
             }
@@ -697,7 +877,7 @@ fn highlight_line(job: &mut egui::text::LayoutJob, line: &str) {
             return;
         }
 
-        // Accumulate into the base-colored run.
+        // 累积到基础着色段中。
         if buf_start.is_none() {
             buf_start = Some(bofs);
         }
@@ -710,7 +890,7 @@ fn highlight_line(job: &mut egui::text::LayoutJob, line: &str) {
     }
 }
 
-/// Build a monospace `TextFormat` with the given text color.
+/// 构建带指定文字颜色的等宽 `TextFormat`。
 fn text_format(color: egui::Color32) -> egui::text::TextFormat {
     egui::text::TextFormat {
         font_id: egui::FontId::monospace(FONT_SIZE),
@@ -733,8 +913,7 @@ mod tests {
 
     #[test]
     fn highlight_preserves_text() {
-        // The LayoutJob's `text` must equal the input so cursor positions
-        // stay valid for the TextEdit.
+        // LayoutJob 的 `text` 必须等于输入，以使光标位置对 TextEdit 有效。
         for src in [
             "",
             "hello",
@@ -748,19 +927,43 @@ mod tests {
 
     #[test]
     fn phase_and_position_labels() {
-        assert_eq!(phase_label(EnginePhase::ChoicePending), "ChoicePending");
-        assert_eq!(position_label(&Position::Left), "Left");
-        assert_eq!(position_label(&Position::Custom(0.25)), "Custom(0.25)");
+        assert_eq!(phase_label(EnginePhase::ChoicePending), "等待选择");
+        assert_eq!(position_label(&Position::Left), "左侧");
+        assert_eq!(position_label(&Position::Custom(0.25)), "自定义(0.25)");
     }
 
     #[test]
     fn run_script_compiles_sample() {
         let mut app = EditorApp::default();
+        app.editor_content = SAMPLE_SCRIPT.to_string();
+        app.show_welcome = false;
         app.run_script();
         assert!(app.engine.is_some(), "sample script should compile");
         assert!(
-            app.diagnostics.iter().all(|d| !d.starts_with("[error]")),
+            app.diagnostics.iter().all(|d| !d.starts_with("[错误]")),
             "no errors expected for the sample"
         );
+    }
+
+    #[test]
+    fn welcome_shown_by_default() {
+        let app = EditorApp::default();
+        assert!(app.show_welcome, "welcome panel should show on first launch");
+        assert!(app.editor_content.is_empty(), "editor should be empty on first launch");
+    }
+
+    #[test]
+    fn load_sample_hides_welcome() {
+        let mut app = EditorApp::default();
+        app.load_sample();
+        assert!(!app.show_welcome, "welcome panel should hide after loading sample");
+        assert!(!app.editor_content.is_empty(), "editor should have content after loading sample");
+    }
+
+    #[test]
+    fn new_file_hides_welcome() {
+        let mut app = EditorApp::default();
+        app.new_file();
+        assert!(!app.show_welcome, "welcome panel should hide after new file");
     }
 }
