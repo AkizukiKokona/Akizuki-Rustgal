@@ -101,19 +101,17 @@ impl Checker {
             Node::Dialogue { .. } | Node::Narration { .. } => {}
             Node::Command { cmd, args, .. } => {
                 // Check resource references if resources are declared
-                if !self.resources.is_empty() {
-                    if matches!(cmd.as_str(), "bg" | "music" | "sound") {
-                        if let Some(res) = args.first() {
-                            if !self.resources.iter().any(|r| r.contains(res) || r == res) {
-                                self.errors.push(CheckError {
-                                    message: format!("resource '{}' not found", res),
-                                    span: node_span(node),
-                                    hint: Some(format!("add '{}' to your assets directory", res)),
-                                    severity: Severity::Warning,
-                                });
-                            }
-                        }
-                    }
+                if !self.resources.is_empty()
+                    && matches!(cmd.as_str(), "bg" | "music" | "sound")
+                    && let Some(res) = args.first()
+                    && !self.resources.iter().any(|r| r.contains(res) || r == res)
+                {
+                    self.errors.push(CheckError {
+                        message: format!("resource '{}' not found", res),
+                        span: node_span(node),
+                        hint: Some(format!("add '{}' to your assets directory", res)),
+                        severity: Severity::Warning,
+                    });
                 }
             }
             Node::Direction { .. } => {}
@@ -269,7 +267,7 @@ impl Checker {
         let mut best: Option<(usize, &String)> = None;
         for name in self.sections.keys() {
             let dist = levenshtein(target, name);
-            if dist <= 3 && best.map_or(true, |(d, _)| dist < d) {
+            if dist <= 3 && best.is_none_or(|(d, _)| dist < d) {
                 best = Some((dist, name));
             }
         }

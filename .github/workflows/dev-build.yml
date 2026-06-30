@@ -1,0 +1,117 @@
+name: Dev Build (Windows)
+
+# 第一条线：开发测试
+# 每次推送到 main 分支时自动编译 Windows 版本，作为 artifact 上传，
+# 不创建任何 Release，保持 Releases 页面整洁。
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch: # 允许手动触发，方便随时验证
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  build-windows:
+    name: Build Windows (dev)
+    runs-on: ubuntu-22.04
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0 # 完整历史，用于 git rev-list --count
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: "1.92.0"
+          targets: x86_64-pc-windows-gnu
+
+      - name: Cache cargo registry
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-windows-dev-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-windows-dev-
+
+      - name: Install MinGW cross compiler
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y mingw-w64 zip
+
+      - name: Compute dev version string
+        id: ver
+        shell: bash
+        run: |
+          COUNT=$(git rev-list --count HEAD)
+          DATE=$(date +'%Y%m%d-%H%M')
+          VERSION="0.0.0-dev.${COUNT}+${DATE}"
+          echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
+          echo "Dev version: ${VERSION}"
+
+      - name: Patch version into Cargo.toml
+        shell: bash
+        run: |
+          # 仅改 workspace.package.version，便于产物内嵌版本号
+          sed -i -E "s/^version = \".*\"/version = \"${{ steps.ver.outputs.version }}\"/" Cargo.toml
+          grep -E "^version" Cargo.toml | head -1
+
+      - name: Build Windows release
+        run: cargo build --workspace --release --target x86_64-pc-windows-gnu
+
+      - name: Stage release package
+        shell: bash
+        run: |
+          STAGE="akrs-windows"
+          mkdir -p "$STAGE/scripts" "$STAGE/assets/fonts"
+          mkdir -p "$STAGE/assets/bg" "$STAGE/assets/characters"
+          mkdir -p "$STAGE/assets/music" "$STAGE/assets/sound" "$STAGE/assets/title"
+
+          cp target/x86_64-pc-windows-gnu/release/akrs.exe "$STAGE/"
+          cp target/x86_64-pc-windows-gnu/release/akrs-game.exe "$STAGE/"
+
+          # lewton.dll：音频解码库，从 deps 目录取出（去掉带 hash 的副本）
+          find target/x86_64-pc-windows-gnu/release/deps -name "lewton.dll" -exec cp {} "$STAGE/lewton.dll" \;
+          rm -f "$STAGE"/lewton-*.dll
+
+          cp scripts/demo.akrs "$STAGE/scripts/"
+          cp assets/fonts/NotoSansSC-Regular-subset.ttf "$STAGE/assets/fonts/"
+
+          # 启动脚本（ANSI 编码，无 BOM）
+          printf 'cd /d "%%~dp0"\r\nstart akrs-game.exe\r\n' > "$STAGE/启动游戏.bat"
+
+          # 简易 README
+          cat > "$STAGE/README.txt" <<'EOF'
+          Akizuki*Rustgal — 开发测试版
+
+          运行方式：双击 启动游戏.bat
+
+          命令行工具：akrs.exe check scripts/demo.akrs
+
+          这是自动构建的开发版本，未经过完整测试，仅用于预览最新改动。
+          EOF
+
+      - name: Create zip
+        shell: bash
+        run: |
+          ZIP_NAME="akrs-windows-${{ steps.ver.outputs.version }}.zip"
+          zip -r "$ZIP_NAME" akrs-windows/ -x "*.DS_Store"
+          echo "zip_name=${ZIP_NAME}" >> "$GITHUB_ENV"
+          ls -lh "$ZIP_NAME"
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: akrs-windows-${{ steps.ver.outputs.version }}
+          path: ${{ env.zip_name }}
+          retention-days: 30
+          if-no-files-found: error

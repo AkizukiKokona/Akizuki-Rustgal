@@ -291,10 +291,10 @@ fn scan_resources(dir: &Path) -> Vec<String> {
                 resources.extend(scan_resources(&path));
             } else if let Some(name) = path.file_name().and_then(|n| n.to_str()) {
                 resources.push(name.to_string());
-                if let Ok(rel) = path.strip_prefix(dir) {
-                    if let Some(rel_str) = rel.to_str() {
-                        resources.push(rel_str.to_string());
-                    }
+                if let Ok(rel) = path.strip_prefix(dir)
+                    && let Some(rel_str) = rel.to_str()
+                {
+                    resources.push(rel_str.to_string());
                 }
             }
         }

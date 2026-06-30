@@ -25,7 +25,7 @@ struct IndentedLine<'a> {
 }
 
 /// Parse Ren'Py source into indented lines, skipping blank lines.
-fn parse_lines(source: &str) -> Vec<IndentedLine> {
+fn parse_lines(source: &str) -> Vec<IndentedLine<'_>> {
     source
         .lines()
         .enumerate()

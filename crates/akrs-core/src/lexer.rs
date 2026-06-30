@@ -90,15 +90,14 @@ impl<'a> Lexer<'a> {
                     let start = self.pos;
                     self.advance();
                     // Emit newline (but skip consecutive ones)
-                    if !self.tokens.is_empty() {
-                        if let Some(last) = self.tokens.last() {
-                            if last.kind != TokenKind::Newline {
-                                self.tokens.push(Token::new(
-                                    TokenKind::Newline,
-                                    self.make_span(start, sp),
-                                ));
-                            }
-                        }
+                    if !self.tokens.is_empty()
+                        && let Some(last) = self.tokens.last()
+                        && last.kind != TokenKind::Newline
+                    {
+                        self.tokens.push(Token::new(
+                            TokenKind::Newline,
+                            self.make_span(start, sp),
+                        ));
                     }
                 }
                 // Comments: -- to end of line
@@ -296,13 +295,12 @@ impl<'a> Lexer<'a> {
         }
 
         // Final newline
-        if !self.tokens.is_empty() {
-            if let Some(last) = self.tokens.last() {
-                if last.kind != TokenKind::Newline {
-                    let sp = self.current_linecol();
-                    self.tokens.push(Token::new(TokenKind::Newline, LocSpan::new(self.pos, self.pos, sp, sp)));
-                }
-            }
+        if !self.tokens.is_empty()
+            && let Some(last) = self.tokens.last()
+            && last.kind != TokenKind::Newline
+        {
+            let sp = self.current_linecol();
+            self.tokens.push(Token::new(TokenKind::Newline, LocSpan::new(self.pos, self.pos, sp, sp)));
         }
 
         let sp = self.current_linecol();
@@ -476,7 +474,7 @@ mod tests {
         let tokens = lex("Aki: \"hello\"\n");
         assert!(tokens.iter().any(|t| matches!(&t.kind, TokenKind::Ident(s) if s == "Aki")));
         assert!(tokens.iter().any(|t| t.kind == TokenKind::Colon));
-        assert!(tokens.iter().any(|t| matches!(&t.kind, TokenKind::String(ref s) if s == "hello")));
+        assert!(tokens.iter().any(|t| matches!(&t.kind, TokenKind::String(s) if s == "hello")));
     }
 
     #[test]

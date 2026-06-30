@@ -91,19 +91,19 @@ fn scan_resources(dir: &Path) -> Vec<String> {
                 let sub_resources = scan_resources(&path);
                 resources.extend(sub_resources);
                 // Also add the directory-relative path
-                if let Ok(rel) = path.strip_prefix(dir) {
-                    if let Some(rel_str) = rel.to_str() {
-                        resources.push(rel_str.to_string());
-                    }
+                if let Ok(rel) = path.strip_prefix(dir)
+                    && let Some(rel_str) = rel.to_str()
+                {
+                    resources.push(rel_str.to_string());
                 }
             } else if let Some(name) = path.file_name().and_then(|n| n.to_str()) {
                 // Add bare filename
                 resources.push(name.to_string());
                 // Also add path relative to the assets root
-                if let Ok(rel) = path.strip_prefix(dir) {
-                    if let Some(rel_str) = rel.to_str() {
-                        resources.push(rel_str.to_string());
-                    }
+                if let Ok(rel) = path.strip_prefix(dir)
+                    && let Some(rel_str) = rel.to_str()
+                {
+                    resources.push(rel_str.to_string());
                 }
             }
         }

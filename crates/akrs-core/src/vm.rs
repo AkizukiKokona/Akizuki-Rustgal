@@ -167,9 +167,9 @@ impl Vm {
                 }
                 Instr::Choice { prompt, options } => {
                     let infos: Vec<ChoiceInfo> = options.iter().map(|o| {
-                        let available = o.condition.as_ref()
-                            .map(|c| self.eval(c).map(|v| v.is_truthy()).unwrap_or(false))
-                            .unwrap_or(true);
+                        let available = o.condition.as_ref().is_none_or(|c| {
+                            self.eval(c).map(|v| v.is_truthy()).unwrap_or(false)
+                        });
                         ChoiceInfo { text: o.text.clone(), available }
                     }).collect();
                     self.pending_choice = Some(options);
