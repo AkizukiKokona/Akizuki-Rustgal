@@ -476,7 +476,7 @@ mod tests {
         let tokens = lex("Aki: \"hello\"\n");
         assert!(tokens.iter().any(|t| matches!(&t.kind, TokenKind::Ident(s) if s == "Aki")));
         assert!(tokens.iter().any(|t| t.kind == TokenKind::Colon));
-        assert!(tokens.iter().any(|t| matches!(&t.kind, TokenKind::String(ref s) if s == "hello")));
+        assert!(tokens.iter().any(|t| matches!(&t.kind, TokenKind::String(s) if s == "hello")));
     }
 
     #[test]

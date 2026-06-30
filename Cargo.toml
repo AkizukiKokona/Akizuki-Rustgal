@@ -13,10 +13,11 @@ members = [
 
 [workspace.package]
 version = "1.0.0"
-edition = "2021"
+edition = "2024"
 license = "MIT"
 authors = ["Akizuki*Rustgal Team"]
 description = "A visual novel engine built in Rust with compile-time DSL checking"
+rust-version = "1.92.0"
 
 [workspace.dependencies]
 akrs-core = { path = "crates/akrs-core" }
@@ -35,8 +36,10 @@ proc-macro2 = { version = "1", features = ["span-locations"] }
 proc-macro-error2 = "2"
 macroquad = "0.3"
 # `default-features = false` drops eframe's `accesskit` feature, which on Linux
-# would otherwise pull in the `atspi`/`zbus` stack (incompatible with the
-# pinned Rust 1.75 toolchain). We only need `glow` (rendering) + `default_fonts`.
+# would otherwise pull in the `atspi`/`zbus` accessibility stack. This project
+# does not require accessibility support, so we keep only `glow` (rendering) +
+# `default_fonts`. (Originally also a workaround for Rust 1.75; no longer needed
+# on 1.92 but retained as a deliberate design choice.)
 eframe = { version = "0.21", default-features = false, features = ["glow", "default_fonts"] }
 egui = "0.21"
 

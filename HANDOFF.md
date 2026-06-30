@@ -8,8 +8,8 @@
 
 Akizuki\*Rustgal 是一个用 Rust 编写的视觉小说引擎，包含自研 DSL（`.akrs` 格式）、编译期语法检查、运行时虚拟机、macroquad 图形渲染器、egui 编辑器、命令行工具和打包器。
 
-- **语言**：Rust（edition 2021）
-- **工具链**：固定 Rust 1.75.0（系统已安装，路径 `/root/.cargo/bin/cargo`）
+- **语言**：Rust（edition 2024）
+- **工具链**：固定 Rust 1.92.0（通过仓库根目录 `rust-toolchain.toml` 锁定；系统已安装，路径 `/root/.cargo/bin/cargo`）
 - **许可证**：MIT
 - **版本**：1.0.0
 - **非 Git 仓库**：当前项目目录无 `.git`，无版本历史
@@ -20,13 +20,15 @@ Akizuki\*Rustgal 是一个用 Rust 编写的视觉小说引擎，包含自研 DS
 
 ### 2.1 Rust 工具链
 
+仓库根目录新增 `rust-toolchain.toml`，自动锁定 Rust 1.92.0 并附带 `rustfmt`、`clippy` 组件。进入项目目录后 `rustup` 会自动安装/切换到该工具链，无需手动 `source`。
+
 ```bash
-# cargo 和 rustc 已安装在系统中
-source /root/.cargo/env
-rustc --version   # 应显示 1.75.0
+# 进入项目目录后，rustup 会自动使用 1.92.0
+cd /workspace
+rustc --version   # 应显示 1.92.0
 ```
 
-**关键约束**：必须使用 Rust 1.75.0。`eframe` 依赖已禁用 `default-features`（仅启用 `glow` 和 `default_fonts`），否则 Linux 上会拉入 `atspi`/`zbus`，与 Rust 1.75 不兼容。
+**关键约束**：必须使用 Rust 1.92.0，edition 已升级到 2024。`eframe` 依赖仍禁用 `default-features`（仅启用 `glow` 和 `default_fonts`）——这是有意的设计选择（本项目不需要 accesskit 无障碍栈），原先针对 Rust 1.75 的 atspi/zbus 不兼容问题已不再适用。
 
 ### 2.2 Windows 交叉编译
 
@@ -41,8 +43,7 @@ ar = "x86_64-w64-mingw32-gcc-ar"
 
 编译 Windows 版本：
 ```bash
-source /root/.cargo/env
-cd /workspace/akizuki-rustgal
+cd /workspace
 cargo build --workspace --release --target x86_64-pc-windows-gnu
 ```
 
@@ -58,8 +59,9 @@ cargo build --workspace --release --target x86_64-pc-windows-gnu
 
 ```
 akizuki-rustgal/
-├── Cargo.toml              # workspace 根配置 + [patch.crates-io]
+├── Cargo.toml              # workspace 根配置 + [patch.crates-io]，edition = "2024"
 ├── Cargo.lock
+├── rust-toolchain.toml     # 锁定 Rust 1.92.0（含 rustfmt + clippy）
 ├── .cargo/config.toml      # Windows 交叉编译链接器
 ├── kokona.png              # 原始窗口图标素材
 │
@@ -125,11 +127,11 @@ akrs-macros (proc-macro)     akrs-runtime
 ## 4. 常用命令
 
 ```bash
-# 加载 Rust 环境
-source /root/.cargo/env
+# 工具链由 rust-toolchain.toml 自动管理，无需手动 source
+# 进入项目目录即可
+cd /workspace
 
 # 编译（debug）
-cd /workspace/akizuki-rustgal
 cargo build --workspace
 
 # 编译（release）
@@ -504,9 +506,9 @@ std::panic::set_hook(Box::new(|panic_info| {
 
 ---
 
-## 14. 已知警告（19 个）
+## 14. 已知警告
 
-`cargo build --workspace` 产生 19 个警告，0 个错误。按 crate 分布：
+Rust 1.92.0 + edition 2024 下 `cargo build --workspace` 产生 0 个错误。本项目自身代码警告 17 个，macroquad 上游补丁警告 28 个（因新版 Rust 默认 lint 更严格，属上游代码问题，非本项目责任）。按 crate 分布：
 
 ### akrs-render（10 个，最集中）
 - unused imports: `SaveMetadata`, `TransitionOverlay`
@@ -522,8 +524,11 @@ std::panic::set_hook(Box::new(|panic_info| {
 ### akrs-runtime（2 个）
 - dead code: `ease_in`, `ease_out` 函数
 
-### macroquad 补丁（2 个，来自上游）
-- unused mut: `scroll`, `query`
+### akrs-cli（0 个，已修复）
+- 原 `mismatched_lifetime_syntaxes` 警告（Rust 1.92 新 lint）已在 `migrate.rs` 修复：`Vec<IndentedLine>` → `Vec<IndentedLine<'_>>`
+
+### macroquad 补丁（28 个，来自上游）
+- edition 2018 上游代码，新版 Rust 默认 lint 更严格导致。仅 `src/text.rs` 一处为本项目修改（CJK 字体补丁），其余警告属上游 macroquad 0.3.26 代码。
 
 这些警告不影响功能，建议清理或加 `#[allow(dead_code)]`。
 
@@ -560,6 +565,13 @@ std::panic::set_hook(Box::new(|panic_info| {
 - **原因**：精简字体可能遗漏部分字符
 - **修复**：实现字符级回退（主字体 → 系统字体 → □ 占位符）
 
+### 15.8 edition 2024 迁移（Rust 1.75 → 1.92）
+- **变更**：工具链从 1.75.0 升级到 1.92.0，edition 从 2021 升级到 2024，新增 `rust-toolchain.toml` 锁定版本
+- **破坏点 1**：edition 2024 中 `match` 隐式借用模式禁止显式 `ref` 绑定。`lexer.rs:479` 的 `TokenKind::String(ref s)` 改为 `TokenKind::String(s)`
+- **破坏点 2**：Rust 1.92 新增 `mismatched_lifetime_syntaxes` lint。`migrate.rs:28` 的 `Vec<IndentedLine>` 改为 `Vec<IndentedLine<'_>>`
+- **保留**：`eframe` 的 `default-features = false` 保留为设计选择（不需要 accesskit），但注释更新——Rust 1.75 的 atspi/zbus 不兼容问题已不再适用
+- **未升级**：`eframe 0.21`、`egui 0.21`、`macroquad 0.3.26` 等依赖主版本未升级（仍可在 1.92 编译），升级主版本属独立大任务
+
 ---
 
 ## 16. 待办事项与改进建议
@@ -567,12 +579,13 @@ std::panic::set_hook(Box::new(|panic_info| {
 ### 16.1 高优先级
 - [ ] 初始化 Git 仓库，添加 `.gitignore`（至少排除 `target/`、`saves/`）
 - [ ] 编写根目录 `README.md`
-- [ ] 清理 19 个编译警告（尤其是 `akrs-render` 的 10 个）
+- [ ] 清理 17 个本项目编译警告（尤其是 `akrs-render` 的 10 个）
 - [ ] 为 `akrs-render` 和 `akrs-game` 添加测试
 
 ### 16.2 中优先级
 - [ ] 添加 CI 配置（GitHub Actions：lint + test + build）
-- [ ] 升级 Rust 工具链（当前固定 1.75，eframe 依赖限制）
+- [x] 升级 Rust 工具链至 1.92.0 + edition 2024（已完成）
+- [ ] 升级依赖主版本（eframe/egui 0.21 → 最新、macroquad 0.3 → 0.4），属独立大任务，需重写编辑器/渲染器 API 调用
 - [ ] 字体精简：进一步缩减 `NotoSansSC-Regular-subset.ttf` 体积
 - [ ] 实现实际的全屏模式切换（当前设置页有开关但可能未完全实现）
 - [ ] 添加背景图片/角色立绘/音乐的实际加载逻辑（当前 AssetManager 可能仅有骨架）
