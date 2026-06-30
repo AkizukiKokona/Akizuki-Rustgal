@@ -63,9 +63,9 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - {platform: windows, os: windows-latest, target: x86_64-pc-windows-gnu, shell: "msys2 {0}", archive: zip}
-          - {platform: linux, os: ubuntu-latest, target: x86_64-unknown-linux-gnu, shell: bash, archive: tar.gz}
-          - {platform: macos, os: macos-latest, target: x86_64-apple-darwin, shell: bash, archive: tar.gz}
+          - {platform: windows, os: windows-latest, target: x86_64-pc-windows-gnu}
+          - {platform: linux, os: ubuntu-latest, target: x86_64-unknown-linux-gnu}
+          - {platform: macos, os: macos-latest, target: x86_64-apple-darwin}
 
     steps:
       - name: Checkout
@@ -110,11 +110,17 @@ jobs:
           sed -i -E "s/^version = \".*\"/version = \"${{ needs.resolve.outputs.version }}\"/" Cargo.toml
           grep -E "^version" Cargo.toml | head -1
 
-      - name: Build workspace
-        shell: ${{ matrix.shell }}
+      - name: Build workspace (Windows)
+        if: matrix.platform == 'windows'
+        shell: msys2 {0}
         env:
           # 仅对 x86_64-pc-windows-gnu 目标生效；其它平台忽略此变量
           CARGO_TARGET_X86_64_PC_WINDOWS_GNU_LINKER: gcc
+        run: cargo build --workspace --release --target ${{ matrix.target }}
+
+      - name: Build workspace (Linux/macOS)
+        if: matrix.platform != 'windows'
+        shell: bash
         run: cargo build --workspace --release --target ${{ matrix.target }}
 
       - name: Stage package
@@ -147,9 +153,9 @@ jobs:
         run: |
           VERSION="${{ needs.resolve.outputs.version }}"
           PLATFORM="${{ matrix.platform }}"
-          if [ "${{ matrix.archive }}" = "zip" ]; then
+          if [ "$PLATFORM" = "windows" ]; then
             ARTIFACT="akrs-game-${VERSION}-${PLATFORM}.zip"
-            zip -r "$ARTIFACT" akrs-game/ -x "*.DS_Store"
+            7z a -tzip "$ARTIFACT" akrs-game/
           else
             ARTIFACT="akrs-game-${VERSION}-${PLATFORM}.tar.gz"
             tar -czf "$ARTIFACT" akrs-game/
