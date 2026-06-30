@@ -1,0 +1,16 @@
+[package]
+name = "akrs-runtime"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[features]
+default = ["hot-reload"]
+hot-reload = ["dep:notify", "dep:notify-debouncer-mini"]
+
+[dependencies]
+akrs-core = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+notify = { workspace = true, optional = true }
+notify-debouncer-mini = { workspace = true, optional = true }
