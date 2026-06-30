@@ -1,108 +1,138 @@
--- ============================================================
--- Akizuki*Rustgal Demo Script
--- Showcases all .akrs language features
--- ============================================================
+# 夏日祭的尾声
 
-# Prologue
+-- 背景：夏日祭夜晚
+@bg bg1 with fade
 
--- Set the scene with a background transition
-@bg school_entrance with fade
-@music spring_breeze
+-- 立绘：心夏（身体1）居中
++ 心夏 (kokonabody1) 居中
 
--- Character enters with dissolve transition
-+ Aki enters from left with dissolve
+心夏: "引航者，今天晚上玩得开心吗？"
 
--- Narration (just a quoted string)
-"Cherry blossoms drift through the afternoon air."
+-- 引航者无立绘，只有对话
+引航者: "不错不错，可惜今晚是夏日祭最后一天了，下一次就要等到明年了。"
 
--- Dialogue with speaker name
-Aki: "Hey! You're here early today."
+-- 旁白：心夏低头又抬头
+"心夏低下了头，不过不到一秒她又把头抬起来了，并且笑嘻嘻地看着我。"
 
--- Dialogue with pose (in parentheses)
-Aki (happy): "I was worried you might not come."
+心夏: "没关系呀，夏日祭结束了引航者又不会消失。引航者之后也会一直陪着我的，对吧？"
 
--- Set variables
-$met_aki = true
-$affection = 1
+引航者: "那是当然了，这个问题还用得着我回答吗？"
 
--- Choices (? opens, ? closes, | separates options)
-? "How do you respond?"
-| "I couldn't wait to see you."
-    Aki (surprised): "R-really?"
-    $affection += 3
-    -> Date
-| "I had nothing better to do."
-    Aki (sad): "Oh... I see."
-    $affection -= 1
-    -> Walk
+心夏: "哈哈哈，引航者还真是个好搭档呢。"
+
+"能和她这样的女生待在一起，我真是幸运啊。"
+
+引航者: "对了心夏，我有件事情想跟你说。"
+
+心夏: "诶？这么突然吗，引航者说吧。"
+
+-- 分支选项
+? "引航者要对心夏说什么？"
+| "其实我有个一件小礼物想送给心夏" -> 分支A
+| "其实我给心夏买了一套衣服来着" -> 分支B
 ?
 
-# Date
+-- ====== 分支A ======
+# 分支A
 
--- Background change with dissolve
-@bg cafe with dissolve
-+ Aki enters at center
+心夏: "真的吗？我看看......哎，居然是夏日祭的周边吗？"
 
-Aki: "This cafe has the best cake."
-Aki (happy): "I'm glad we came here together."
+引航者: "心夏打开看一眼。"
 
--- Conditional with if/else/end
-if $affection > 3
-    Aki: "I... I really like spending time with you."
-    -> GoodEnding
-else
-    Aki: "Let's just enjoy the cake."
-    -> NeutralEnding
-end
+心夏: "这是......我和引航者的合照！"
 
-# Walk
+心夏: "引航者真是有心啊，没有给引航者准备些礼物我都有点过意不去了。"
 
-@bg park with fade
+引航者: "不用不用，这只是一个小心意而已。"
 
-Aki: "The park is nice this time of year."
+心夏: "好吧。引航者，我先去洗个澡再回来，等我一会哦。"
 
--- Visit a subsection, then return
-=> ParkDialogue
+引航者: "我知道了，我会等心夏的。"
 
--- After returning from visit
-if $affection > 0
-    -> GoodEnding
-else
-    -> NeutralEnding
-end
+-- 心夏立绘隐藏
+- 心夏
 
-# ParkDialogue
+"过了大约一刻钟，心夏从浴室里出来了。"
 
--- This section is visited, not flowed to
--- It will return to the caller when done
-Aki (thinking): "I wonder if today will be special."
-Aki: "Hey, do you come here often?"
-Aki (happy): "Maybe we could make this our spot."
+-- 立绘：心夏（身体2）居中
++ 心夏 (kokonabody2) 居中
 
-$affection += 1
+心夏: "引航者，我回来了哦。"
 
--- Return to caller (<=)
-<=
+引航者: "还挺快的嘛，不愧是副队长前辈。"
 
-# GoodEnding
+心夏: "这.....这种时候就不要用这个称呼啦！"
 
-@bg sunset with fade_white
-@music gentle_finale
+心夏: "算了算了，引航者，你过来，我也有句很重要的话要跟你说。"
 
-"And so, under the painted sky, a new chapter began."
+引航者: "什么啊，难道心夏也给我准备了一份惊喜吗？"
 
-Aki: "Thank you for today."
-Aki (happy): "Let's do this again sometime."
+-- 撤立绘 + 换背景
+- 心夏
+@bg bg2 with fade
 
--- End the story explicitly
-~~
+心夏: "其实我对引航者有一种不一样的情感呢，不只是最好的搭档。"
 
-# NeutralEnding
+"她脸上泛起的红晕告诉了我她的想法。"
 
-@bg evening with fade
+引航者: "那我可以提一个小小的请求吗？"
 
-"They parted ways as the sun set."
+心夏: "嗯？引航者说吧。"
 
-Aki: "See you around, I guess."
+引航者: "心夏以后有空的话可以多陪下我吗，感觉最近见面的时间越来越少了。"
+
+心夏: "啊..嗯，最近工作稍微忙一些，抱歉啊。"
+
+心夏: "不过我答应引航者，等我熬过这段困难时期，只要有空闲时间，我都会来找引航者的。"
+
+引航者: "嗯，听心夏这样说我就放心了。"
+
+-> 收束
+
+-- ====== 分支B ======
+# 分支B
+
+心夏: "欸...这个是之前萍安日那套衣服，引航者又重新弄了一套出来？"
+
+引航者: "是啊，心夏之前那套不是已经有点旧了吗，所以想给心夏换一套新的。"
+
+心夏: "这样啊，我穿试试看。"
+
+-- 撤立绘
+- 心夏
+
+-- 立绘：心夏（身体3）居中
++ 心夏 (kokonabody3) 居中
+
+心夏: "还不错嘛，和之前的感觉差不多，多谢引航者啦。"
+
+引航者: "嗯，心夏喜欢就好。"
+
+心夏: "那是当然的了，我可喜欢引航者...送来的东西了。"
+
+"应该是我多虑了，她应该不是这个意思吧？"
+
+心夏: "诶，引航者的反应怎么这么冷淡。"
+
+引航者: "没有吧，心夏应该没有那层意思吧？"
+
+心夏: "嘿嘿，也许有呢？"
+
+-> 收束
+
+-- ====== 收束（共用结局） ======
+# 收束
+
+"与此同时，投影显示的时间变成了00:00。"
+
+心夏: "时间也不早了吧。哈——唔，该休息的时候就该好好休息。"
+
+引航者: "心夏可别强撑着啊。我先回去了，心夏先好好休息吧。"
+
+心夏: "嗯。引航者明天可要记得来找我玩啊！"
+
+引航者: "知道啦。我走了，拜拜，晚安。"
+
+心夏: "嗯！引航者明天见，晚安～"
 
 ~~
