@@ -1,24 +1,34 @@
-name: Dev Build
+name: Editor Build
 
-# 主程序开发构建流水线（三平台矩阵）。
+# 编辑器独立构建流水线（三平台矩阵）。
 #
 # 触发策略：
-#   - push 到 main：全平台并行构建
+#   - push 到 main：仅当编辑器相关路径变化时，全平台并行构建
 #   - workflow_dispatch：默认仅 Windows，下拉可选 linux / macos / all
 #
-# 产物作为 Actions artifact 上传，不创建 Release，保持 Releases 页面整洁。
+# 产物作为 Actions artifact 上传，不创建 Release。
 #
 # 本地适配说明：
 #   - Windows：需安装 MSYS2 并 `pacman -S mingw-w64-ucrt-x86_64-gcc`，
-#     在 UCRT64 shell 中执行 `cargo build --workspace --release --target x86_64-pc-windows-gnu`
+#     在 UCRT64 shell 中执行 `cargo build -p akrs-editor --release --target x86_64-pc-windows-gnu`
 #   - Linux：需 `sudo apt-get install -y libxcb-render-util-dev libxcb-shape0-dev
 #     libxcb-xfixes0-dev libxcb-xkb-dev libasound2-dev`
-#   - macOS：仅需 Xcode 命令行工具。macos-latest 为 arm64，构建 x86_64-apple-darwin
-#     属交叉编译；若失败可改用 macos-13（原生 x86_64 runner）。
+#   - macOS：仅需 Xcode 命令行工具。注意 macos-latest 为 arm64，构建
+#     x86_64-apple-darwin 属交叉编译；若 miniaudio C 代码交叉编译失败，
+#     可改用 macos-13（原生 x86_64 runner）。
 
 on:
   push:
     branches: [main]
+    paths:
+      - "crates/akrs-editor/**"
+      - "crates/akrs-core/**"
+      - "crates/akrs-runtime/**"
+      - "patches/**"
+      - "Cargo.lock"
+      - "Cargo.toml"
+      - "rust-toolchain.toml"
+      - ".github/workflows/editor-build.yml"
   workflow_dispatch:
     inputs:
       platform:
@@ -94,9 +104,9 @@ jobs:
             ~/.cargo/registry
             ~/.cargo/git
             target
-          key: cargo-game-${{ matrix.platform }}-${{ hashFiles('**/Cargo.lock') }}
+          key: cargo-editor-${{ matrix.platform }}-${{ hashFiles('**/Cargo.lock') }}
           restore-keys: |
-            cargo-game-${{ matrix.platform }}-
+            cargo-editor-${{ matrix.platform }}-
 
       - name: Setup MSYS2 (Windows)
         if: matrix.platform == 'windows'
@@ -127,36 +137,30 @@ jobs:
           sed -i -E "s/^version = \".*\"/version = \"${{ steps.ver.outputs.version }}\"/" Cargo.toml
           grep -E "^version" Cargo.toml | head -1
 
-      - name: Build workspace
+      - name: Build editor
         shell: ${{ matrix.shell }}
         env:
           # 仅对 x86_64-pc-windows-gnu 目标生效；其它平台忽略此变量
           CARGO_TARGET_X86_64_PC_WINDOWS_GNU_LINKER: gcc
-        run: cargo build --workspace --release --target ${{ matrix.target }}
+        run: cargo build -p akrs-editor --release --target ${{ matrix.target }}
 
       - name: Stage package
         shell: bash
         run: |
-          STAGE="akrs-game"
-          mkdir -p "$STAGE/scripts" "$STAGE/assets/fonts"
-          mkdir -p "$STAGE/assets/bg" "$STAGE/assets/characters"
-          mkdir -p "$STAGE/assets/music" "$STAGE/assets/sound" "$STAGE/assets/title"
+          STAGE="akrs-editor"
+          mkdir -p "$STAGE/assets/fonts"
           BIN_DIR="target/${{ matrix.target }}/release"
           if [ "${{ matrix.platform }}" = "windows" ]; then
-            cp "$BIN_DIR/akrs.exe" "$STAGE/"
-            cp "$BIN_DIR/akrs-game.exe" "$STAGE/"
+            cp "$BIN_DIR/akrs-editor.exe" "$STAGE/"
             find "$BIN_DIR/deps" -name "lewton.dll" -exec cp {} "$STAGE/" \; 2>/dev/null || true
-            rm -f "$STAGE"/lewton-*.dll
-            printf 'cd /d "%%~dp0"\r\nstart akrs-game.exe\r\n' > "$STAGE/启动游戏.bat"
+            printf 'cd /d "%%~dp0"\r\nstart akrs-editor.exe\r\n' > "$STAGE/启动编辑器.bat"
           else
-            cp "$BIN_DIR/akrs" "$STAGE/"
-            cp "$BIN_DIR/akrs-game" "$STAGE/"
-            printf '#!/bin/bash\ncd "$(dirname "$0")"\n./akrs-game\n' > "$STAGE/启动游戏.sh"
-            chmod +x "$STAGE/启动游戏.sh"
+            cp "$BIN_DIR/akrs-editor" "$STAGE/"
+            printf '#!/bin/bash\ncd "$(dirname "$0")"\n./akrs-editor\n' > "$STAGE/启动编辑器.sh"
+            chmod +x "$STAGE/启动编辑器.sh"
           fi
-          cp scripts/demo.akrs "$STAGE/scripts/" 2>/dev/null || true
           cp assets/fonts/NotoSansSC-Regular-subset.ttf "$STAGE/assets/fonts/" 2>/dev/null || true
-          printf 'Akizuki*Rustgal — 开发测试版 (%s)\n版本: %s\n\nWindows: 双击 启动游戏.bat\nLinux/macOS: ./启动游戏.sh\n命令行工具: akrs check scripts/demo.akrs\n' "${{ matrix.platform }}" "${{ steps.ver.outputs.version }}" > "$STAGE/README.txt"
+          printf 'Akizuki*Rustgal Editor — 开发测试版 (%s)\n版本: %s\n\nWindows: 双击 启动编辑器.bat\nLinux/macOS: ./启动编辑器.sh\n' "${{ matrix.platform }}" "${{ steps.ver.outputs.version }}" > "$STAGE/README.txt"
 
       - name: Archive
         id: archive
@@ -165,11 +169,11 @@ jobs:
           VERSION="${{ steps.ver.outputs.version }}"
           PLATFORM="${{ matrix.platform }}"
           if [ "${{ matrix.archive }}" = "zip" ]; then
-            ARTIFACT="akrs-game-${VERSION}-${PLATFORM}.zip"
-            zip -r "$ARTIFACT" akrs-game/ -x "*.DS_Store"
+            ARTIFACT="akrs-editor-${VERSION}-${PLATFORM}.zip"
+            zip -r "$ARTIFACT" akrs-editor/ -x "*.DS_Store"
           else
-            ARTIFACT="akrs-game-${VERSION}-${PLATFORM}.tar.gz"
-            tar -czf "$ARTIFACT" akrs-game/
+            ARTIFACT="akrs-editor-${VERSION}-${PLATFORM}.tar.gz"
+            tar -czf "$ARTIFACT" akrs-editor/
           fi
           echo "artifact=${ARTIFACT}" >> "$GITHUB_OUTPUT"
           ls -lh "$ARTIFACT"
@@ -177,7 +181,7 @@ jobs:
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
-          name: akrs-game-${{ steps.ver.outputs.version }}-${{ matrix.platform }}
+          name: akrs-editor-${{ steps.ver.outputs.version }}-${{ matrix.platform }}
           path: ${{ steps.archive.outputs.artifact }}
           retention-days: 30
           if-no-files-found: error
