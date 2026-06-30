@@ -282,6 +282,10 @@ impl<'a> Lexer<'a> {
                 'a'..='z' | 'A'..='Z' | '_' => {
                     self.lex_ident();
                 }
+                // Unicode 字母（中文、日文、韩文等）作为标识符起始字符
+                c if c.is_alphabetic() => {
+                    self.lex_ident();
+                }
                 _ => {
                     let sp = self.current_linecol();
                     let start = self.pos;
@@ -402,12 +406,12 @@ impl<'a> Lexer<'a> {
         let mut s = String::new();
 
         while self.pos < self.chars.len() {
-            match self.chars[self.pos] {
-                'a'..='z' | 'A'..='Z' | '0'..='9' | '_' => {
-                    s.push(self.chars[self.pos]);
-                    self.advance();
-                }
-                _ => break,
+            let c = self.chars[self.pos];
+            if c.is_ascii_alphanumeric() || c == '_' || c.is_alphabetic() || c.is_alphanumeric() {
+                s.push(c);
+                self.advance();
+            } else {
+                break;
             }
         }
 
@@ -509,5 +513,48 @@ mod tests {
         // Find newline token
         let nl = tokens.iter().find(|t| t.kind == TokenKind::Newline).unwrap();
         assert_eq!(nl.span.start_linecol.line, 1);
+    }
+
+    #[test]
+    fn test_unicode_section_header() {
+        let tokens = lex("# 序章\n");
+        assert!(tokens.iter().any(|t| t.kind == TokenKind::SectionMark));
+        assert!(tokens.iter().any(|t| matches!(&t.kind, TokenKind::Ident(s) if s == "序章")));
+    }
+
+    #[test]
+    fn test_unicode_character_name() {
+        let tokens = lex("心夏: \"你好\"\n");
+        assert!(tokens.iter().any(|t| matches!(&t.kind, TokenKind::Ident(s) if s == "心夏")));
+        assert!(tokens.iter().any(|t| t.kind == TokenKind::Colon));
+        assert!(tokens.iter().any(|t| matches!(&t.kind, TokenKind::String(s) if s == "你好")));
+    }
+
+    #[test]
+    fn test_unicode_multi_char_name() {
+        let tokens = lex("引航者: \"对话内容\"\n");
+        assert!(tokens.iter().any(|t| matches!(&t.kind, TokenKind::Ident(s) if s == "引航者")));
+    }
+
+    #[test]
+    fn test_unicode_mixed_ident() {
+        // 混合 ASCII 和 Unicode 的标识符
+        let tokens = lex("Aki酱: \"hi\"\n");
+        assert!(tokens.iter().any(|t| matches!(&t.kind, TokenKind::Ident(s) if s == "Aki酱")));
+    }
+
+    #[test]
+    fn test_unicode_section_and_dialogue() {
+        let src = "# 第一章 开始\n心夏: \"今天天气真好。\"\n";
+        let tokens = lex(src);
+        assert!(tokens.iter().any(|t| matches!(&t.kind, TokenKind::Ident(s) if s == "第一章")));
+        assert!(tokens.iter().any(|t| matches!(&t.kind, TokenKind::Ident(s) if s == "开始")));
+        assert!(tokens.iter().any(|t| matches!(&t.kind, TokenKind::Ident(s) if s == "心夏")));
+    }
+
+    #[test]
+    fn test_ascii_still_works() {
+        let tokens = lex("Kokona: \"hello\"\n");
+        assert!(tokens.iter().any(|t| matches!(&t.kind, TokenKind::Ident(s) if s == "Kokona")));
     }
 }
