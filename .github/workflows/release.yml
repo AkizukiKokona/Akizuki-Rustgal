@@ -145,6 +145,7 @@ jobs:
             chmod +x "$STAGE/启动游戏.sh"
           fi
           cp scripts/demo.akrs "$STAGE/scripts/" 2>/dev/null || true
+          cp assets/fonts/NotoSansCJK-Regular.ttc "$STAGE/assets/fonts/" 2>/dev/null || true
           cp assets/fonts/NotoSansSC-Regular-subset.ttf "$STAGE/assets/fonts/" 2>/dev/null || true
           printf 'Akizuki*Rustgal ${{ needs.resolve.outputs.version }} (%s)\n\nWindows: 双击 启动游戏.bat\nLinux/macOS: ./启动游戏.sh\n命令行工具: akrs check scripts/demo.akrs\n' "${{ matrix.platform }}" > "$STAGE/README.txt"
 

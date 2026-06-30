@@ -166,6 +166,7 @@ jobs:
             printf '#!/bin/bash\ncd "$(dirname "$0")"\n./akrs-editor\n' > "$STAGE/启动编辑器.sh"
             chmod +x "$STAGE/启动编辑器.sh"
           fi
+          cp assets/fonts/NotoSansCJK-Regular.ttc "$STAGE/assets/fonts/" 2>/dev/null || true
           cp assets/fonts/NotoSansSC-Regular-subset.ttf "$STAGE/assets/fonts/" 2>/dev/null || true
           printf 'Akizuki*Rustgal Editor — 开发测试版 (%s)\n版本: %s\n\nWindows: 双击 启动编辑器.bat\nLinux/macOS: ./启动编辑器.sh\n' "${{ matrix.platform }}" "${{ steps.ver.outputs.version }}" > "$STAGE/README.txt"
 
