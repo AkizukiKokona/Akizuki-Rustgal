@@ -1,0 +1,1299 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>The .akrs Script Language — DSL Specification | Akizuki*Rustgal</title>
+<style>
+/* =====================================================================
+   Base / Reset
+   ===================================================================== */
+*, *::before, *::after { box-sizing: border-box; }
+:root {
+  --bg: #fbfaf8;
+  --bg-soft: #f3f1ee;
+  --surface: #ffffff;
+  --text: #2a2730;
+  --text-soft: #5c5763;
+  --text-faint: #8a8590;
+  --border: #e7e3dd;
+  --accent: #c2185b;
+  --accent-soft: #fce4ec;
+  --accent-2: #6a1b9a;
+  --link: #ad1457;
+  --code-bg: #1e1e2e;
+  --code-text: #cdd6f4;
+  --ok: #2e7d32;
+  --warn: #b26a00;
+  --err: #c62828;
+  --maxw: 880px;
+  --sidebar-w: 270px;
+}
+html { scroll-behavior: smooth; scroll-padding-top: 24px; }
+body {
+  margin: 0;
+  font-family: "Inter", -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto,
+    "Helvetica Neue", Arial, "Noto Sans", sans-serif;
+  font-size: 16px;
+  line-height: 1.7;
+  color: var(--text);
+  background: var(--bg);
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+}
+
+/* =====================================================================
+   Header / Hero
+   ===================================================================== */
+header.hero {
+  position: relative;
+  overflow: hidden;
+  color: #fff;
+  padding: 72px 32px 60px;
+  background:
+    radial-gradient(1200px 400px at 15% -10%, rgba(255,128,171,0.55), transparent 60%),
+    radial-gradient(900px 500px at 100% 0%, rgba(106,27,154,0.55), transparent 55%),
+    linear-gradient(135deg, #6a1b9a 0%, #c2185b 55%, #e91e63 100%);
+  border-bottom: 1px solid rgba(0,0,0,0.15);
+}
+header.hero::after {
+  content: "";
+  position: absolute; inset: 0;
+  background-image: radial-gradient(rgba(255,255,255,0.10) 1px, transparent 1px);
+  background-size: 22px 22px;
+  opacity: 0.5;
+  pointer-events: none;
+}
+.hero-inner { max-width: 1120px; margin: 0 auto; position: relative; z-index: 1; }
+.hero .eyebrow {
+  display: inline-block;
+  font-size: 12.5px; letter-spacing: 0.18em; text-transform: uppercase;
+  font-weight: 700; color: #ffe3ef;
+  background: rgba(0,0,0,0.18);
+  padding: 5px 12px; border-radius: 999px;
+  margin-bottom: 18px;
+}
+header.hero h1 {
+  margin: 0 0 14px;
+  font-size: clamp(30px, 4.4vw, 48px);
+  line-height: 1.1; font-weight: 800; letter-spacing: -0.02em;
+}
+header.hero h1 .mono { font-family: var(--mono); font-weight: 700; }
+header.hero p.lead {
+  margin: 0 auto 0 0; max-width: 720px;
+  font-size: clamp(16px, 2vw, 19px); color: rgba(255,255,255,0.92);
+}
+.hero-meta {
+  margin-top: 26px; display: flex; flex-wrap: wrap; gap: 10px;
+}
+.hero-meta span {
+  font-size: 13px; font-weight: 600;
+  background: rgba(255,255,255,0.16);
+  border: 1px solid rgba(255,255,255,0.28);
+  padding: 6px 13px; border-radius: 8px;
+  backdrop-filter: blur(2px);
+}
+
+/* =====================================================================
+   Layout: sidebar + content
+   ===================================================================== */
+:root { --mono: "JetBrains Mono", "Fira Code", "SF Mono", "Cascadia Code",
+  Consolas, "Liberation Mono", Menlo, monospace; }
+.layout {
+  max-width: 1180px; margin: 0 auto; padding: 40px 32px 80px;
+  display: grid;
+  grid-template-columns: var(--sidebar-w) minmax(0, 1fr);
+  gap: 48px;
+  align-items: start;
+}
+
+/* Sidebar / TOC */
+nav.toc {
+  position: sticky; top: 24px;
+  max-height: calc(100vh - 48px);
+  overflow-y: auto;
+  font-size: 14px;
+  padding-right: 8px;
+}
+nav.toc h2 {
+  font-size: 11px; letter-spacing: 0.16em; text-transform: uppercase;
+  color: var(--text-faint); margin: 0 0 12px; font-weight: 700;
+}
+nav.toc ul { list-style: none; margin: 0; padding: 0; }
+nav.toc li { margin: 0; }
+nav.toc a {
+  display: block;
+  color: var(--text-soft);
+  text-decoration: none;
+  padding: 5px 12px;
+  border-left: 2px solid transparent;
+  border-radius: 0 6px 6px 0;
+  transition: all 0.15s ease;
+  line-height: 1.45;
+}
+nav.toc a:hover { color: var(--accent); background: var(--accent-soft); }
+nav.toc a.active { color: var(--accent); border-left-color: var(--accent); background: var(--accent-soft); font-weight: 600; }
+nav.toc ul ul { padding-left: 14px; margin-top: 2px; }
+nav.toc ul ul a { font-size: 13px; padding: 3px 12px; color: var(--text-faint); }
+nav.toc ul ul a:hover { color: var(--accent); }
+
+/* =====================================================================
+   Content typography
+   ===================================================================== */
+main { min-width: 0; max-width: var(--maxw); }
+section.doc { margin-bottom: 56px; scroll-margin-top: 20px; }
+h2.section-title {
+  font-size: 28px; font-weight: 800; letter-spacing: -0.01em;
+  color: #1c1820; margin: 0 0 6px;
+  padding-bottom: 10px; border-bottom: 2px solid var(--border);
+  display: flex; align-items: center; gap: 12px;
+}
+h2.section-title .num {
+  font-size: 14px; font-weight: 700; color: #fff;
+  background: linear-gradient(135deg, var(--accent-2), var(--accent));
+  width: 30px; height: 30px; border-radius: 8px;
+  display: inline-flex; align-items: center; justify-content: center;
+  flex: 0 0 auto;
+}
+h3.sub {
+  font-size: 20px; font-weight: 700; color: #1c1820;
+  margin: 34px 0 10px; letter-spacing: -0.01em;
+  scroll-margin-top: 20px;
+}
+h3.sub .anchor-marker { font-family: var(--mono); color: var(--accent); margin-right: 8px; font-size: 17px; }
+h4 { font-size: 15.5px; font-weight: 700; color: #3a3540; margin: 22px 0 8px; }
+p { margin: 0 0 14px; }
+a { color: var(--link); text-decoration: none; }
+a:hover { text-decoration: underline; }
+strong { color: #1c1820; font-weight: 700; }
+em { color: var(--accent-2); font-style: italic; }
+ul, ol { margin: 0 0 16px; padding-left: 22px; }
+li { margin-bottom: 5px; }
+hr { border: none; border-top: 1px solid var(--border); margin: 36px 0; }
+
+/* Inline code */
+code, .mono {
+  font-family: var(--mono);
+  font-size: 0.88em;
+}
+:not(pre) > code {
+  background: var(--bg-soft);
+  border: 1px solid var(--border);
+  color: var(--accent);
+  padding: 1.5px 6px;
+  border-radius: 5px;
+  white-space: nowrap;
+}
+
+/* =====================================================================
+   Code blocks (dark theme)
+   ===================================================================== */
+pre {
+  background: var(--code-bg);
+  color: var(--code-text);
+  border-radius: 12px;
+  padding: 18px 20px;
+  overflow-x: auto;
+  margin: 16px 0 20px;
+  font-family: var(--mono);
+  font-size: 13.5px;
+  line-height: 1.65;
+  border: 1px solid #313244;
+  box-shadow: 0 6px 24px rgba(30,30,46,0.18), 0 1px 0 rgba(255,255,255,0.04) inset;
+  position: relative;
+}
+pre code { background: none; border: none; color: inherit; padding: 0; font-size: inherit; white-space: pre; }
+/* Optional filename / label chip */
+pre .label {
+  position: absolute; top: 0; right: 0;
+  font-family: var(--mono); font-size: 11px; letter-spacing: 0.06em;
+  color: #7f849c; text-transform: uppercase;
+  background: #313244; padding: 3px 12px;
+  border-radius: 0 12px 0 8px;
+  user-select: none;
+}
+
+/* Syntax highlight colors (Catppuccin Mocha) */
+.c  { color: #6c7086; font-style: italic; }                 /* comment */
+.s  { color: #f38ba8; font-weight: 600; }                    /* section mark # */
+.f  { color: #fab387; font-weight: 700; }                    /* flow -> => <= ~~ */
+.st { color: #a6e3a1; }                                       /* string */
+.v  { color: #f9e2af; }                                       /* $variable */
+.cp { color: #89b4fa; font-weight: 700; }                    /* @ + command prefix */
+.nm { color: #fab387; }                                       /* number */
+.k  { color: #cba6f7; font-weight: 600; }                    /* keyword if/else/end/wait/and/or/not */
+.dk { color: #89dceb; font-style: italic; }                  /* direction keyword enters/from/with... */
+.b  { color: #fab387; font-weight: 600; }                    /* boolean true/false */
+.id { color: #cdd6f4; }                                       /* identifier */
+.op { color: #89b4fa; }                                       /* operator */
+.q  { color: #f5c2e7; font-weight: 700; }                    /* ? */
+.pp { color: #f5c2e7; font-weight: 700; }                    /* | */
+.pn { color: #9399b2; }                                       /* : punctuation */
+.pd { color: #9399b2; }                                       /* ( ) , punctuation */
+
+/* =====================================================================
+   Tables
+   ===================================================================== */
+.table-wrap { overflow-x: auto; margin: 16px 0 22px; border: 1px solid var(--border); border-radius: 10px; }
+table {
+  border-collapse: collapse; width: 100%; font-size: 14px;
+  background: var(--surface);
+}
+thead th {
+  background: var(--bg-soft);
+  text-align: left; font-weight: 700; color: #1c1820;
+  padding: 11px 14px; border-bottom: 2px solid var(--border);
+  font-size: 13px; letter-spacing: 0.01em;
+}
+tbody td { padding: 10px 14px; border-bottom: 1px solid var(--border); vertical-align: top; }
+tbody tr:last-child td { border-bottom: none; }
+tbody tr:nth-child(even) { background: #faf9f7; }
+td code, th code { font-size: 0.86em; }
+
+/* =====================================================================
+   Callouts / notes
+   ===================================================================== */
+.note {
+  border-left: 4px solid var(--accent);
+  background: linear-gradient(90deg, var(--accent-soft), rgba(252,228,236,0.25));
+  padding: 14px 18px; border-radius: 0 10px 10px 0; margin: 18px 0;
+}
+.note.warn { border-left-color: var(--warn); background: linear-gradient(90deg, #fff5e6, rgba(255,245,230,0.3)); }
+.note.tip  { border-left-color: var(--ok); background: linear-gradient(90deg, #e8f5e9, rgba(232,245,233,0.3)); }
+.note .tag {
+  display: inline-block; font-size: 11px; font-weight: 800; letter-spacing: 0.1em;
+  text-transform: uppercase; margin-right: 8px; color: var(--accent);
+}
+.note.warn .tag { color: var(--warn); }
+.note.tip  .tag { color: var(--ok); }
+.note p:last-child { margin-bottom: 0; }
+
+/* =====================================================================
+   Badges / marker chips
+   ===================================================================== */
+.badges { display: flex; flex-wrap: wrap; gap: 8px; margin: 14px 0 18px; }
+.badge {
+  font-family: var(--mono); font-size: 12.5px; font-weight: 600;
+  background: var(--surface); border: 1px solid var(--border);
+  color: var(--text-soft); padding: 4px 11px; border-radius: 7px;
+  white-space: nowrap;
+}
+.badge.k { color: var(--accent-2); border-color: #e1bee7; background: #faf5fc; }
+.badge.f { color: #e65100; border-color: #ffe0b2; background: #fff8f0; }
+
+/* Syntax "signature" line */
+.sig {
+  font-family: var(--mono); font-size: 14px;
+  background: var(--bg-soft); border: 1px dashed var(--border);
+  padding: 12px 16px; border-radius: 9px; margin: 12px 0 4px;
+  color: #3a3540; overflow-x: auto;
+}
+.sig .ph { color: var(--accent); font-weight: 600; }
+.sig .opt { color: var(--text-faint); }
+
+/* Definition list style */
+dl.refs { margin: 12px 0; }
+dl.refs dt { font-weight: 700; color: #1c1820; font-family: var(--mono); font-size: 14px; margin-top: 10px; }
+dl.refs dd { margin: 2px 0 0 0; color: var(--text-soft); }
+
+/* Grid of principles */
+.principles {
+  display: grid; grid-template-columns: repeat(auto-fill, minmax(230px, 1fr));
+  gap: 14px; margin: 18px 0 6px;
+}
+.principle {
+  background: var(--surface); border: 1px solid var(--border);
+  border-radius: 10px; padding: 16px;
+}
+.principle .ico {
+  font-family: var(--mono); font-weight: 700; color: var(--accent);
+  font-size: 18px; margin-bottom: 6px; display: block;
+}
+.principle h4 { margin: 0 0 4px; font-size: 14.5px; }
+.principle p { margin: 0; font-size: 13.5px; color: var(--text-soft); line-height: 1.55; }
+
+/* Pipeline diagram */
+.pipeline {
+  display: flex; flex-wrap: wrap; align-items: center; gap: 6px;
+  margin: 20px 0; font-family: var(--mono); font-size: 13px;
+}
+.pipeline .step {
+  background: var(--surface); border: 1px solid var(--border);
+  padding: 8px 14px; border-radius: 8px; font-weight: 600; color: #1c1820;
+}
+.pipeline .step.hl { border-color: var(--accent); color: var(--accent); background: var(--accent-soft); }
+.pipeline .arrow { color: var(--text-faint); font-weight: 700; }
+
+/* error mock */
+.errmock {
+  background: #1b1b29; color: #e6e6ef; border-radius: 10px;
+  font-family: var(--mono); font-size: 12.5px; line-height: 1.6;
+  padding: 14px 16px; overflow-x: auto; border: 1px solid #313244;
+  margin: 14px 0;
+}
+.errmock .e { color: #f38ba8; font-weight: 700; }
+.errmock .w { color: #f9e2af; font-weight: 700; }
+.errmock .n { color: #89b4fa; }
+.errmock .src { color: #a6e3a1; }
+.errmock .caret { color: #f38ba8; }
+
+footer.foot {
+  max-width: 1180px; margin: 0 auto; padding: 30px 32px 60px;
+  border-top: 1px solid var(--border); color: var(--text-faint); font-size: 13.5px;
+}
+footer.foot strong { color: var(--text-soft); }
+
+/* =====================================================================
+   Responsive
+   ===================================================================== */
+@media (max-width: 920px) {
+  .layout { grid-template-columns: 1fr; gap: 0; padding: 28px 20px 60px; }
+  nav.toc { position: static; max-height: none; margin-bottom: 28px;
+    border: 1px solid var(--border); border-radius: 12px; padding: 16px; background: var(--surface); }
+  nav.toc ul ul { display: none; }
+  header.hero { padding: 52px 22px 44px; }
+}
+</style>
+</head>
+<body>
+
+<!-- ============================ HERO ============================ -->
+<header class="hero">
+  <div class="hero-inner">
+    <span class="eyebrow">Akizuki*Rustgal Engine</span>
+    <h1>The <span class="mono">.akrs</span> Script Language</h1>
+    <p class="lead">A symbolic, keyword-light domain-specific language for writing visual novels &mdash; designed for non-programmers, built on Rust, and verified at compile time through procedural macros.</p>
+    <div class="hero-meta">
+      <span>Version 1.0 Specification</span>
+      <span>Symbolic Markers</span>
+      <span>Compile-Time Checked</span>
+      <span>Hot Reload</span>
+    </div>
+  </div>
+</header>
+
+<!-- ============================ LAYOUT ============================ -->
+<div class="layout">
+
+<!-- ---------------------------- TOC ---------------------------- -->
+<nav class="toc" id="toc">
+  <h2>Contents</h2>
+  <ul>
+    <li><a href="#overview">1. Overview</a></li>
+    <li><a href="#principles">2. Design Principles</a></li>
+    <li><a href="#quickstart">3. Quick Start</a></li>
+    <li><a href="#syntax">4. Syntax Reference</a>
+      <ul>
+        <li><a href="#sections">4.1 Sections</a></li>
+        <li><a href="#dialogue">4.2 Dialogue</a></li>
+        <li><a href="#narration">4.3 Narration</a></li>
+        <li><a href="#commands">4.4 Stage Commands</a></li>
+        <li><a href="#directions">4.5 Stage Directions</a></li>
+        <li><a href="#variables">4.6 Variables</a></li>
+        <li><a href="#flow">4.7 Flow Navigation</a></li>
+        <li><a href="#visit">4.8 Visit &amp; Return</a></li>
+        <li><a href="#choices">4.9 Choices</a></li>
+        <li><a href="#conditionals">4.10 Conditionals</a></li>
+        <li><a href="#wait">4.11 Wait</a></li>
+        <li><a href="#comments">4.12 Comments</a></li>
+        <li><a href="#storyend">4.13 Story End</a></li>
+      </ul>
+    </li>
+    <li><a href="#expressions">5. Expressions</a></li>
+    <li><a href="#transitions">6. Transitions &amp; Positions</a></li>
+    <li><a href="#checks">7. Compile-Time Checks</a></li>
+    <li><a href="#errors">8. Error Reporting</a></li>
+    <li><a href="#hotreload">9. Hot Reload</a></li>
+    <li><a href="#example">10. Complete Example</a></li>
+    <li><a href="#grammar">11. Grammar Reference</a></li>
+  </ul>
+</nav>
+
+<!-- ---------------------------- MAIN ---------------------------- -->
+<main>
+
+<!-- ===================== 1. OVERVIEW ===================== -->
+<section class="doc" id="overview">
+  <h2 class="section-title"><span class="num">1</span>Overview</h2>
+
+  <p><code>.akrs</code> is the scripting language of the <strong>Akizuki*Rustgal</strong> visual-novel engine. It is a compact, line-oriented DSL whose grammar favors <em>symbolic markers</em> over English keywords. A script author writes scenes, dialogue, choices, and branching flow in a natural, readable form &mdash; while the engine guarantees correctness before the game ever runs.</p>
+
+  <p>Unlike Python-based engines such as Ren'Py, <code>.akrs</code> deliberately avoids constructs like <code>label</code>, <code>jump</code>, <code>call</code>, <code>menu</code>, <code>with</code> (as a keyword), Python-style indentation semantics, and variable interpolation. Instead, structure is conveyed by distinctive glyphs (<code>#</code>, <code>-&gt;</code>, <code>?</code>, <code>|</code>, <code>@</code>, <code>+</code>, <code>$</code>) that are visually unambiguous and require no embedded programming language.</p>
+
+  <h3 class="sub" id="overview-pipeline"><span class="anchor-marker">&raquo;</span>Compilation Pipeline</h3>
+  <p>A <code>.akrs</code> file passes through the same toolchain whether it is compiled ahead-of-time or reloaded at runtime:</p>
+  <div class="pipeline">
+    <span class="step">source (.akrs)</span><span class="arrow">&rarr;</span>
+    <span class="step">Lexer</span><span class="arrow">&rarr;</span>
+    <span class="step">Parser</span><span class="arrow">&rarr;</span>
+    <span class="step">AST</span><span class="arrow">&rarr;</span>
+    <span class="step hl">Semantic Checker</span><span class="arrow">&rarr;</span>
+    <span class="step">VM Bytecode</span><span class="arrow">&rarr;</span>
+    <span class="step">Runtime Events</span>
+  </div>
+  <p>The checker is the shared backbone: it runs identically inside a Rust <strong>proc macro</strong> (compile time) and inside the <strong>runtime</strong> (hot reload), so an author always gets the same diagnostics in the editor and in the live game.</p>
+
+  <div class="badges">
+    <span class="badge k">if &middot; else &middot; end &middot; wait</span>
+    <span class="badge k">and &middot; or &middot; not</span>
+    <span class="badge f"># &middot; -&gt; &middot; =&gt; &middot; &lt;=</span>
+    <span class="badge f">? &middot; | &middot; @ &middot; + &middot; $</span>
+  </div>
+</section>
+
+<!-- ===================== 2. PRINCIPLES ===================== -->
+<section class="doc" id="principles">
+  <h2 class="section-title"><span class="num">2</span>Design Principles</h2>
+  <p>The language was shaped by a handful of guiding ideas:</p>
+
+  <div class="principles">
+    <div class="principle">
+      <span class="ico">&#9758;</span>
+      <h4>For non-programmers</h4>
+      <p>Script authors think in scenes and dialogue, not in functions or classes. Syntax stays close to natural language.</p>
+    </div>
+    <div class="principle">
+      <span class="ico">&#8801;</span>
+      <h4>Symbolic, not keyword-heavy</h4>
+      <p>Distinctive glyphs mark structure so blocks are obvious at a glance &mdash; without a Ren'Py-style keyword vocabulary.</p>
+    </div>
+    <div class="principle">
+      <span class="ico">[]</span>
+      <h4>Explicit block delimiters</h4>
+      <p>Blocks open and close with explicit markers (<code>?&hellip;?</code>, <code>if&hellip;end</code>). Indentation is visual only &mdash; never semantic.</p>
+    </div>
+    <div class="principle">
+      <span class="ico">{ }</span>
+      <h4>No embedded languages</h4>
+      <p>There is no inline Python, Ruby, or shell. Everything is statically parseable and statically checkable.</p>
+    </div>
+    <div class="principle">
+      <span class="ico">&#10003;</span>
+      <h4>Compile-time verified</h4>
+      <p>Rust proc macros reject broken scripts at build time: dangling sections, type mismatches, missing resources.</p>
+    </div>
+    <div class="principle">
+      <span class="ico">&#8635;</span>
+      <h4>Reloadable</h4>
+      <p>The same checker runs at runtime, so scripts can be edited and reloaded without restarting the engine.</p>
+    </div>
+  </div>
+
+  <div class="note warn">
+    <span class="tag">Not Ren'Py</span>
+    <p>The following Ren'Py concepts do <strong>not</strong> exist in <code>.akrs</code>: <code>label</code>, <code>jump</code>, <code>call</code>/<code>return</code>, <code>menu</code>, <code>with</code> as a statement keyword, Python blocks, indentation-based blocks, and <code>[variable]</code> interpolation. Their equivalents use symbolic markers and are documented in <a href="#syntax">&sect;4</a>.</p>
+  </div>
+</section>
+
+<!-- ===================== 3. QUICK START ===================== -->
+<section class="doc" id="quickstart">
+  <h2 class="section-title"><span class="num">3</span>Quick Start</h2>
+  <p>A valid <code>.akrs</code> script is simply one or more <strong>sections</strong>. The first section is the entry point of the story. Here is the smallest meaningful script:</p>
+
+  <pre><code class="akrs"># Start
+
+@bg school_entrance with fade
++ Aki enters from left with dissolve
+
+Aki: "Hello! Welcome to the story."
+
+$met_aki = true
+
+? "What do you say?"
+| "It's nice to meet you."
+    Aki (happy): "I'm glad!"
+    -> GoodEnding
+| "Sorry, I'm busy."
+    Aki (sad): "Oh... okay."
+    -> GoodEnding
+?
+
+# GoodEnding
+
+"And so the day began."
+~~</code></pre>
+
+  <p>Reading this top-to-bottom you can already see every major feature: a section header (<code>#</code>), a stage command (<code>@bg</code>), a stage direction (<code>+</code>), dialogue with a pose, a variable assignment (<code>$</code>), a choice block (<code>?&hellip;?</code> with <code>|</code> options), flow navigation (<code>-&gt;</code>), and an explicit story end (<code>~~</code>).</p>
+
+  <div class="note tip">
+    <span class="tag">Tip</span>
+    <p>Indentation in the example above is purely for human readability. The parser ignores it entirely &mdash; you may indent however you like, or not at all.</p>
+  </div>
+</section>
+
+<!-- ===================== 4. SYNTAX REFERENCE ===================== -->
+<section class="doc" id="syntax">
+  <h2 class="section-title"><span class="num">4</span>Syntax Reference</h2>
+  <p>This section documents every construct in the language. Each subsection lists the syntax signature, a description, and an example.</p>
+
+  <!-- 4.1 Sections -->
+  <h3 class="sub" id="sections"><span class="anchor-marker">4.1</span>Sections</h3>
+  <div class="sig"><span class="ph">#</span> SectionName <span class="opt">#</span><span class="opt">   (closing # is optional)</span></div>
+  <p>Sections are the basic organizational unit of a script &mdash; the analogue of a "label" or "scene". A section begins with a line containing a hash mark <code>#</code>, the section name, and an optional closing <code>#</code>. The name is an identifier (letters, digits, underscore).</p>
+  <ul>
+    <li>The <strong>first section</strong> in the file is the story's entry point.</li>
+    <li>Section names must be <strong>unique</strong>; duplicates are a compile-time error.</li>
+    <li>Section names may be referenced before they are defined (forward references are allowed).</li>
+    <li>Every node must live inside a section. Nodes appearing before the first section header are rejected.</li>
+  </ul>
+  <pre><code class="akrs"># Prologue
+-- nodes go here...
+
+# Act1
+-- ...more nodes...</code></pre>
+
+  <!-- 4.2 Dialogue -->
+  <h3 class="sub" id="dialogue"><span class="anchor-marker">4.2</span>Dialogue</h3>
+  <div class="sig">Character<span class="opt"> (pose)</span> : <span class="ph">"text"</span></div>
+  <p>A spoken line. The speaker name (an identifier) is followed by a colon and a quoted string. An optional <strong>pose</strong> may be given in parentheses between the name and the colon &mdash; this is typically mapped by the renderer to a sprite expression or animation state.</p>
+  <pre><code class="akrs">Aki: "Hey! You're here early today."
+Aki (happy): "I was worried you might not come."
+Narrator (serious): "The wind picked up."</code></pre>
+
+  <!-- 4.3 Narration -->
+  <h3 class="sub" id="narration"><span class="anchor-marker">4.3</span>Narration</h3>
+  <div class="sig"><span class="ph">"narration text"</span></div>
+  <p>A standalone quoted string on its own line is narration &mdash; text shown without a speaker name box. This distinguishes it from dialogue (which requires a <code>Name:</code> prefix).</p>
+  <pre><code class="akrs">"Cherry blossoms drift through the afternoon air."
+"They parted ways as the sun set."</code></pre>
+  <div class="note"><span class="tag">Note</span><p>If a quoted string is preceded by <code>Name:</code> it is dialogue; if it appears alone on a line it is narration. The parser decides based on whether an identifier-and-colon prefix is present.</p></div>
+
+  <!-- 4.4 Stage Commands -->
+  <h3 class="sub" id="commands"><span class="anchor-marker">4.4</span>Stage Commands</h3>
+  <div class="sig">@ <span class="ph">command</span> <span class="ph">args&hellip;</span> <span class="opt">with transition</span></div>
+  <p>The <code>@</code> prefix introduces a stage command that affects the scene rather than the characters' speech. The command name is an identifier (e.g. <code>bg</code>, <code>music</code>, <code>sound</code>) followed by zero or more arguments (identifiers or quoted strings). An optional <code>with transition</code> suffix applies a visual/audio transition.</p>
+  <pre><code class="akrs">@bg school_entrance with fade
+@bg cafe with dissolve
+@music gentle_rain
+@sound doorbell
+@bg "evening sky" with fade_white</code></pre>
+  <table>
+    <thead><tr><th>Command</th><th>Purpose</th><th>Typical args</th></tr></thead>
+    <tbody>
+      <tr><td><code>bg</code></td><td>Change the background image</td><td>background name</td></tr>
+      <tr><td><code>music</code></td><td>Start or swap background music</td><td>music file</td></tr>
+      <tr><td><code>sound</code></td><td>Play a one-shot sound effect</td><td>sound effect</td></tr>
+    </tbody>
+  </table>
+  <div class="note warn"><span class="tag">Resource check</span><p>When an assets directory is registered, the <code>bg</code>, <code>music</code>, and <code>sound</code> arguments are checked against known resources at compile time. A missing resource is reported as a warning. See <a href="#checks">&sect;7</a>.</p></div>
+
+  <!-- 4.5 Stage Directions -->
+  <h3 class="sub" id="directions"><span class="anchor-marker">4.5</span>Stage Directions</h3>
+  <div class="sig">+ Character <span class="ph">enters|exits</span> <span class="opt">from|to|at position</span> <span class="opt">with transition</span></div>
+  <p>The <code>+</code> prefix introduces a stage direction that moves a character sprite on or off stage. The character name is followed by a verb (<code>enters</code>/<code>exits</code>), an optional position clause, and an optional transition.</p>
+  <pre><code class="akrs">+ Aki enters from left with dissolve
++ Aki exits to right with fade
++ Aki enters at center
++ Hero enters from 0.25 with slide_right</code></pre>
+  <dl class="refs">
+    <dt>enters &middot; enter</dt><dd>Bring the character onto the stage.</dd>
+    <dt>exits &middot; exit &middot; leaves &middot; leave</dt><dd>Remove the character from the stage.</dd>
+    <dt>from &middot; to &middot; at</dt><dd>Introduces a position. For <code>enters</code>, <code>from</code> or <code>at</code> is conventional; for <code>exits</code>, <code>to</code> is conventional. All three keywords are accepted in either direction.</dd>
+    <dt>with transition</dt><dd>Applies a transition effect to the entrance/exit.</dd>
+  </dl>
+  <p>Positions and transitions are listed in <a href="#transitions">&sect;6</a>.</p>
+
+  <h4>Exit shorthand &mdash; the <code>-</code> prefix</h4>
+  <div class="sig">- Character <span class="opt">exits</span> <span class="opt">with transition</span></div>
+  <p>As a convenience, a character may be removed from the stage using the <code>-</code> prefix instead of writing <code>+ Character exits</code>. The <code>exits</code> verb is optional with <code>-</code> (it is implied). An optional <code>with transition</code> suffix applies a transition effect to the departure. After a character exits, the engine automatically re-lays-out the remaining sprites (see <a href="#pos-layout">&sect;6.3</a>).</p>
+  <pre><code class="akrs">- Aki with fade
+- Aki exits with dissolve
+- Hero</code></pre>
+  <div class="note"><span class="tag">Equivalence</span><p><code>- Aki</code> is equivalent to <code>+ Aki exits</code>. Use whichever reads more naturally in context. The <code>-</code> form is shorter and pairs visually with the <code>+</code> entrance prefix.</p></div>
+
+  <!-- 4.6 Variables -->
+  <h3 class="sub" id="variables"><span class="anchor-marker">4.6</span>Variables</h3>
+  <div class="sig">$ <span class="ph">varName</span> <span class="ph">= | += | -=</span> <span class="ph">expr</span></div>
+  <p>The <code>$</code> prefix introduces a variable operation. Variables hold the story state (affection points, flags, counters). Three operators are supported:</p>
+  <table>
+    <thead><tr><th>Operator</th><th>Meaning</th><th>Example</th></tr></thead>
+    <tbody>
+      <tr><td><code>=</code></td><td>Assign (also declares the variable on first use)</td><td><code>$affection = 5</code></td></tr>
+      <tr><td><code>+=</code></td><td>Add-assign (requires an existing, type-compatible variable)</td><td><code>$affection += 1</code></td></tr>
+      <tr><td><code>-=</code></td><td>Subtract-assign (requires an existing, type-compatible variable)</td><td><code>$health -= 10</code></td></tr>
+    </tbody>
+  </table>
+  <pre><code class="akrs">$met_aki = true
+$affection = 1
+$name = "Aki"
+$pi = 3.14
+$affection += 3
+$health -= 10</code></pre>
+  <div class="note warn"><span class="tag">Compile-time</span><p>Using <code>+=</code> or <code>-=</code> on a variable that was never assigned is an error. The right-hand side type must also be compatible with the variable's inferred type (int and float are mutually compatible; see <a href="#expressions">&sect;5</a>).</p></div>
+
+  <!-- 4.7 Flow Navigation -->
+  <h3 class="sub" id="flow"><span class="anchor-marker">4.7</span>Flow Navigation</h3>
+  <div class="sig">-&gt; <span class="ph">TargetSection</span></div>
+  <p>The flow arrow <code>-&gt;</code> performs a <strong>one-way</strong> transfer to another section. Execution continues at the top of the target section and never returns. Because it is one-way, the visit/call stack is cleared when a flow is taken &mdash; any pending <code>=&gt;</code> return addresses are discarded.</p>
+  <pre><code class="akrs">-> Date
+-> GoodEnding</code></pre>
+  <div class="note"><span class="tag">Not jump</span><p><code>-&gt;</code> replaces Ren'Py's <code>jump</code>. The target section must exist &mdash; this is verified at compile time with "did you mean?" suggestions for typos.</p></div>
+
+  <!-- 4.8 Visit & Return -->
+  <h3 class="sub" id="visit"><span class="anchor-marker">4.8</span>Visit &amp; Return</h3>
+  <div class="sig">=&gt; <span class="ph">TargetSection</span> &nbsp;&hellip;&nbsp; &lt;=</div>
+  <p>The visit arrow <code>=&gt;</code> transfers to another section <strong>while remembering where to come back</strong>. It pushes a return address onto an internal call stack. The return mark <code>&lt;=</code> pops that address and resumes execution immediately after the originating <code>=&gt;</code>.</p>
+  <pre><code class="akrs"># Main
+Aki: "Let me check something."
+=> PhoneCall
+Aki: "Anyway, where were we?"
+
+# PhoneCall
+"Ring ring..."
+Aki: "Hello?"
+&lt;=</code></pre>
+  <div class="note tip"><span class="tag">Tip</span><p>Visits are ideal for shared interludes (a phone call, a flashback) that several sections reuse. Because flow <code>-&gt;</code> clears the call stack, a one-way flow taken <em>inside</em> a visited section will not return &mdash; it abandons the visit, which is usually the desired "go somewhere permanent" behavior.</p></div>
+  <div class="note warn"><span class="tag">Runtime</span><p>Issuing <code>&lt;=</code> with an empty call stack is a runtime error (<em>return without visit</em>). Reaching the end of any section also returns to the caller if the call stack is non-empty; otherwise it ends the story.</p></div>
+
+  <!-- 4.9 Choices -->
+  <h3 class="sub" id="choices"><span class="anchor-marker">4.9</span>Choices</h3>
+  <div class="sig">? <span class="opt">"prompt"</span> <br>
+  | "option" <span class="opt">if expr</span><br>
+  &nbsp;&nbsp;&nbsp;&nbsp;<span class="opt">body&hellip;</span><br>
+  ?
+  </div>
+  <p>A choice block is opened and closed by <code>?</code>. Options are introduced with <code>|</code> followed by a quoted label. Each option may carry an optional <code>if expr</code> guard: when the guard is false at runtime, that option is hidden or disabled. The body of an option is the sequence of nodes that execute when the player picks it, and runs until the next <code>|</code> or the closing <code>?</code>.</p>
+  <pre><code class="akrs">? "What do you say?"
+| "Yes" if $affection > 5
+    Aki: "Great!"
+    -> Ending1
+| "No"
+    Aki: "Oh..."
+    -> Ending2
+?</code></pre>
+  <ul>
+    <li>The prompt string is optional; <code>?</code> may open the block directly.</li>
+    <li>A guard expression must evaluate to a boolean (see <a href="#expressions">&sect;5</a>); a non-boolean guard is a compile-time error.</li>
+    <li>Option bodies can contain any node: dialogue, commands, variables, nested choices, conditionals, flow, etc.</li>
+  </ul>
+  <div class="note"><span class="tag">Not menu</span><p><code>?&hellip;?</code> replaces Ren'Py's <code>menu</code>. The same <code>?</code> glyph opens and closes the block, keeping the syntax symmetrical.</p></div>
+
+  <!-- 4.10 Conditionals -->
+  <h3 class="sub" id="conditionals"><span class="anchor-marker">4.10</span>Conditionals</h3>
+  <div class="sig">if <span class="ph">expr</span><br>
+  &nbsp;&nbsp;&nbsp;&nbsp;<span class="opt">body&hellip;</span><br>
+  <span class="opt">else</span><br>
+  &nbsp;&nbsp;&nbsp;&nbsp;<span class="opt">body&hellip;</span><br>
+  end
+  </div>
+  <p>Conditionals branch on a boolean expression. The <code>if</code> body runs when the expression is truthy; the optional <code>else</code> body runs otherwise. Every <code>if</code> must be closed with an explicit <code>end</code> keyword. There is <strong>no</strong> indentation-based block structure &mdash; the body extends until <code>else</code> or <code>end</code>.</p>
+  <pre><code class="akrs">if $affection > 10
+    Aki: "You're wonderful!"
+else
+    Aki: "Let's be friends."
+end</code></pre>
+  <div class="note warn"><span class="tag">Compile-time</span><p>The condition expression must be boolean. The checker rejects conditions inferred as a non-boolean type (e.g. a bare string). Integers are truthy/falsy at runtime, but comparisons (<code>&gt;</code>, <code>==</code>, &hellip;) produce clean booleans.</p></div>
+
+  <!-- 4.11 Wait -->
+  <h3 class="sub" id="wait"><span class="anchor-marker">4.11</span>Wait</h3>
+  <div class="sig">wait <span class="ph">seconds</span></div>
+  <p>Pauses execution for the given number of seconds. The argument is a number literal (integer or float). The pause is emitted to the renderer as a <code>Wait</code> event.</p>
+  <pre><code class="akrs">wait 2.0
+wait 1
+wait 0.5</code></pre>
+
+  <!-- 4.12 Comments -->
+  <h3 class="sub" id="comments"><span class="anchor-marker">4.12</span>Comments</h3>
+  <div class="sig">-- <span class="opt">comment to end of line</span></div>
+  <p>A double dash <code>--</code> begins a comment that runs to the end of the line. Comments are ignored by the lexer and may appear anywhere whitespace is allowed.</p>
+  <pre><code class="akrs">-- Set the scene
+@bg school_entrance with fade  -- nice entrance
+$affection = 1  -- starting value</code></pre>
+
+  <!-- 4.13 Story End -->
+  <h3 class="sub" id="storyend"><span class="anchor-marker">4.13</span>Story End</h3>
+  <div class="sig">~~</div>
+  <p>The double tilde <code>~~</code> explicitly ends the story, stopping the virtual machine and emitting a <code>StoryEnd</code> event. Reaching the end of the last executed section also ends the story naturally, so <code>~~</code> is most useful when you want to terminate mid-section (for example, right after a final line of dialogue).</p>
+  <pre><code class="akrs">Aki: "Thank you for today."
+Aki (happy): "Let's do this again sometime."
+~~</code></pre>
+  <div class="note"><span class="tag">Implicit end</span><p>If a section simply runs out of nodes, the VM ends the story (or returns to a caller if inside a visit). <code>~~</code> is therefore an explicit, early terminator.</p></div>
+</section>
+
+<!-- ===================== 5. EXPRESSIONS ===================== -->
+<section class="doc" id="expressions">
+  <h2 class="section-title"><span class="num">5</span>Expressions</h2>
+  <p>Expressions appear in variable assignments (<code>$x = expr</code>), choice guards (<code>if expr</code>), and conditional conditions. They are deliberately small and statically typed.</p>
+
+  <h3 class="sub" id="expr-literals"><span class="anchor-marker">5.1</span>Literals &amp; Variables</h3>
+  <table>
+    <thead><tr><th>Kind</th><th>Examples</th><th>Notes</th></tr></thead>
+    <tbody>
+      <tr><td>Integer</td><td><code>42</code> <code>-7</code> <code>0</code></td><td>64-bit signed (<code>i64</code>).</td></tr>
+      <tr><td>Float</td><td><code>3.14</code> <code>0.5</code></td><td>64-bit IEEE-754 (<code>f64</code>). A dot is only a decimal point when followed by a digit.</td></tr>
+      <tr><td>String</td><td><code>"hello"</code> <code>'world'</code></td><td>Double or single quotes. Escapes: <code>\n \t \r \\ \" \'</code>.</td></tr>
+      <tr><td>Boolean</td><td><code>true</code> <code>false</code></td><td>Boolean literals used in conditions and assignments.</td></tr>
+      <tr><td>Variable</td><td><code>$affection</code> <code>$met_aki</code></td><td>Reads a variable's current value.</td></tr>
+      <tr><td>Parenthesized</td><td><code>( $a + 1 )</code></td><td>Grouping to override precedence.</td></tr>
+    </tbody>
+  </table>
+
+  <h3 class="sub" id="expr-operators"><span class="anchor-marker">5.2</span>Operators</h3>
+  <table>
+    <thead><tr><th>Category</th><th>Operators</th><th>Result</th></tr></thead>
+    <tbody>
+      <tr><td>Arithmetic</td><td><code>+ - * /</code></td><td>Numeric; <code>+</code> also concatenates two strings. Int + Float promotes to Float.</td></tr>
+      <tr><td>Comparison</td><td><code>== != &lt; &gt; &lt;= &gt;=</code></td><td>Boolean.</td></tr>
+      <tr><td>Logical</td><td><code>and or not</code></td><td>Boolean. <code>not</code> is a prefix unary operator.</td></tr>
+      <tr><td>Unary</td><td><code>-</code> (negation), <code>not</code></td><td>Negation works on int/float; <code>not</code> returns a boolean.</td></tr>
+    </tbody>
+  </table>
+
+  <h3 class="sub" id="expr-precedence"><span class="anchor-marker">5.3</span>Precedence (lowest &rarr; highest)</h3>
+  <table>
+    <thead><tr><th>Level</th><th>Operators</th><th>Associativity</th></tr></thead>
+    <tbody>
+      <tr><td>1 (lowest)</td><td><code>or</code></td><td>Left</td></tr>
+      <tr><td>2</td><td><code>and</code></td><td>Left</td></tr>
+      <tr><td>3</td><td><code>not</code> (prefix)</td><td>Prefix</td></tr>
+      <tr><td>4</td><td><code>== != &lt; &gt; &lt;= &gt;=</code></td><td>Left</td></tr>
+      <tr><td>5</td><td><code>+ -</code></td><td>Left</td></tr>
+      <tr><td>6</td><td><code>* /</code></td><td>Left</td></tr>
+      <tr><td>7</td><td><code>-</code> (unary negation)</td><td>Prefix</td></tr>
+      <tr><td>8 (highest)</td><td>literals, <code>$var</code>, <code>( expr )</code></td><td>&mdash;</td></tr>
+    </tbody>
+  </table>
+  <pre><code class="akrs">$score = $base + $bonus * 2 - 1
+$eligible = $affection > 5 and not $rival_met
+$label = "Chapter " + $chapter
+$ok = ( $a + $b ) / 2 == 10</code></pre>
+
+  <h3 class="sub" id="expr-types"><span class="anchor-marker">5.4</span>Value &amp; Type System</h3>
+  <p>At runtime, every value is one of five kinds. The checker infers a compile-time type for each expression to catch mismatches early.</p>
+  <table>
+    <thead><tr><th>Runtime value</th><th>Compile type</th><th>Truthiness</th></tr></thead>
+    <tbody>
+      <tr><td><code>Int</code> (i64)</td><td><code>int</code></td><td>non-zero is true</td></tr>
+      <tr><td><code>Float</code> (f64)</td><td><code>float</code></td><td>non-zero is true</td></tr>
+      <tr><td><code>Str</code> (String)</td><td><code>string</code></td><td>non-empty is true</td></tr>
+      <tr><td><code>Bool</code> (bool)</td><td><code>bool</code></td><td>the value itself</td></tr>
+      <tr><td><code>Null</code></td><td>&mdash;</td><td>false</td></tr>
+    </tbody>
+  </table>
+  <p>Int and float are <strong>mutually compatible</strong> for arithmetic and assignment (an <code>int</code> may be used where a <code>float</code> is expected and vice-versa). All other type combinations are checked strictly.</p>
+</section>
+
+<!-- ===================== 6. TRANSITIONS & POSITIONS ===================== -->
+<section class="doc" id="transitions">
+  <h2 class="section-title"><span class="num">6</span>Transitions &amp; Positions</h2>
+
+  <h3 class="sub" id="trans-list"><span class="anchor-marker">6.1</span>Transitions</h3>
+  <p>Transitions apply to stage commands (<code>@bg &hellip; with fade</code>) and stage directions (<code>+ Aki enters &hellip; with dissolve</code>). Each has an engine-defined default duration.</p>
+  <div class="table-wrap">
+  <table>
+    <thead><tr><th>Name</th><th>Default duration</th><th>Description</th></tr></thead>
+    <tbody>
+      <tr><td><code>fade</code></td><td>0.6 s</td><td>General cross-fade.</td></tr>
+      <tr><td><code>fade_black</code></td><td>0.8 s</td><td>Fade through black.</td></tr>
+      <tr><td><code>fade_white</code></td><td>0.8 s</td><td>Fade through white.</td></tr>
+      <tr><td><code>slide_left</code></td><td>0.5 s</td><td>Slide in/out toward the left.</td></tr>
+      <tr><td><code>slide_right</code></td><td>0.5 s</td><td>Slide toward the right.</td></tr>
+      <tr><td><code>slide_up</code></td><td>0.5 s</td><td>Slide upward.</td></tr>
+      <tr><td><code>slide_down</code></td><td>0.5 s</td><td>Slide downward.</td></tr>
+      <tr><td><code>dissolve</code></td><td>0.8 s</td><td>Dissolve between sprites/scenes.</td></tr>
+      <tr><td><code>wipe_left</code></td><td>0.5 s</td><td>Wipe toward the left.</td></tr>
+      <tr><td><code>wipe_right</code></td><td>0.5 s</td><td>Wipe toward the right.</td></tr>
+      <tr><td><code>blur</code></td><td>0.6 s</td><td>Blur transition.</td></tr>
+      <tr><td><code>instant</code> <span class="opt">(alias: <code>cut</code>)</span></td><td>0.0 s</td><td>No animation; immediate change.</td></tr>
+    </tbody>
+  </table>
+  </div>
+  <div class="note warn"><span class="tag">Unknown transition</span><p>Using a name not in this list is a parse-time error that lists the valid transitions.</p></div>
+
+  <h3 class="sub" id="pos-list"><span class="anchor-marker">6.2</span>Positions</h3>
+  <p>Positions place a sprite horizontally on stage. They are given after <code>from</code>, <code>to</code>, or <code>at</code> in a stage direction. The three named positions correspond to the variants of the engine's <code>Position</code> enum.</p>
+  <div class="table-wrap">
+  <table>
+    <thead><tr><th>Name</th><th>Position enum</th><th>x-fraction</th><th>Notes</th></tr></thead>
+    <tbody>
+      <tr><td><code>left</code></td><td><code>Left</code></td><td>0.25</td><td>Stage left.</td></tr>
+      <tr><td><code>center</code> / <code>centre</code></td><td><code>Center</code></td><td>0.5</td><td>Center stage (British spelling accepted).</td></tr>
+      <tr><td><code>right</code></td><td><code>Right</code></td><td>0.75</td><td>Stage right.</td></tr>
+      <tr><td>custom float</td><td>&mdash;</td><td>as given</td><td>A number between <code>0.0</code> and <code>1.0</code>, e.g. <code>0.25</code>.</td></tr>
+    </tbody>
+  </table>
+  </div>
+  <pre><code class="akrs">+ Aki enters from left with dissolve
++ Hero enters at center
++ Rival enters from 0.75 with slide_left</code></pre>
+
+  <h3 class="sub" id="pos-layout"><span class="anchor-marker">6.3</span>Multi-Character Auto-Layout</h3>
+  <p>When multiple character sprites share the stage, the engine automatically computes their horizontal positions so they are evenly distributed and never overlap. The author does not need to specify positions manually for the common cases &mdash; the layout is recalculated every time a character enters or exits.</p>
+  <table>
+    <thead><tr><th>Event</th><th>Resulting layout</th></tr></thead>
+    <tbody>
+      <tr><td>Single character enters</td><td>Centered at <code>0.5</code> (<code>Center</code>).</td></tr>
+      <tr><td>Second character enters</td><td>First moves to <code>0.25</code> (<code>Left</code>), second placed at <code>0.75</code> (<code>Right</code>).</td></tr>
+      <tr><td>A character exits &mdash; 1 remaining</td><td>The remaining sprite is re-centered at <code>0.5</code> (<code>Center</code>).</td></tr>
+      <tr><td>A character exits &mdash; 0 remaining</td><td>The stage is cleared; no sprites are displayed.</td></tr>
+    </tbody>
+  </table>
+  <p>The <code>Position</code> enum used internally by the engine defines exactly three anchor values:</p>
+  <div class="table-wrap">
+  <table>
+    <thead><tr><th>Variant</th><th>x-fraction</th></tr></thead>
+    <tbody>
+      <tr><td><code>Left</code></td><td>0.25</td></tr>
+      <tr><td><code>Center</code></td><td>0.5</td></tr>
+      <tr><td><code>Right</code></td><td>0.75</td></tr>
+    </tbody>
+  </table>
+  </div>
+  <pre><code class="akrs">+ Aki enters with dissolve        -- Aki alone: centered (0.5)
++ Hero enters with dissolve       -- Aki -> left (0.25), Hero -> right (0.75)
+- Hero exits with fade            -- Aki re-centered (0.5)
+- Aki exits with fade             -- stage cleared</code></pre>
+  <div class="note"><span class="tag">Auto-layout</span><p>An explicit position clause (<code>at center</code>, <code>from 0.25</code>) overrides the auto-layout for that entrance only. When a character later exits (via <code>-</code> or <code>+ &hellip; exits</code>), the remaining sprites are re-laid-out according to the rules above.</p></div>
+</section>
+
+<!-- ===================== 7. COMPILE-TIME CHECKS ===================== -->
+<section class="doc" id="checks">
+  <h2 class="section-title"><span class="num">7</span>Compile-Time Checks</h2>
+  <p>The semantic checker runs inside a Rust proc macro at build time (and again at runtime during hot reload, using the identical code). It performs a two-pass analysis: first collecting all section names, then walking every node to validate references, types, and resources.</p>
+
+  <h3 class="sub" id="check-list"><span class="anchor-marker">7.1</span>What is checked</h3>
+  <ol>
+    <li><strong>Section reference validity.</strong> Every <code>-&gt;</code> and <code>=&gt;</code> target must name a section that exists. A missing target is an error, accompanied by a "did you mean?" suggestion computed via edit distance.</li>
+    <li><strong>Duplicate section names.</strong> Each section name must be unique. A duplicate reports the second definition as an error and notes where the first was defined.</li>
+    <li><strong>Entry section.</strong> The script must define at least one section; an empty program produces a warning.</li>
+    <li><strong>Variable type matching.</strong> <code>+=</code> and <code>-=</code> require a previously declared variable whose type is compatible with the right-hand side (int/float compatible; otherwise strict equality).</li>
+    <li><strong>Undefined variable detection.</strong> Reading a variable (in <code>+=</code>/<code>=</code>-compound, or inside any expression) that was never assigned is an error.</li>
+    <li><strong>Resource reference integrity.</strong> When an assets directory is registered, the first argument of <code>@bg</code>, <code>@music</code>, and <code>@sound</code> is checked against known resources. A miss is a warning with a hint to add the asset.</li>
+    <li><strong>Condition types.</strong> <code>if</code> conditions and choice <code>if expr</code> guards must be boolean; a non-boolean inferred type is an error.</li>
+    <li><strong>Expression type inference.</strong> Arithmetic, comparison, and logical operators are type-checked. Incompatible operands (e.g. adding an int to a string) are reported.</li>
+  </ol>
+
+  <h3 class="sub" id="check-examples"><span class="anchor-marker">7.2</span>Examples of caught problems</h3>
+  <pre><code class="akrs">-- 1) Dangling flow target
+-> Datte        -- error: undefined section 'Datte'
+                 -- hint: did you mean 'Date'?
+
+-- 2) Compound-assign on an undeclared variable
+$score += 5     -- error: undefined variable 'score'
+                 -- hint: declare with $score = ... first
+
+-- 3) Type mismatch on compound-assign
+$name = "Aki"
+$name += 1      -- error: type mismatch: cannot apply += to name (string) and int
+
+-- 4) Non-boolean condition
+if "hello"      -- error: if condition must be bool, found string
+    Aki: "..."
+end</code></pre>
+
+  <div class="note tip"><span class="tag">Severity</span><p>Diagnostics carry one of three severities: <strong>Error</strong> (blocks compilation), <strong>Warning</strong> (e.g. a missing resource), and <strong>Note</strong> (supplementary context, such as the first definition of a duplicated section).</p></div>
+</section>
+
+<!-- ===================== 8. ERROR REPORTING ===================== -->
+<section class="doc" id="errors">
+  <h2 class="section-title"><span class="num">8</span>Error Reporting</h2>
+  <p>Diagnostics are produced in the style of the Rust compiler (<code>rustc</code>) using <code>codespan-reporting</code>. Each message points to a precise <code>line:column</code> range in the <code>.akrs</code> source, renders the offending line with a caret underline, and may include a <code>hint:</code> note.</p>
+
+  <div class="errmock"><span class="e">error</span>: undefined section: 'Datte'
+  <span class="n">--&gt;</span> story.akrs:12:5
+   <span class="n">|</span>
+12 <span class="n">|</span> <span class="src">-&gt; Datte</span>
+   <span class="n">|</span>     <span class="caret">^^^^^</span>
+   <span class="n">|</span>
+   <span class="n">= hint:</span> did you mean 'Date'?</div>
+
+  <h3 class="sub" id="err-suggestions"><span class="anchor-marker">8.1</span>"Did you mean?" suggestions</h3>
+  <p>For section-reference errors, the checker compares the misspelled target against all known section names using Levenshtein edit distance. If a candidate is within a small distance (3 edits), it is offered as a suggestion. Otherwise the hint advises defining the section with <code># Name</code>.</p>
+
+  <h3 class="sub" id="err-recovery"><span class="anchor-marker">8.2</span>Error recovery</h3>
+  <p>The parser synchronizes after an error so that multiple problems can be reported in a single pass. It recovers at section boundaries and at block-closing markers (<code>?</code>, <code>end</code>), then continues parsing the rest of the script.</p>
+
+  <h3 class="sub" id="err-stages"><span class="anchor-marker">8.3</span>Diagnostic stages</h3>
+  <table>
+    <thead><tr><th>Stage</th><th>When</th><th>Typical messages</th></tr></thead>
+    <tbody>
+      <tr><td>Lexer</td><td>Tokenizing</td><td>Unexpected character, unterminated string, stray <code>~</code>.</td></tr>
+      <tr><td>Parser</td><td>Building the AST</td><td>Unexpected token, missing <code>:</code>/<code>end</code>/<code>?</code>, unknown transition/position.</td></tr>
+      <tr><td>Checker</td><td>Semantic analysis</td><td>Undefined section/variable, type mismatch, non-boolean condition, missing resource.</td></tr>
+    </tbody>
+  </table>
+</section>
+
+<!-- ===================== 9. HOT RELOAD ===================== -->
+<section class="doc" id="hotreload">
+  <h2 class="section-title"><span class="num">9</span>Hot Reload</h2>
+  <p><code>.akrs</code> scripts can be modified and reloaded at runtime without restarting the engine. This works because the AST and the checker are <strong>serializable and shared</strong> between the compile-time proc macro and the runtime.</p>
+
+  <ul>
+    <li><strong>Same checker, two contexts.</strong> The semantic checker is plain Rust (no proc-macro types), so it runs identically when embedded at build time and when invoked live. An author sees consistent diagnostics in both places.</li>
+    <li><strong>Re-validation on reload.</strong> When a script changes, it is re-lexed, re-parsed, and re-checked before being swapped in. Reload is refused if errors are present, protecting the running game from a broken script.</li>
+    <li><strong>Serializable VM state.</strong> The virtual machine's state &mdash; current section, instruction pointer, variables, and the visit call stack &mdash; is serializable. This enables save/load and lets a reloaded script resume from a compatible position.</li>
+    <li><strong>Event-driven execution.</strong> The VM emits discrete events (dialogue, narration, command, direction, choice, wait, story-end) that the renderer consumes, so a content swap does not require engine restart.</li>
+  </ul>
+
+  <div class="note tip"><span class="tag">Save / Load</span><p>Because VM state is serializable, a game can snapshot progress at any point and restore it later &mdash; including across a script reload, as long as the section/instruction structure remains compatible.</p></div>
+</section>
+
+<!-- ===================== 10. COMPLETE EXAMPLE ===================== -->
+<section class="doc" id="example">
+  <h2 class="section-title"><span class="num">10</span>Complete Example</h2>
+  <p>The following script exercises nearly every feature of the language: sections, dialogue with poses, narration, stage commands and directions, variables, a choice with a guarded option, conditionals, flow navigation, and explicit story ends. It is a complete, runnable story.</p>
+
+  <pre><code class="akrs"># Prologue
+
+-- Set the scene
+@bg school_entrance with fade
++ Aki enters from left with dissolve
+
+"Cherry blossoms drift through the afternoon air."
+
+Aki: "Hey! You're here early today."
+Aki (happy): "I was worried you might not come."
+
+$met_aki = true
+$affection = 1
+
+? "How do you respond?"
+| "I couldn't wait to see you."
+    Aki (surprised): "R-really?"
+    $affection += 3
+    -> Date
+| "I had nothing better to do."
+    Aki (sad): "Oh... I see."
+    $affection -= 1
+    -> Walk
+?
+
+# Date
+
+@bg cafe with dissolve
++ Aki enters at center
+
+Aki: "This cafe has the best cake."
+Aki (happy): "I'm glad we came here together."
+
+if $affection > 3
+    Aki: "I... I really like spending time with you."
+    -> GoodEnding
+else
+    Aki: "Let's just enjoy the cake."
+    -> NeutralEnding
+end
+
+# Walk
+
+@bg park with fade
+
+Aki: "The park is nice this time of year."
+
+if $affection > 0
+    -> GoodEnding
+else
+    -> NeutralEnding
+end
+
+# GoodEnding
+
+@bg sunset with fade_white
+
+"And so, under the painted sky, a new chapter began."
+
+Aki: "Thank you for today."
+Aki (happy): "Let's do this again sometime."
+
+~~
+
+# NeutralEnding
+
+@bg evening with fade
+
+"They parted ways as the sun set."
+
+Aki: "See you around, I guess."
+
+~~</code></pre>
+
+  <div class="note"><span class="tag">Trace</span><p>Starting in <code>Prologue</code>, the player's choice routes to either <code>Date</code> or <code>Walk</code>. Both evaluate <code>$affection</code> with an <code>if</code>/<code>else</code> and flow to <code>GoodEnding</code> or <code>NeutralEnding</code>, each terminated explicitly with <code>~~</code>. Notice that <code>affection</code> starts at <code>1</code> and is adjusted by the choice &mdash; so the guarded branch through <code>Date</code> can reach the good ending only if the affectionate option was picked.</p></div>
+</section>
+
+<!-- ===================== 11. GRAMMAR REFERENCE ===================== -->
+<section class="doc" id="grammar">
+  <h2 class="section-title"><span class="num">11</span>Grammar Reference</h2>
+  <p>The complete context-free grammar of <code>.akrs</code>, expressed in extended Backus&ndash;Naur form. Terminals are quoted; <code>{ }</code> denotes zero-or-more, <code>[ ]</code> denotes optional, and <code>|</code> denotes alternation. This grammar mirrors the recursive-descent parser exactly.</p>
+
+  <pre><code class="akrs">program        ::= section { section }
+
+section        ::= "#" IDENT [ "#" ] { node }
+
+node           ::= dialogue
+                 | narration
+                 | command
+                 | direction
+                 | varop
+                 | choice
+                 | conditional
+                 | flow
+                 | visit
+                 | return
+                 | wait
+                 | storyend
+
+dialogue       ::= IDENT [ "(" IDENT ")" ] ":" STRING
+narration      ::= STRING
+
+command        ::= "@" IDENT { arg } [ "with" IDENT ]
+arg            ::= IDENT | STRING
+
+direction      ::= "+" IDENT dirverb [ posclause ] [ "with" IDENT ]
+                 | "-" IDENT [ dirverb ] [ "with" IDENT ]
+dirverb        ::= "enters" | "enter" | "exits" | "exit" | "leaves" | "leave"
+posclause      ::= ("from" | "to" | "at") position
+position       ::= "left" | "center" | "centre" | "right" | FLOAT
+
+varop          ::= "$" IDENT assignop expr
+assignop       ::= "=" | "+=" | "-="
+
+choice         ::= "?" [ STRING ] { option } "?"
+option         ::= "|" STRING [ "if" expr ] { node }
+
+conditional    ::= "if" expr { node } [ "else" { node } ] "end"
+
+flow           ::= "-&gt;" IDENT
+visit          ::= "=&gt;" IDENT
+return         ::= "&lt;="
+wait           ::= "wait" ( INTEGER | FLOAT )
+storyend       ::= "~~"
+
+/* ---- Expressions (precedence climbing) ---- */
+
+expr           ::= or_expr
+or_expr        ::= and_expr { "or" and_expr }
+and_expr       ::= not_expr { "and" not_expr }
+not_expr       ::= "not" not_expr | comparison
+comparison     ::= additive { compop additive }
+compop         ::= "==" | "!=" | "&lt;" | "&gt;" | "&lt;=" | "&gt;="
+additive       ::= multiplicative { ("+" | "-") multiplicative }
+multiplicative ::= unary { ("*" | "/") unary }
+unary          ::= "-" unary | primary
+primary        ::= INTEGER
+                 | FLOAT
+                 | STRING
+                 | "true"
+                 | "false"
+                 | "$" IDENT
+                 | "(" expr ")"
+
+/* ---- Lexical ---- */
+
+IDENT          ::= [A-Za-z_] [A-Za-z0-9_]*
+INTEGER        ::= [0-9]+
+FLOAT          ::= [0-9]+ "." [0-9]+
+STRING         ::= '"' ... '"' | "'" ... "'"
+COMMENT        ::= "--" [^\n]*</code></pre>
+
+  <div class="note"><span class="tag">Indentation</span><p>Whitespace and indentation are not part of this grammar. Newlines separate statements but carry no nesting meaning &mdash; blocks are delimited solely by their explicit markers.</p></div>
+</section>
+
+</main>
+</div>
+
+<footer class="foot">
+  <p><strong>Akizuki*Rustgal</strong> &mdash; <code>.akrs</code> Script Language Specification, version 1.0. Self-contained reference document. Generated for the engine's <code>akrs-core</code> toolkit (lexer, parser, AST, checker, VM, diagnostics).</p>
+</footer>
+
+<script>
+/* =====================================================================
+   .akrs syntax highlighter — self-contained, CSS-driven.
+   Reads textContent of every <code class="akrs">, escapes HTML, wraps
+   tokens in <span> classes consumed by the stylesheet above.
+   ===================================================================== */
+(function () {
+  "use strict";
+
+  function escapeHtml(s) {
+    return s
+      .replace(/&/g, "&amp;")
+      .replace(/</g, "&lt;")
+      .replace(/>/g, "&gt;");
+  }
+
+  var KEYWORDS = { if:1, else:1, end:1, wait:1, and:1, or:1, not:1 };
+  var DIRKW    = { enters:1, enter:1, exits:1, exit:1, leaves:1, leave:1,
+                   from:1, to:1, at:1, with:1 };
+  var BOOLS    = { true:1, false:1 };
+  var OPS      = "=<>!+-*/";
+
+  function isIdentStart(c) { return /[A-Za-z_]/.test(c); }
+  function isIdentPart(c)  { return /[A-Za-z0-9_]/.test(c); }
+  function isDigit(c)      { return /[0-9]/.test(c); }
+
+  /* True if position i is at the start of a line (only whitespace since
+     the previous newline). Used to tell stage-direction "+" / "-" apart
+     from arithmetic operators, and to detect flow arrows -> => <= that
+     begin a statement. */
+  function atLineStart(code, i) {
+    var k = i - 1;
+    while (k >= 0) {
+      var ch = code[k];
+      if (ch === "\n") return true;
+      if (ch !== " " && ch !== "\t" && ch !== "\r") return false;
+      k--;
+    }
+    return true;
+  }
+
+  function highlight(code) {
+    var out = "";
+    var i = 0, n = code.length;
+
+    while (i < n) {
+      var c = code[i];
+
+      /* Comment: -- to end of line */
+      if (c === "-" && code[i + 1] === "-") {
+        var j = i;
+        while (j < n && code[j] !== "\n") j++;
+        out += '<span class="c">' + escapeHtml(code.slice(i, j)) + "</span>";
+        i = j;
+        continue;
+      }
+
+      /* Section mark: # */
+      if (c === "#") {
+        out += '<span class="s">#</span>'; i++; continue;
+      }
+
+      /* Flow arrows at line start: -> => <=  and story end: ~~ */
+      if (c === "-" && code[i + 1] === ">" && atLineStart(code, i)) {
+        out += '<span class="f">-&gt;</span>'; i += 2; continue;
+      }
+      if (c === "=" && code[i + 1] === ">" && atLineStart(code, i)) {
+        out += '<span class="f">=&gt;</span>'; i += 2; continue;
+      }
+      if (c === "<" && code[i + 1] === "=" && atLineStart(code, i)) {
+        out += '<span class="f">&lt;=</span>'; i += 2; continue;
+      }
+      if (c === "~" && code[i + 1] === "~") {
+        out += '<span class="f">~~</span>'; i += 2; continue;
+      }
+
+      /* Strings (double or single quoted, with escapes) */
+      if (c === '"' || c === "'") {
+        var q = c, j = i + 1;
+        while (j < n && code[j] !== q) {
+          if (code[j] === "\\" ) j++;
+          if (code[j] === "\n") break;
+          j++;
+        }
+        if (j < n && code[j] === q) j++; /* include closing quote */
+        out += '<span class="st">' + escapeHtml(code.slice(i, j)) + "</span>";
+        i = j;
+        continue;
+      }
+
+      /* Variable: $name */
+      if (c === "$") {
+        var j = i + 1;
+        while (j < n && isIdentPart(code[j])) j++;
+        out += '<span class="v">' + escapeHtml(code.slice(i, j)) + "</span>";
+        i = j;
+        continue;
+      }
+
+      /* Command / direction prefix */
+      if (c === "@") { out += '<span class="cp">@</span>'; i++; continue; }
+      if (c === "+" && atLineStart(code, i)) {
+        /* Leading + is a stage-direction prefix; arithmetic + is an operator */
+        out += '<span class="cp">+</span>'; i++; continue;
+      }
+      if (c === "-" && atLineStart(code, i)) {
+        /* Leading - is an exit-direction prefix; arithmetic - is an operator */
+        out += '<span class="cp">-</span>'; i++; continue;
+      }
+
+      /* Numbers */
+      if (isDigit(c)) {
+        var j = i;
+        while (j < n && (isDigit(code[j]) || code[j] === ".")) j++;
+        out += '<span class="nm">' + escapeHtml(code.slice(i, j)) + "</span>";
+        i = j;
+        continue;
+      }
+
+      /* Identifiers / keywords */
+      if (isIdentStart(c)) {
+        var j = i;
+        while (j < n && isIdentPart(code[j])) j++;
+        var word = code.slice(i, j);
+        if (KEYWORDS[word])      out += '<span class="k">'  + escapeHtml(word) + "</span>";
+        else if (DIRKW[word])    out += '<span class="dk">' + escapeHtml(word) + "</span>";
+        else if (BOOLS[word])    out += '<span class="b">'  + escapeHtml(word) + "</span>";
+        else                     out += '<span class="id">' + escapeHtml(word) + "</span>";
+        i = j;
+        continue;
+      }
+
+      /* Operators (runs of operator chars) */
+      if (OPS.indexOf(c) !== -1) {
+        var j = i;
+        while (j < n && OPS.indexOf(code[j]) !== -1) j++;
+        out += '<span class="op">' + escapeHtml(code.slice(i, j)) + "</span>";
+        i = j;
+        continue;
+      }
+
+      /* Block / punctuation markers */
+      if (c === "?") { out += '<span class="q">?</span>';  i++; continue; }
+      if (c === "|") { out += '<span class="pp">|</span>'; i++; continue; }
+      if (c === ":") { out += '<span class="pn">:</span>'; i++; continue; }
+      if (c === "(" || c === ")") { out += '<span class="pd">' + escapeHtml(c) + "</span>"; i++; continue; }
+      if (c === ",") { out += '<span class="pd">,</span>'; i++; continue; }
+
+      /* Default: pass through (escaped) */
+      out += escapeHtml(c);
+      i++;
+    }
+    return out;
+  }
+
+  function run() {
+    var blocks = document.querySelectorAll("code.akrs");
+    for (var k = 0; k < blocks.length; k++) {
+      var el = blocks[k];
+      if (el.getAttribute("data-hl")) continue;
+      el.setAttribute("data-hl", "1");
+      var src = el.textContent.replace(/\u00a0/g, " ");
+      el.innerHTML = highlight(src);
+    }
+  }
+
+  /* TOC active-link tracking */
+  function setupToc() {
+    var links = document.querySelectorAll("nav.toc a");
+    var map = {};
+    for (var i = 0; i < links.length; i++) {
+      var id = links[i].getAttribute("href").slice(1);
+      var tgt = document.getElementById(id);
+      if (tgt) map[id] = { link: links[i], el: tgt };
+    }
+    var ids = Object.keys(map);
+
+    function onScroll() {
+      var pos = window.scrollY + 120;
+      var current = ids[0];
+      for (var i = 0; i < ids.length; i++) {
+        if (map[ids[i]].el.offsetTop <= pos) current = ids[i];
+      }
+      for (var j = 0; j < ids.length; j++) {
+        map[ids[j]].link.classList.toggle("active", ids[j] === current);
+      }
+    }
+    window.addEventListener("scroll", onScroll, { passive: true });
+    onScroll();
+  }
+
+  if (document.readyState === "loading") {
+    document.addEventListener("DOMContentLoaded", function () { run(); setupToc(); });
+  } else {
+    run(); setupToc();
+  }
+})();
+</script>
+
+</body>
+</html>

@@ -1,0 +1,8 @@
+# Start
+
+"Hello from compile-time validated script!"
+
+Aki: "This script was checked at compile time."
+Aki (happy): "If you see this, the proc macro worked!"
+
+~~

@@ -1,0 +1,88 @@
+//! Game settings: text speed, audio volume, display options.
+//!
+//! Serializable for persistence between sessions.
+
+use serde::{Deserialize, Serialize};
+use std::path::Path;
+
+/// User-configurable game settings.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Settings {
+    /// Characters displayed per second (0 = instant, 999 = very fast).
+    pub text_speed: f32,
+    /// Background music volume (0.0 - 1.0).
+    pub bgm_volume: f32,
+    /// Sound effect volume (0.0 - 1.0).
+    pub sfx_volume: f32,
+    /// Voice volume (0.0 - 1.0).
+    pub voice_volume: f32,
+    /// Whether to skip already-read text.
+    pub skip_read_text: bool,
+    /// Fullscreen mode.
+    pub fullscreen: bool,
+    /// Window resolution.
+    pub resolution: (u32, u32),
+    /// Whether to auto-recover from crash-recovery autosaves on startup.
+    /// When true and the game was not exited normally, the next launch will
+    /// prompt to resume. When false, autosaves are ignored on startup.
+    #[serde(default = "default_auto_recovery")]
+    pub auto_recovery: bool,
+}
+
+fn default_auto_recovery() -> bool {
+    true
+}
+
+impl Default for Settings {
+    fn default() -> Self {
+        Self {
+            text_speed: 30.0,
+            bgm_volume: 0.8,
+            sfx_volume: 1.0,
+            voice_volume: 1.0,
+            skip_read_text: false,
+            fullscreen: false,
+            resolution: (1280, 720),
+            auto_recovery: true,
+        }
+    }
+}
+
+impl Settings {
+    /// Load settings from a JSON file. Returns default if file doesn't exist.
+    pub fn load(path: &Path) -> Self {
+        match std::fs::read_to_string(path) {
+            Ok(content) => serde_json::from_str(&content).unwrap_or_default(),
+            Err(_) => Self::default(),
+        }
+    }
+
+    /// Save settings to a JSON file.
+    pub fn save(&self, path: &Path) -> Result<(), String> {
+        let content = serde_json::to_string_pretty(self)
+            .map_err(|e| format!("failed to serialize settings: {}", e))?;
+        std::fs::write(path, content)
+            .map_err(|e| format!("failed to write settings file: {}", e))?;
+        Ok(())
+    }
+
+    /// Check if text display is instant.
+    pub fn is_instant_text(&self) -> bool {
+        self.text_speed <= 0.0 || self.text_speed >= 999.0
+    }
+
+    /// Return the standard resolution presets offered in the settings UI.
+    pub fn resolution_presets() -> &'static [(u32, u32)] {
+        &[
+            (1920, 1080),
+            (1600, 900),
+            (1280, 720),
+            (1024, 768),
+        ]
+    }
+
+    /// The default file path for persistent settings (`saves/settings.json`).
+    pub fn default_path() -> std::path::PathBuf {
+        std::path::PathBuf::from("saves").join("settings.json")
+    }
+}

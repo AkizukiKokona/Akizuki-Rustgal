@@ -1,0 +1,50 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/akrs-core",
+    "crates/akrs-macros",
+    "crates/akrs-runtime",
+    "crates/akrs-render",
+    "crates/akrs-editor",
+    "crates/akrs-pack",
+    "crates/akrs-cli",
+    "crates/akrs-game",
+]
+
+[workspace.package]
+version = "1.0.0"
+edition = "2021"
+license = "MIT"
+authors = ["Akizuki*Rustgal Team"]
+description = "A visual novel engine built in Rust with compile-time DSL checking"
+
+[workspace.dependencies]
+akrs-core = { path = "crates/akrs-core" }
+akrs-macros = { path = "crates/akrs-macros" }
+akrs-runtime = { path = "crates/akrs-runtime" }
+akrs-render = { path = "crates/akrs-render" }
+akrs-pack = { path = "crates/akrs-pack" }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+codespan-reporting = "0.12"
+notify = "6"
+notify-debouncer-mini = "0.4"
+syn = { version = "2", features = ["full", "extra-traits"] }
+quote = "1"
+proc-macro2 = { version = "1", features = ["span-locations"] }
+proc-macro-error2 = "2"
+macroquad = "0.3"
+# `default-features = false` drops eframe's `accesskit` feature, which on Linux
+# would otherwise pull in the `atspi`/`zbus` stack (incompatible with the
+# pinned Rust 1.75 toolchain). We only need `glow` (rendering) + `default_fonts`.
+eframe = { version = "0.21", default-features = false, features = ["glow", "default_fonts"] }
+egui = "0.21"
+
+[patch.crates-io]
+macroquad = { path = "patches/macroquad" }
+
+[profile.release]
+opt-level = 3
+lto = true
+codegen-units = 1
+strip = true

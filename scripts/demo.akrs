@@ -1,0 +1,108 @@
+-- ============================================================
+-- Akizuki*Rustgal Demo Script
+-- Showcases all .akrs language features
+-- ============================================================
+
+# Prologue
+
+-- Set the scene with a background transition
+@bg school_entrance with fade
+@music spring_breeze
+
+-- Character enters with dissolve transition
++ Aki enters from left with dissolve
+
+-- Narration (just a quoted string)
+"Cherry blossoms drift through the afternoon air."
+
+-- Dialogue with speaker name
+Aki: "Hey! You're here early today."
+
+-- Dialogue with pose (in parentheses)
+Aki (happy): "I was worried you might not come."
+
+-- Set variables
+$met_aki = true
+$affection = 1
+
+-- Choices (? opens, ? closes, | separates options)
+? "How do you respond?"
+| "I couldn't wait to see you."
+    Aki (surprised): "R-really?"
+    $affection += 3
+    -> Date
+| "I had nothing better to do."
+    Aki (sad): "Oh... I see."
+    $affection -= 1
+    -> Walk
+?
+
+# Date
+
+-- Background change with dissolve
+@bg cafe with dissolve
++ Aki enters at center
+
+Aki: "This cafe has the best cake."
+Aki (happy): "I'm glad we came here together."
+
+-- Conditional with if/else/end
+if $affection > 3
+    Aki: "I... I really like spending time with you."
+    -> GoodEnding
+else
+    Aki: "Let's just enjoy the cake."
+    -> NeutralEnding
+end
+
+# Walk
+
+@bg park with fade
+
+Aki: "The park is nice this time of year."
+
+-- Visit a subsection, then return
+=> ParkDialogue
+
+-- After returning from visit
+if $affection > 0
+    -> GoodEnding
+else
+    -> NeutralEnding
+end
+
+# ParkDialogue
+
+-- This section is visited, not flowed to
+-- It will return to the caller when done
+Aki (thinking): "I wonder if today will be special."
+Aki: "Hey, do you come here often?"
+Aki (happy): "Maybe we could make this our spot."
+
+$affection += 1
+
+-- Return to caller (<=)
+<=
+
+# GoodEnding
+
+@bg sunset with fade_white
+@music gentle_finale
+
+"And so, under the painted sky, a new chapter began."
+
+Aki: "Thank you for today."
+Aki (happy): "Let's do this again sometime."
+
+-- End the story explicitly
+~~
+
+# NeutralEnding
+
+@bg evening with fade
+
+"They parted ways as the sun set."
+
+Aki: "See you around, I guess."
+
+~~
