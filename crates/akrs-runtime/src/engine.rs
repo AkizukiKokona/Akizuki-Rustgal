@@ -308,18 +308,18 @@ impl Engine {
 
         // Update typewriter
         if self.phase == EnginePhase::Running {
-            if let Some(dialogue) = &mut self.scene.dialogue {
-                if !dialogue.complete {
-                    let displayed = self.typewriter.update(dt);
-                    let text_len = dialogue.full_text.chars().count();
-                    if displayed >= text_len {
-                        dialogue.displayed_chars = text_len;
-                        dialogue.complete = true;
-                        self.typewriter.complete = true;
-                        events.push(EngineEvent::TextComplete);
-                    } else {
-                        dialogue.displayed_chars = displayed;
-                    }
+            if let Some(dialogue) = &mut self.scene.dialogue
+                && !dialogue.complete
+            {
+                let displayed = self.typewriter.update(dt);
+                let text_len = dialogue.full_text.chars().count();
+                if displayed >= text_len {
+                    dialogue.displayed_chars = text_len;
+                    dialogue.complete = true;
+                    self.typewriter.complete = true;
+                    events.push(EngineEvent::TextComplete);
+                } else {
+                    dialogue.displayed_chars = displayed;
                 }
             }
         }
@@ -335,12 +335,12 @@ impl Engine {
 
         // Check for hot reload
         #[cfg(feature = "hot-reload")]
-        if let Some(reloader) = &self.hot_reloader {
-            if let Some(new_source) = reloader.check_for_changes() {
-                match self.reload_script_internal(&new_source) {
-                    Ok(()) => events.push(EngineEvent::ScriptReloaded),
-                    Err(errs) => events.push(EngineEvent::ScriptReloadFailed { errors: errs }),
-                }
+        if let Some(reloader) = &self.hot_reloader
+            && let Some(new_source) = reloader.check_for_changes()
+        {
+            match self.reload_script_internal(&new_source) {
+                Ok(()) => events.push(EngineEvent::ScriptReloaded),
+                Err(errs) => events.push(EngineEvent::ScriptReloadFailed { errors: errs }),
             }
         }
 
@@ -362,14 +362,14 @@ impl Engine {
         }
 
         // If typewriter is not complete, complete it
-        if let Some(dialogue) = &mut self.scene.dialogue {
-            if !dialogue.complete {
-                dialogue.displayed_chars = dialogue.full_text.chars().count();
-                dialogue.complete = true;
-                self.typewriter.finish();
-                events.push(EngineEvent::TextComplete);
-                return events;
-            }
+        if let Some(dialogue) = &mut self.scene.dialogue
+            && !dialogue.complete
+        {
+            dialogue.displayed_chars = dialogue.full_text.chars().count();
+            dialogue.complete = true;
+            self.typewriter.finish();
+            events.push(EngineEvent::TextComplete);
+            return events;
         }
 
         // If transition is active, ignore advance
@@ -829,10 +829,9 @@ impl Engine {
 
     /// Navigate choice selection (for keyboard input).
     pub fn select_choice(&mut self, direction: i32) {
-        if let Some(choices) = &mut self.scene.choices {
-            if choices.options.is_empty() {
-                return;
-            }
+        if let Some(choices) = &mut self.scene.choices
+            && !choices.options.is_empty()
+        {
             let count = choices.options.len() as i32;
             choices.selected = ((choices.selected as i32 + direction + count) % count) as usize;
         }

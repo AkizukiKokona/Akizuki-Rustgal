@@ -143,7 +143,7 @@ impl EditorApp {
                 .filter_map(|e| e.ok())
                 .filter_map(|e| {
                     let p = e.path();
-                    if p.extension().map_or(false, |ext| ext == "akrs") {
+                    if p.extension().is_some_and(|ext| ext == "akrs") {
                         p.file_name().map(|n| n.to_string_lossy().into_owned())
                     } else {
                         None
@@ -388,7 +388,7 @@ impl eframe::App for EditorApp {
                 .scene()
                 .dialogue
                 .as_ref()
-                .map_or(false, |d| !d.complete);
+                .is_some_and(|d| !d.complete);
             if animating {
                 ctx.request_repaint();
             }
@@ -476,7 +476,7 @@ impl eframe::App for EditorApp {
                             .current_file
                             .as_ref()
                             .and_then(|p| p.file_name())
-                            .map_or(false, |n| n == name.as_str());
+                            .is_some_and(|n| n == name.as_str());
                         if ui.selectable_label(selected, name.as_str()).clicked() {
                             self.open_file(name);
                         }

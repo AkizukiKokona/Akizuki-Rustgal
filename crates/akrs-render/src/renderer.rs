@@ -1357,11 +1357,12 @@ fn handle_settings_interaction(
     let released = is_mouse_button_released(MouseButton::Left);
 
     // Continue dragging an already-grabbed slider while the button is held.
-    if let Some(i) = *dragging_slider {
-        if down && i < 3 {
-            let track = layout.slider_tracks[i];
-            update_slider_value(engine, i, mx, track);
-        }
+    if let Some(i) = *dragging_slider
+        && down
+        && i < 3
+    {
+        let track = layout.slider_tracks[i];
+        update_slider_value(engine, i, mx, track);
     }
 
     // Release ends any drag.
