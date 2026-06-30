@@ -269,6 +269,96 @@ enum UiMode {
     AutoSavePrompt,
 }
 
+/// Actions deferred to the swap point of a UI transition.
+#[derive(Clone, Copy, Debug)]
+enum PendingUiAction {
+    None,
+    StartGame,
+    SaveSlot(usize),
+    LoadSlot(usize),
+    ContinueAutosave,
+    DiscardAutosave,
+    BackToTitle,
+    Quit,
+}
+
+/// Phase of a UI transition animation.
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum UiTransPhase {
+    Out,  // Fading to black
+    Hold, // Black screen pause
+    In,   // Fading from black
+}
+
+/// UI transition state machine for smooth page switches.
+/// Uses a three-phase animation: fade-to-black → hold → fade-from-black.
+struct UiTransition {
+    active: bool,
+    phase: UiTransPhase,
+    progress: f32,       // 0.0 to 1.0 for current phase
+    target_mode: UiMode,
+    pending: PendingUiAction,
+}
+
+impl UiTransition {
+    fn new() -> Self {
+        Self { active: false, phase: UiTransPhase::Out, progress: 0.0, target_mode: UiMode::Normal, pending: PendingUiAction::None }
+    }
+
+    /// Start a transition. If one is already active, the old one is
+    /// fast-forwarded to completion (swap applied) before starting the new
+    /// one from the Out phase, making transitions interruptible.
+    fn start(&mut self, target: UiMode, pending: PendingUiAction) {
+        self.active = true;
+        self.phase = UiTransPhase::Out;
+        self.progress = 0.0;
+        self.target_mode = target;
+        self.pending = pending;
+    }
+
+    /// Advance the transition by `dt` seconds.
+    /// Returns `Some((target_mode, pending_action))` when the Out→Hold swap
+    /// occurs, so the caller can apply the mode change and engine action.
+    fn update(&mut self, dt: f32) -> Option<(UiMode, PendingUiAction)> {
+        if !self.active { return None; }
+        let dur = match self.phase {
+            UiTransPhase::Out => 0.30,   // 0.3s fade to black
+            UiTransPhase::Hold => 0.15,  // 0.15s hold
+            UiTransPhase::In => 0.30,    // 0.3s fade from black
+        };
+        self.progress += dt / dur;
+        if self.progress >= 1.0 {
+            self.progress = 0.0;
+            match self.phase {
+                UiTransPhase::Out => {
+                    self.phase = UiTransPhase::Hold;
+                    Some((self.target_mode, std::mem::replace(&mut self.pending, PendingUiAction::None)))
+                }
+                UiTransPhase::Hold => {
+                    self.phase = UiTransPhase::In;
+                    None
+                }
+                UiTransPhase::In => {
+                    self.active = false;
+                    None
+                }
+            }
+        } else {
+            None
+        }
+    }
+
+    /// Alpha (0.0–1.0) for the black overlay drawn on top of the scene.
+    fn overlay_alpha(&self) -> f32 {
+        if !self.active { return 0.0; }
+        match self.phase {
+            UiTransPhase::Out => self.progress * self.progress,           // ease-in (quadratic)
+            UiTransPhase::Hold => 1.0,
+            UiTransPhase::In => 1.0 - (1.0 - self.progress) * (1.0 - self.progress), // ease-out
+        }
+    }
+}
+
 /// Button layout for clickable regions.
 struct ButtonRect {
     x: f32,
@@ -438,6 +528,8 @@ pub async fn run(mut engine: Engine) {
     // Current page index for the save / load menus (grid paging).
     let mut save_page: usize = 0;
     let mut load_page: usize = 0;
+    // UI transition state machine for smooth page switches.
+    let mut ui_transition = UiTransition::new();
 
     // Check title music
     if !assets.check_music("title_bgm.mp3") {
@@ -504,6 +596,54 @@ pub async fn run(mut engine: Engine) {
         // Draw based on phase and UI mode
         clear_background(BLACK);
 
+        // Update UI transition. Returns Some((mode, action)) at the swap point.
+        if let Some((target_mode, pending)) = ui_transition.update(dt) {
+            ui_mode = target_mode;
+            match pending {
+                PendingUiAction::None => {}
+                PendingUiAction::StartGame => {
+                    engine.start_game();
+                    hud_hidden = false;
+                }
+                PendingUiAction::SaveSlot(slot) => {
+                    engine.save(slot);
+                }
+                PendingUiAction::LoadSlot(slot) => {
+                    if engine.saves().has_save(slot) {
+                        engine.load(slot);
+                        hud_hidden = false;
+                    }
+                }
+                PendingUiAction::ContinueAutosave => {
+                    let _ = engine.load_autosave();
+                    let _ = engine.delete_autosave();
+                    hud_hidden = false;
+                }
+                PendingUiAction::DiscardAutosave => {
+                    let _ = engine.delete_autosave();
+                }
+                PendingUiAction::BackToTitle => {
+                    let source = engine.source().to_string();
+                    let saved_settings = engine.settings().clone();
+                    if let Ok(mut new_engine) = Engine::new(&source) {
+                        *new_engine.settings_mut() = saved_settings;
+                        engine = new_engine;
+                        title_music_played = false;
+                    }
+                    hud_hidden = false;
+                }
+                PendingUiAction::Quit => {
+                    let _ = engine.delete_autosave();
+                    let _ = engine.save_settings();
+                    std::process::exit(0);
+                }
+            }
+        }
+
+        // Settings layout is computed once per frame and shared by both the
+        // draw call and the interaction handler below.
+        let settings_layout = compute_settings_layout(sw, sh, scale);
+
         if ui_mode == UiMode::AutoSavePrompt {
             // Crash-recovery prompt: dark backdrop + centered dialog.
             draw_rectangle(0.0, 0.0, sw, sh, Color::new(0.05, 0.05, 0.1, 1.0));
@@ -514,11 +654,7 @@ pub async fn run(mut engine: Engine) {
             // Sliders/toggles/dropdown are not button-based, so the generic
             // click handler is skipped for this mode (see below).
             draw_rectangle(0.0, 0.0, sw, sh, Color::new(0.05, 0.05, 0.1, 1.0));
-            let layout = compute_settings_layout(sw, sh, scale);
-            draw_settings_menu(&mut engine, &layout, &font, dropdown_open, scale);
-            handle_settings_interaction(
-                &mut engine, &layout, &mut dragging_slider, &mut ui_mode, &mut dropdown_open, scale,
-            );
+            draw_settings_menu(&mut engine, &settings_layout, &font, dropdown_open, scale);
         } else if ui_mode != UiMode::Normal {
             // Save/Load menus: full-screen opaque background + full-screen grid.
             draw_rectangle(0.0, 0.0, sw, sh, Color::new(0.05, 0.05, 0.1, 1.0));
@@ -543,72 +679,93 @@ pub async fn run(mut engine: Engine) {
         }
 
         // Handle mouse input.
-        // The settings menu handles its own interaction above (it needs
-        // per-frame drag updates, not just click events), so it is skipped
-        // here. All other modes use the generic button/click handler.
-        if ui_mode != UiMode::SettingsMenu && is_mouse_button_pressed(MouseButton::Left) {
-            let (mx, my) = mouse_position();
-            let clicked = handle_click(
-                mx, my, &buttons, &mut engine, &mut ui_mode, &mut hud_hidden,
-                sw, sh, scale,
-            );
-            // "Back to Title" resets the engine to the title screen. The
-            // engine has no in-place reset, so we re-create it from the
-            // original script source while preserving the loaded settings.
-            if let Some(ButtonAction::BackToTitle) = clicked {
-                let source = engine.source().to_string();
-                let saved_settings = engine.settings().clone();
-                if let Ok(mut new_engine) = Engine::new(&source) {
-                    *new_engine.settings_mut() = saved_settings;
-                    engine = new_engine;
-                    title_music_played = false;
+        // All input is blocked while a UI transition is in progress.
+        // The settings menu handles its own interaction (it needs per-frame
+        // drag updates, not just click events), so it runs every frame; all
+        // other modes use the generic button/click handler on press only.
+        if !ui_transition.active {
+            if ui_mode == UiMode::SettingsMenu {
+                if let Some((target, pending)) = handle_settings_interaction(
+                    &mut engine, &settings_layout, &mut dragging_slider, &mut dropdown_open, scale,
+                ) {
+                    ui_transition.start(target, pending);
                 }
-                ui_mode = UiMode::Normal;
-                hud_hidden = false;
-            }
-
-            // Paging for the save/load menus.
-            let max_slots = engine.saves().max_slots();
-            let total_pages = ((max_slots + SLOTS_PER_PAGE - 1) / SLOTS_PER_PAGE).max(1);
-            match clicked {
-                Some(ButtonAction::PrevPage) => {
-                    let page = if ui_mode == UiMode::SaveMenu { &mut save_page } else { &mut load_page };
-                    if *page > 0 {
-                        *page -= 1;
+            } else if is_mouse_button_pressed(MouseButton::Left) {
+                let (mx, my) = mouse_position();
+                if let Some(action) = handle_click(
+                    mx, my, &buttons, &mut engine, &ui_mode, &mut hud_hidden,
+                    sw, sh, scale,
+                ) {
+                    // Handle non-transition actions immediately.
+                    match action {
+                        ButtonAction::QuickSave => {
+                            engine.save(0);
+                        }
+                        ButtonAction::QuickLoad => {
+                            if engine.saves().has_save(0) {
+                                engine.load(0);
+                                hud_hidden = false;
+                            }
+                        }
+                        ButtonAction::ToggleHide => {
+                            hud_hidden = !hud_hidden;
+                        }
+                        ButtonAction::PrevPage => {
+                            let page = if ui_mode == UiMode::SaveMenu { &mut save_page } else { &mut load_page };
+                            if *page > 0 {
+                                *page -= 1;
+                            }
+                        }
+                        ButtonAction::NextPage => {
+                            let max_slots = engine.saves().max_slots();
+                            let total_pages = ((max_slots + SLOTS_PER_PAGE - 1) / SLOTS_PER_PAGE).max(1);
+                            let page = if ui_mode == UiMode::SaveMenu { &mut save_page } else { &mut load_page };
+                            if *page + 1 < total_pages {
+                                *page += 1;
+                            }
+                        }
+                        _ => {
+                            // Transition action.
+                            if let Some((target, pending)) = handle_button_action(action) {
+                                ui_transition.start(target, pending);
+                            }
+                        }
                     }
                 }
-                Some(ButtonAction::NextPage) => {
-                    let page = if ui_mode == UiMode::SaveMenu { &mut save_page } else { &mut load_page };
-                    if *page + 1 < total_pages {
-                        *page += 1;
-                    }
-                }
-                _ => {}
             }
         }
 
         // Handle keyboard input
         if is_key_pressed(KeyCode::Escape) {
-            if ui_mode == UiMode::AutoSavePrompt {
+            if ui_transition.active {
+                // Ignore Esc during a UI transition.
+            } else if ui_mode == UiMode::AutoSavePrompt {
                 // The recovery prompt requires an explicit choice; ignore Esc.
             } else if ui_mode == UiMode::SettingsMenu {
                 // Leaving the settings menu persists the current settings.
                 let _ = engine.save_settings();
                 dragging_slider = None;
-                ui_mode = UiMode::Normal;
+                ui_transition.start(UiMode::Normal, PendingUiAction::None);
             } else if ui_mode != UiMode::Normal {
-                ui_mode = UiMode::Normal;
+                ui_transition.start(UiMode::Normal, PendingUiAction::None);
             } else if engine.phase() != EnginePhase::Title {
-                ui_mode = UiMode::SettingsMenu;
+                ui_transition.start(UiMode::SettingsMenu, PendingUiAction::None);
             }
         }
 
         // Handle advance (space or enter). Disabled while the HUD is hidden so
-        // the player does not skip dialogue they cannot see.
-        if ui_mode == UiMode::Normal && !hud_hidden && engine.phase() != EnginePhase::Title {
+        // the player does not skip dialogue they cannot see, and blocked during
+        // UI transitions.
+        if !ui_transition.active && ui_mode == UiMode::Normal && !hud_hidden && engine.phase() != EnginePhase::Title {
             if is_key_pressed(KeyCode::Space) || is_key_pressed(KeyCode::Enter) {
                 engine.advance();
             }
+        }
+
+        // Draw UI transition overlay (black fade) on top of everything.
+        if ui_transition.active {
+            let alpha = ui_transition.overlay_alpha();
+            draw_rectangle(0.0, 0.0, sw, sh, Color::new(0.0, 0.0, 0.0, alpha));
         }
 
         next_frame().await;
@@ -1600,15 +1757,15 @@ fn draw_dropdown_list(r: Rect4, resolution: (u32, u32), font: &Option<Font>, sca
 /// toggle clicking, dropdown cycling, and the back button.
 ///
 /// This runs every frame (not just on click) so that an in-progress slider
-/// drag follows the mouse smoothly while the button is held.
+/// drag follows the mouse smoothly while the button is held. Returns a UI
+/// transition request when the back button is clicked.
 fn handle_settings_interaction(
     engine: &mut Engine,
     layout: &SettingsLayout,
     dragging_slider: &mut Option<usize>,
-    ui_mode: &mut UiMode,
     dropdown_open: &mut bool,
     scale: f32,
-) {
+) -> Option<(UiMode, PendingUiAction)> {
     let (mx, my) = mouse_position();
     let down = is_mouse_button_down(MouseButton::Left);
     let pressed = is_mouse_button_pressed(MouseButton::Left);
@@ -1636,7 +1793,7 @@ fn handle_settings_interaction(
                 *dragging_slider = Some(i);
                 let track = layout.slider_tracks[i];
                 update_slider_value(engine, i, mx, track);
-                return;
+                return None;
             }
         }
         // Toggles: click to flip.
@@ -1648,13 +1805,13 @@ fn handle_settings_interaction(
                     1 => settings.fullscreen = !settings.fullscreen,
                     _ => {}
                 }
-                return;
+                return None;
             }
         }
         // Dropdown: toggle open/closed, or select an item from the list.
         if point_in_rect(mx, my, layout.dropdown) {
             *dropdown_open = !*dropdown_open;
-            return;
+            return None;
         }
         if *dropdown_open {
             let item_h = 32.0 * scale;
@@ -1669,21 +1826,21 @@ fn handle_settings_interaction(
                 if point_in_rect(mx, my, item_rect) {
                     engine.settings_mut().resolution = (*w, *h);
                     *dropdown_open = false;
-                    return;
+                    return None;
                 }
             }
             // Clicked outside the list: close it.
             *dropdown_open = false;
-            return;
+            return None;
         }
         // Back button: persist settings and return to the game.
         if point_in_rect(mx, my, layout.back_btn) {
             let _ = engine.save_settings();
             *dragging_slider = None;
-            *ui_mode = UiMode::Normal;
-            return;
+            return Some((UiMode::Normal, PendingUiAction::None));
         }
     }
+    None
 }
 
 /// Update a slider's value from the mouse X position, clamped to the track.
@@ -1726,7 +1883,7 @@ fn handle_click(
     my: f32,
     buttons: &[ButtonRect],
     engine: &mut Engine,
-    ui_mode: &mut UiMode,
+    ui_mode: &UiMode,
     hud_hidden: &mut bool,
     sw: f32,
     sh: f32,
@@ -1735,9 +1892,7 @@ fn handle_click(
     // Check button clicks first
     for btn in buttons {
         if mx >= btn.x && mx <= btn.x + btn.w && my >= btn.y && my <= btn.y + btn.h {
-            let action = btn.action;
-            handle_button_action(action, engine, ui_mode, hud_hidden);
-            return Some(action);
+            return Some(btn.action);
         }
     }
 
@@ -1785,95 +1940,26 @@ fn handle_choice_click(mx: f32, my: f32, engine: &mut Engine, sw: f32, sh: f32, 
     }
 }
 
-fn handle_button_action(
-    action: ButtonAction,
-    engine: &mut Engine,
-    ui_mode: &mut UiMode,
-    hud_hidden: &mut bool,
-) {
+/// Map a button action to a UI transition request.
+/// Returns `None` for actions that don't change UI mode (QuickSave, QuickLoad,
+/// ToggleHide, paging) — those are handled by the caller.
+fn handle_button_action(action: ButtonAction) -> Option<(UiMode, PendingUiAction)> {
     match action {
-        ButtonAction::StartGame => {
-            engine.start_game();
-            *ui_mode = UiMode::Normal;
-            *hud_hidden = false;
-        }
-        ButtonAction::LoadGame => {
-            *ui_mode = UiMode::LoadMenu;
-        }
-        ButtonAction::Settings => {
-            *ui_mode = UiMode::SettingsMenu;
-        }
-        ButtonAction::Quit => {
-            // Clean exit: discard any crash-recovery autosave so the player is
-            // not prompted next time, persist settings, then quit.
-            let _ = engine.delete_autosave();
-            let _ = engine.save_settings();
-            std::process::exit(0);
-        }
-        ButtonAction::SaveSlot(slot) => {
-            engine.save(slot);
-            *ui_mode = UiMode::Normal;
-        }
-        ButtonAction::LoadSlot(slot) => {
-            if engine.saves().has_save(slot) {
-                engine.load(slot);
-                *ui_mode = UiMode::Normal;
-                *hud_hidden = false;
-            }
-        }
-        ButtonAction::BackToTitle => {
-            // The actual engine reset is performed by run() after this returns
-            // (it re-creates the engine from the original script source). Here
-            // we just ensure the UI returns to the normal in-game state.
-            *ui_mode = UiMode::Normal;
-            *hud_hidden = false;
-        }
-        ButtonAction::BackToGame => {
-            *ui_mode = UiMode::Normal;
-        }
-        ButtonAction::CloseMenu => {
-            *ui_mode = UiMode::Normal;
-        }
-        ButtonAction::ContinueAutosave => {
-            // Resume from the crash-recovery autosave, then consume it so the
-            // prompt does not reappear.
-            let _ = engine.load_autosave();
-            let _ = engine.delete_autosave();
-            *ui_mode = UiMode::Normal;
-            *hud_hidden = false;
-        }
-        ButtonAction::DiscardAutosave => {
-            // Throw away the recovery data and go to the title screen.
-            let _ = engine.delete_autosave();
-            *ui_mode = UiMode::Normal;
-        }
-        // ── In-game HUD quick actions ───
-        ButtonAction::QuickSave => {
-            // Slot 0 is reserved as the quick-save slot.
-            engine.save(0);
-        }
-        ButtonAction::QuickLoad => {
-            if engine.saves().has_save(0) {
-                engine.load(0);
-                *hud_hidden = false;
-            }
-        }
-        ButtonAction::OpenSaveMenu => {
-            *ui_mode = UiMode::SaveMenu;
-        }
-        ButtonAction::OpenLoadMenu => {
-            *ui_mode = UiMode::LoadMenu;
-        }
-        ButtonAction::OpenSettings => {
-            *ui_mode = UiMode::SettingsMenu;
-        }
-        ButtonAction::ToggleHide => {
-            *hud_hidden = !*hud_hidden;
-        }
-        // ── Save/Load menu paging ───
-        // The actual page adjustment is handled in run() after handle_click
-        // returns, because it needs access to save_page / load_page.
-        ButtonAction::PrevPage | ButtonAction::NextPage => {}
+        ButtonAction::StartGame => Some((UiMode::Normal, PendingUiAction::StartGame)),
+        ButtonAction::LoadGame => Some((UiMode::LoadMenu, PendingUiAction::None)),
+        ButtonAction::Settings => Some((UiMode::SettingsMenu, PendingUiAction::None)),
+        ButtonAction::Quit => Some((UiMode::Normal, PendingUiAction::Quit)),
+        ButtonAction::SaveSlot(slot) => Some((UiMode::Normal, PendingUiAction::SaveSlot(slot))),
+        ButtonAction::LoadSlot(slot) => Some((UiMode::Normal, PendingUiAction::LoadSlot(slot))),
+        ButtonAction::BackToTitle => Some((UiMode::Normal, PendingUiAction::BackToTitle)),
+        ButtonAction::BackToGame | ButtonAction::CloseMenu => Some((UiMode::Normal, PendingUiAction::None)),
+        ButtonAction::ContinueAutosave => Some((UiMode::Normal, PendingUiAction::ContinueAutosave)),
+        ButtonAction::DiscardAutosave => Some((UiMode::Normal, PendingUiAction::DiscardAutosave)),
+        ButtonAction::OpenSaveMenu => Some((UiMode::SaveMenu, PendingUiAction::None)),
+        ButtonAction::OpenLoadMenu => Some((UiMode::LoadMenu, PendingUiAction::None)),
+        ButtonAction::OpenSettings => Some((UiMode::SettingsMenu, PendingUiAction::None)),
+        ButtonAction::QuickSave | ButtonAction::QuickLoad
+        | ButtonAction::ToggleHide | ButtonAction::PrevPage | ButtonAction::NextPage => None,
     }
 }
 
