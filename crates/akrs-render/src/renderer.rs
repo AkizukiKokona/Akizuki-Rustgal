@@ -242,11 +242,11 @@ fn measure_text_f(text: &str, font: &Option<Font>, font_size: u16, font_scale: f
 }
 
 /// Design baseline resolution used to derive the UI scale factor.
-const BASE_WIDTH: f32 = 1280.0;
-const BASE_HEIGHT: f32 = 720.0;
+const BASE_WIDTH: f32 = 1920.0;
+const BASE_HEIGHT: f32 = 1080.0;
 
 /// UI scale factor: the minimum axis ratio of the current window relative to
-/// the 1280×720 design baseline.  All absolute pixel sizes (font sizes,
+/// the 1920×1080 design baseline.  All absolute pixel sizes (font sizes,
 /// button dimensions, margins) are multiplied by this so the layout looks
 /// identical at any window size.
 fn ui_scale(sw: f32, sh: f32) -> f32 {
@@ -254,9 +254,9 @@ fn ui_scale(sw: f32, sh: f32) -> f32 {
 }
 
 /// Default window width (also the design baseline width).
-const WINDOW_WIDTH: i32 = 1280;
+const WINDOW_WIDTH: i32 = 1920;
 /// Default window height (also the design baseline height).
-const WINDOW_HEIGHT: i32 = 720;
+const WINDOW_HEIGHT: i32 = 1080;
 
 /// UI state for menus and overlays.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -285,17 +285,19 @@ enum PendingUiAction {
 /// Phase of a UI transition animation.
 #[derive(Clone, Copy, Debug, PartialEq)]
 enum UiTransPhase {
-    Out,  // Fading to black
-    Hold, // Black screen pause
-    In,   // Fading from black
+    Out, // First half: fading toward the swap point.
+    In,  // Second half: fading back from the swap point.
 }
 
 /// UI transition state machine for smooth page switches.
-/// Uses a three-phase animation: fade-to-black → hold → fade-from-black.
+/// Uses a cross-fade animation: a single 0.5s sweep where the overlay alpha
+/// follows a bell curve (transparent → dim → transparent). The mode swap
+/// happens at the midpoint (progress = 0.5), so the old and new screens
+/// cross-fade without ever going to a pure black screen.
 struct UiTransition {
     active: bool,
     phase: UiTransPhase,
-    progress: f32,       // 0.0 to 1.0 for current phase
+    progress: f32, // 0.0 to 1.0 across the whole 0.5s transition
     target_mode: UiMode,
     pending: PendingUiAction,
 }
@@ -317,45 +319,36 @@ impl UiTransition {
     }
 
     /// Advance the transition by `dt` seconds.
-    /// Returns `Some((target_mode, pending_action))` when the Out→Hold swap
-    /// occurs, so the caller can apply the mode change and engine action.
+    /// Returns `Some((target_mode, pending_action))` when the midpoint swap
+    /// occurs (progress crosses 0.5), so the caller can apply the mode change
+    /// and engine action. The transition completes (active = false) when
+    /// progress reaches 1.0.
     fn update(&mut self, dt: f32) -> Option<(UiMode, PendingUiAction)> {
         if !self.active { return None; }
-        let dur = match self.phase {
-            UiTransPhase::Out => 0.30,   // 0.3s fade to black
-            UiTransPhase::Hold => 0.15,  // 0.15s hold
-            UiTransPhase::In => 0.30,    // 0.3s fade from black
-        };
+        // Total transition duration: 0.5s.
+        let dur = 0.5;
         self.progress += dt / dur;
+        // Swap at the midpoint (progress >= 0.5): flip phase and return the
+        // pending action so the caller can swap the underlying screen.
+        if self.phase == UiTransPhase::Out && self.progress >= 0.5 {
+            self.phase = UiTransPhase::In;
+            return Some((self.target_mode, std::mem::replace(&mut self.pending, PendingUiAction::None)));
+        }
         if self.progress >= 1.0 {
             self.progress = 0.0;
-            match self.phase {
-                UiTransPhase::Out => {
-                    self.phase = UiTransPhase::Hold;
-                    Some((self.target_mode, std::mem::replace(&mut self.pending, PendingUiAction::None)))
-                }
-                UiTransPhase::Hold => {
-                    self.phase = UiTransPhase::In;
-                    None
-                }
-                UiTransPhase::In => {
-                    self.active = false;
-                    None
-                }
-            }
-        } else {
-            None
+            self.phase = UiTransPhase::Out;
+            self.active = false;
         }
+        None
     }
 
-    /// Alpha (0.0–1.0) for the black overlay drawn on top of the scene.
+    /// Alpha (0.0–1.0) for the overlay drawn on top of the scene.
+    /// Bell curve: transparent at the endpoints, peak 0.25 at the midpoint.
+    /// This keeps the overlay dim but never opaque, avoiding the "flash to
+    /// black" feel of the old three-phase transition.
     fn overlay_alpha(&self) -> f32 {
         if !self.active { return 0.0; }
-        match self.phase {
-            UiTransPhase::Out => self.progress * self.progress,           // ease-in (quadratic)
-            UiTransPhase::Hold => 1.0,
-            UiTransPhase::In => 1.0 - (1.0 - self.progress) * (1.0 - self.progress), // ease-out
-        }
+        0.25 * (1.0 - (2.0 * self.progress - 1.0).abs())
     }
 }
 
@@ -402,6 +395,9 @@ enum ButtonAction {
     PrevPage,
     /// Go to the next page of save/load slots.
     NextPage,
+    /// Extend the visible slot count by one page (used on the last page when
+    /// more slots are still available beyond the currently displayed range).
+    AddPage,
 }
 
 /// Window configuration for macroquad.
@@ -528,6 +524,11 @@ pub async fn run(mut engine: Engine) {
     // Current page index for the save / load menus (grid paging).
     let mut save_page: usize = 0;
     let mut load_page: usize = 0;
+    // Number of slots currently surfaced to the player in each menu. Starts at
+    // 24 (3 pages) and grows by one page per "+" click up to the manager's
+    // max_slots, so the save grid is effectively infinite.
+    let mut save_displayed_slots: usize = 24;
+    let mut load_displayed_slots: usize = 24;
     // UI transition state machine for smooth page switches.
     let mut ui_transition = UiTransition::new();
 
@@ -659,8 +660,8 @@ pub async fn run(mut engine: Engine) {
             // Save/Load menus: full-screen opaque background + full-screen grid.
             draw_rectangle(0.0, 0.0, sw, sh, Color::new(0.05, 0.05, 0.1, 1.0));
             match ui_mode {
-                UiMode::SaveMenu => draw_save_menu(&engine, &mut buttons, sw, sh, &font, scale, save_page),
-                UiMode::LoadMenu => draw_load_menu(&engine, &mut buttons, sw, sh, &font, scale, load_page),
+                UiMode::SaveMenu => draw_save_menu(&engine, &mut buttons, sw, sh, &font, scale, save_page, save_displayed_slots),
+                UiMode::LoadMenu => draw_load_menu(&engine, &mut buttons, sw, sh, &font, scale, load_page, load_displayed_slots),
                 _ => {}
             }
         } else if engine.phase() == EnginePhase::Title {
@@ -674,7 +675,7 @@ pub async fn run(mut engine: Engine) {
             // or HUD), letting the player admire the scene unobstructed.
             draw_scene(&engine, &mut assets, sw, sh, !hud_hidden, &font, scale).await;
             if !hud_hidden {
-                draw_hud_buttons(&mut buttons, sh, &font, scale);
+                draw_hud_buttons(&mut buttons, sw, sh, &font, scale);
             }
         }
 
@@ -717,12 +718,25 @@ pub async fn run(mut engine: Engine) {
                             }
                         }
                         ButtonAction::NextPage => {
-                            let max_slots = engine.saves().max_slots();
-                            let total_pages = ((max_slots + SLOTS_PER_PAGE - 1) / SLOTS_PER_PAGE).max(1);
+                            let displayed = if ui_mode == UiMode::SaveMenu { save_displayed_slots } else { load_displayed_slots };
+                            let total_pages = ((displayed + SLOTS_PER_PAGE - 1) / SLOTS_PER_PAGE).max(1);
                             let page = if ui_mode == UiMode::SaveMenu { &mut save_page } else { &mut load_page };
                             if *page + 1 < total_pages {
                                 *page += 1;
                             }
+                        }
+                        ButtonAction::AddPage => {
+                            let max_slots = engine.saves().max_slots();
+                            let (displayed, page) = if ui_mode == UiMode::SaveMenu {
+                                (&mut save_displayed_slots, &mut save_page)
+                            } else {
+                                (&mut load_displayed_slots, &mut load_page)
+                            };
+                            *displayed = (*displayed + SLOTS_PER_PAGE).min(max_slots);
+                            // Jump to the new last page so the freshly revealed
+                            // slots are immediately visible.
+                            let total_pages = ((*displayed + SLOTS_PER_PAGE - 1) / SLOTS_PER_PAGE).max(1);
+                            *page = total_pages - 1;
                         }
                         _ => {
                             // Transition action.
@@ -787,7 +801,7 @@ fn draw_title_screen(buttons: &mut Vec<ButtonRect>, sw: f32, sh: f32, _assets: &
         (sw - title_w) / 2.0,
         sh * 0.25,
         title_font_size,
-        Color::new(0.9, 0.8, 1.0, 1.0),
+        Color::new(0.85, 0.92, 1.0, 1.0),
         font,
     );
 
@@ -941,24 +955,24 @@ async fn draw_characters(scene: &SceneState, assets: &mut AssetManager, sw: f32,
 }
 
 fn draw_dialogue(dialogue: &akrs_runtime::DialogueState, sw: f32, sh: f32, font: &Option<Font>, scale: f32) {
-    let box_h = 250.0 * scale;
+    let box_h = 280.0 * scale;
     let box_y = sh - box_h - 20.0 * scale;
-    let box_x = 40.0 * scale;
-    let box_w = sw - 80.0 * scale;
+    let box_x = 0.0;
+    let box_w = sw;
 
-    // Dialogue box background
-    draw_rectangle(box_x, box_y, box_w, box_h, Color::new(0.0, 0.0, 0.0, 0.85));
+    // Dialogue box background: light-blue translucent panel.
+    draw_rectangle(box_x, box_y, box_w, box_h, Color::new(0.68, 0.85, 0.90, 0.6));
     // Border
-    draw_rectangle_lines(box_x, box_y, box_w, box_h, 2.0 * scale, Color::new(0.6, 0.6, 0.8, 0.8));
+    draw_rectangle_lines(box_x, box_y, box_w, box_h, 2.0 * scale, Color::new(0.4, 0.7, 0.9, 0.8));
 
     // Speaker name
     if !dialogue.speaker.is_empty() {
         draw_text_f(
             &dialogue.speaker,
             box_x + 20.0 * scale,
-            box_y + 35.0 * scale,
+            box_y + 28.0 * scale,
             28.0 * scale,
-            Color::new(0.9, 0.8, 1.0, 1.0),
+            Color::new(0.15, 0.3, 0.5, 1.0),
             font,
         );
     }
@@ -968,27 +982,29 @@ fn draw_dialogue(dialogue: &akrs_runtime::DialogueState, sw: f32, sh: f32, font:
     draw_text_wrapped(
         &displayed,
         box_x + 20.0 * scale,
-        box_y + (if dialogue.speaker.is_empty() { 30.0 } else { 70.0 }) * scale,
+        box_y + (if dialogue.speaker.is_empty() { 30.0 } else { 60.0 }) * scale,
         box_w - 40.0 * scale,
         26.0 * scale,
-        WHITE,
+        Color::new(0.1, 0.15, 0.2, 1.0),
         font,
         scale,
     );
 
-    // Click to continue indicator
+    // Click to continue indicator: breathing pulse (1.5s period).
     if dialogue.complete {
-        let blink = (get_time() % 1.0) < 0.5;
-        if blink {
-            draw_text_f(
-                "▼",
-                box_x + box_w - 40.0 * scale,
-                box_y + box_h - 20.0 * scale,
-                24.0 * scale,
-                Color::new(0.8, 0.8, 0.9, 0.8),
-                font,
-            );
-        }
+        let t = get_time() as f32;
+        let pulse = 0.5 + 0.5 * (t * 2.0 * 3.14159 / 1.5).sin();
+        let alpha = 0.3 + pulse * 0.7;
+        let size_mult = 0.85 + pulse * 0.25;
+        let indicator_size = 24.0 * scale * size_mult;
+        draw_text_f(
+            "▼",
+            box_x + box_w - 40.0 * scale,
+            box_y + box_h - 20.0 * scale,
+            indicator_size,
+            Color::new(0.8, 0.8, 0.9, alpha),
+            font,
+        );
     }
 }
 
@@ -1002,7 +1018,7 @@ fn draw_choices(choices: &akrs_runtime::ChoicesState, sw: f32, sh: f32, font: &O
             (sw - pw) / 2.0,
             sh * 0.2,
             prompt_size,
-            Color::new(0.9, 0.85, 1.0, 1.0),
+            Color::new(0.8, 0.9, 1.0, 1.0),
             font,
         );
     }
@@ -1023,7 +1039,7 @@ fn draw_choices(choices: &akrs_runtime::ChoicesState, sw: f32, sh: f32, font: &O
         };
         draw_rectangle(opt_x, opt_y, opt_w, opt_h, bg_color);
         draw_rectangle_lines(opt_x, opt_y, opt_w, opt_h, 2.0 * scale,
-            if is_selected { Color::new(0.7, 0.6, 1.0, 1.0) } else { Color::new(0.3, 0.3, 0.4, 0.6) });
+            if is_selected { Color::new(0.29, 0.62, 1.0, 1.0) } else { Color::new(0.3, 0.3, 0.4, 0.6) });
 
         let opt_font = 24.0 * scale;
         let text_color = if opt.available { WHITE } else { Color::new(0.4, 0.4, 0.4, 0.8) };
@@ -1106,7 +1122,7 @@ fn draw_autosave_prompt(engine: &Engine, buttons: &mut Vec<ButtonRect>, sw: f32,
         dialog_w,
         dialog_h,
         2.0 * scale,
-        Color::new(0.7, 0.6, 1.0, 0.9),
+        Color::new(0.29, 0.62, 1.0, 0.9),
     );
     // Subtle top accent line.
     draw_rectangle(
@@ -1114,7 +1130,7 @@ fn draw_autosave_prompt(engine: &Engine, buttons: &mut Vec<ButtonRect>, sw: f32,
         dialog_y,
         dialog_w,
         4.0 * scale,
-        Color::new(0.7, 0.6, 1.0, 0.8),
+        Color::new(0.29, 0.62, 1.0, 0.8),
     );
 
     let center_x = sw / 2.0;
@@ -1129,7 +1145,7 @@ fn draw_autosave_prompt(engine: &Engine, buttons: &mut Vec<ButtonRect>, sw: f32,
         center_x - tw / 2.0,
         cursor_y,
         title_size,
-        Color::new(0.95, 0.85, 1.0, 1.0),
+        Color::new(0.8, 0.9, 1.0, 1.0),
         font,
     );
     cursor_y += 50.0 * scale;
@@ -1194,21 +1210,21 @@ fn draw_panel(sw: f32, sh: f32, title: &str, font: &Option<Font>, scale: f32) {
     // Full-screen opaque background.
     draw_rectangle(0.0, 0.0, sw, sh, Color::new(0.05, 0.05, 0.1, 1.0));
     // Subtle full-screen frame.
-    draw_rectangle_lines(0.0, 0.0, sw, sh, 2.0 * scale, Color::new(0.5, 0.5, 0.7, 0.8));
+    draw_rectangle_lines(0.0, 0.0, sw, sh, 2.0 * scale, Color::new(0.35, 0.55, 0.85, 0.8));
 
     let title_size = 48.0 * scale;
     let tw = measure_text_f(title, font, title_size as u16, 1.0).width;
     draw_text_f(title, (sw - tw) / 2.0, sh * 0.1, title_size, WHITE, font);
 }
 
-fn draw_save_menu(engine: &Engine, buttons: &mut Vec<ButtonRect>, sw: f32, sh: f32, font: &Option<Font>, scale: f32, page: usize) {
+fn draw_save_menu(engine: &Engine, buttons: &mut Vec<ButtonRect>, sw: f32, sh: f32, font: &Option<Font>, scale: f32, page: usize, displayed_slots: usize) {
     draw_panel(sw, sh, "保存游戏", font, scale);
 
     let saves = engine.saves();
     let max_slots = saves.max_slots();
     let all_saves = saves.list_saves();
 
-    draw_slot_grid(sw, sh, font, scale, page, max_slots, &all_saves, buttons, true);
+    draw_slot_grid(sw, sh, font, scale, page, displayed_slots, max_slots, &all_saves, buttons, true);
 
     // Back button (bottom-left).
     let back_w = 160.0 * scale;
@@ -1226,14 +1242,14 @@ fn draw_save_menu(engine: &Engine, buttons: &mut Vec<ButtonRect>, sw: f32, sh: f
     );
 }
 
-fn draw_load_menu(engine: &Engine, buttons: &mut Vec<ButtonRect>, sw: f32, sh: f32, font: &Option<Font>, scale: f32, page: usize) {
+fn draw_load_menu(engine: &Engine, buttons: &mut Vec<ButtonRect>, sw: f32, sh: f32, font: &Option<Font>, scale: f32, page: usize, displayed_slots: usize) {
     draw_panel(sw, sh, "读取存档", font, scale);
 
     let saves = engine.saves();
     let max_slots = saves.max_slots();
     let all_saves = saves.list_saves();
 
-    draw_slot_grid(sw, sh, font, scale, page, max_slots, &all_saves, buttons, false);
+    draw_slot_grid(sw, sh, font, scale, page, displayed_slots, max_slots, &all_saves, buttons, false);
 
     // Back button (bottom-left).
     let back_w = 160.0 * scale;
@@ -1254,13 +1270,17 @@ fn draw_load_menu(engine: &Engine, buttons: &mut Vec<ButtonRect>, sw: f32, sh: f
 /// Draw the 2×4 grid of save/load slots plus the page navigation control.
 ///
 /// `is_save` selects the click action attached to each cell
-/// (`SaveSlot` for the save menu, `LoadSlot` for the load menu).
+/// (`SaveSlot` for the save menu, `LoadSlot` for the load menu). The grid
+/// iterates over `displayed_slots` (the number of slots currently surfaced to
+/// the player) rather than the hard `max_slots` cap, so the player can grow
+/// the visible range one page at a time via the "+" button.
 fn draw_slot_grid(
     sw: f32,
     sh: f32,
     font: &Option<Font>,
     scale: f32,
     page: usize,
+    displayed_slots: usize,
     max_slots: usize,
     all_saves: &[Option<SaveMetadata>],
     buttons: &mut Vec<ButtonRect>,
@@ -1276,9 +1296,13 @@ fn draw_slot_grid(
     let grid_x = (sw - grid_w) / 2.0;
     let grid_y = sh * 0.22;
 
+    // At most one cell can be hovered per frame; remember its tooltip text so
+    // it can be rendered last (above the page nav and neighbouring cells).
+    let mut hovered_tooltip: Option<String> = None;
+
     for i in 0..SLOTS_PER_PAGE {
         let slot = page * SLOTS_PER_PAGE + i;
-        if slot >= max_slots {
+        if slot >= displayed_slots {
             break;
         }
         let col = i % cols;
@@ -1294,17 +1318,32 @@ fn draw_slot_grid(
         } else {
             ButtonAction::LoadSlot(slot)
         };
-        draw_slot_cell(x, y, cell_w, cell_h, slot, meta_clone.as_ref(), buttons, font, scale, action);
+        if let Some(t) = draw_slot_cell(x, y, cell_w, cell_h, slot, meta_clone.as_ref(), buttons, font, scale, action) {
+            hovered_tooltip = Some(t);
+        }
     }
 
-    // Page navigation (bottom-right): [←] [page/total] [→]
-    let total_pages = ((max_slots + SLOTS_PER_PAGE - 1) / SLOTS_PER_PAGE).max(1);
-    draw_page_nav(buttons, sw, sh, font, scale, page, total_pages);
+    // Page navigation (bottom-right): [←] [page/total] [→], plus an extra
+    // "+" button on the last page when more slots can be revealed.
+    let total_pages = ((displayed_slots + SLOTS_PER_PAGE - 1) / SLOTS_PER_PAGE).max(1);
+    let can_add_page = displayed_slots < max_slots;
+    draw_page_nav(buttons, sw, sh, font, scale, page, total_pages, can_add_page);
+
+    // Draw the hover tooltip last so it floats above the grid cells and the
+    // page navigation control.
+    if let Some(text) = hovered_tooltip {
+        let (mx, my) = mouse_position();
+        draw_tooltip(&text, mx, my, sw, sh, font, scale);
+    }
 }
 
 /// Draw a single save/load slot cell with its metadata summary.  Empty slots
 /// show "空" with a semi-transparent overlay and are still registered as
 /// clickable (the save menu writes to them; the load menu no-ops on them).
+///
+/// Returns `Some(text)` containing the full save description when the mouse
+/// hovers over a populated cell, so the caller can render a tooltip with the
+/// untruncated text on top of every other element.
 fn draw_slot_cell(
     x: f32,
     y: f32,
@@ -1316,10 +1355,13 @@ fn draw_slot_cell(
     font: &Option<Font>,
     scale: f32,
     action: ButtonAction,
-) {
+) -> Option<String> {
+    let (mx, my) = mouse_position();
+    let hover = mx >= x && mx <= x + w && my >= y && my <= y + h;
+
     // Cell background.
     draw_rectangle(x, y, w, h, Color::new(0.08, 0.07, 0.14, 0.95));
-    draw_rectangle_lines(x, y, w, h, 1.5 * scale, Color::new(0.4, 0.4, 0.6, 0.7));
+    draw_rectangle_lines(x, y, w, h, 1.5 * scale, Color::new(0.35, 0.55, 0.85, 0.7));
 
     let pad = 12.0 * scale;
     let slot_label = format!("存档位 {}", slot + 1);
@@ -1328,9 +1370,11 @@ fn draw_slot_cell(
         x + pad,
         y + 24.0 * scale,
         18.0 * scale,
-        Color::new(0.8, 0.75, 1.0, 1.0),
+        Color::new(0.8, 0.9, 1.0, 1.0),
         font,
     );
+
+    let mut tooltip: Option<String> = None;
 
     if let Some(m) = meta {
         let ts = format_timestamp(m.timestamp);
@@ -1343,14 +1387,24 @@ fn draw_slot_cell(
             font,
         );
 
+        // Chapter name: 1 line, ellipsized if it overflows.
         let section_size = 16.0 * scale;
         let section = fit_text(&m.section_name, font, section_size, w - 2.0 * pad);
         draw_text_f(&section, x + pad, y + 68.0 * scale, section_size, WHITE, font);
 
-        let desc_full: String = m.description.chars().take(30).collect();
+        // Description: up to 2 lines, character-wrapped, ellipsized on overflow.
         let desc_size = 14.0 * scale;
-        let desc = fit_text(&desc_full, font, desc_size, w - 2.0 * pad);
-        draw_text_f(&desc, x + pad, y + 90.0 * scale, desc_size, Color::new(0.75, 0.75, 0.85, 1.0), font);
+        let desc_lines = wrap_text_cn(&m.description, font, desc_size, w - 2.0 * pad, 2);
+        let mut desc_y = y + 90.0 * scale;
+        for line in &desc_lines {
+            draw_text_f(line, x + pad, desc_y, desc_size, Color::new(0.75, 0.75, 0.85, 1.0), font);
+            desc_y += desc_size + 4.0 * scale;
+        }
+
+        // On hover, surface the full description as a tooltip.
+        if hover {
+            tooltip = Some(m.description.clone());
+        }
     } else {
         // Empty slot: centered "空" + a dimming overlay (visually disabled).
         let empty_size = 24.0 * scale;
@@ -1375,10 +1429,15 @@ fn draw_slot_cell(
         label: slot_label,
         action,
     });
+
+    tooltip
 }
 
 /// Draw the page navigation control anchored to the bottom-right corner:
 /// a "←" (previous) button, a "page/total" indicator, and a "→" (next) button.
+/// When `can_add_page` is true and the current page is the last one, an extra
+/// "+" button is drawn to the left of the "←" button, letting the player grow
+/// the visible slot range by one page.
 fn draw_page_nav(
     buttons: &mut Vec<ButtonRect>,
     sw: f32,
@@ -1387,6 +1446,7 @@ fn draw_page_nav(
     scale: f32,
     page: usize,
     total_pages: usize,
+    can_add_page: bool,
 ) {
     let btn_w = 60.0 * scale;
     let btn_h = 44.0 * scale;
@@ -1397,15 +1457,25 @@ fn draw_page_nav(
     let lw = measure_text_f(&label, font, label_size as u16, 1.0).width;
     let label_w = lw + 24.0 * scale;
 
-    let total_w = btn_w * 2.0 + gap * 2.0 + label_w;
+    // The "+" button sits to the left of "←" and only appears on the last page
+    // when more slots can still be revealed.
+    let is_last_page = page + 1 >= total_pages;
+    let show_add = is_last_page && can_add_page;
+    let add_w = if show_add { btn_w + gap } else { 0.0 };
+
+    let total_w = add_w + btn_w * 2.0 + gap * 2.0 + label_w;
     let x0 = sw - total_w - 40.0 * scale;
     let y = sh - btn_h - 30.0 * scale;
 
-    draw_button(x0, y, btn_w, btn_h, "←", buttons, ButtonAction::PrevPage, font, scale);
+    if show_add {
+        draw_button(x0, y, btn_w, btn_h, "+", buttons, ButtonAction::AddPage, font, scale);
+    }
+
+    draw_button(x0 + add_w, y, btn_w, btn_h, "←", buttons, ButtonAction::PrevPage, font, scale);
 
     draw_text_f(
         &label,
-        x0 + btn_w + gap + (label_w - lw) / 2.0,
+        x0 + add_w + btn_w + gap + (label_w - lw) / 2.0,
         y + btn_h / 2.0 + label_size / 3.0,
         label_size,
         WHITE,
@@ -1413,7 +1483,7 @@ fn draw_page_nav(
     );
 
     draw_button(
-        x0 + btn_w + gap + label_w,
+        x0 + add_w + btn_w + gap + label_w,
         y,
         btn_w,
         btn_h,
@@ -1444,6 +1514,107 @@ fn fit_text(text: &str, font: &Option<Font>, font_size: f32, max_w: f32) -> Stri
         }
     }
     String::new()
+}
+
+/// Wrap `text` into at most `max_lines` lines that each fit within `max_w` at
+/// the given font size.  Wrapping is done character-by-character (CJK text has
+/// no whitespace word boundaries), breaking whenever the next character would
+/// overflow the line width.  If the text needs more than `max_lines` lines,
+/// the final line is truncated and an ellipsis "…" is appended.
+fn wrap_text_cn(text: &str, font: &Option<Font>, font_size: f32, max_w: f32, max_lines: usize) -> Vec<String> {
+    if max_lines == 0 || max_w <= 0.0 {
+        return Vec::new();
+    }
+
+    // First pass: wrap into as many lines as needed.
+    let mut all_lines: Vec<String> = Vec::new();
+    let mut current = String::new();
+    for c in text.chars() {
+        let test = format!("{}{}", current, c);
+        let w = measure_text_f(&test, font, font_size as u16, 1.0).width;
+        if w > max_w && !current.is_empty() {
+            all_lines.push(std::mem::take(&mut current));
+            current.push(c);
+        } else {
+            current = test;
+        }
+    }
+    if !current.is_empty() {
+        all_lines.push(current);
+    }
+
+    // Within budget: return as-is.
+    if all_lines.len() <= max_lines {
+        return all_lines;
+    }
+
+    // Over budget: keep only `max_lines` lines and ellipsize the last one.
+    let mut result: Vec<String> = all_lines.into_iter().take(max_lines).collect();
+    let last = result.last_mut().expect("max_lines >= 1");
+    // Keep trimming the last line until "last + …" fits within max_w.
+    loop {
+        let mut probe = last.clone();
+        probe.push('…');
+        if measure_text_f(&probe, font, font_size as u16, 1.0).width <= max_w || last.is_empty() {
+            *last = probe;
+            break;
+        }
+        last.pop();
+    }
+    result
+}
+
+/// Draw a tooltip showing the full `text` near the mouse cursor.  The tooltip
+/// is a semi-transparent dark box with a border, positioned just below the
+/// cursor; if it would run off the bottom of the screen it flips above the
+/// cursor instead.  Wrapping uses `wrap_text_cn` so long descriptions stay
+/// readable.
+fn draw_tooltip(text: &str, mouse_x: f32, mouse_y: f32, sw: f32, sh: f32, font: &Option<Font>, scale: f32) {
+    if text.is_empty() {
+        return;
+    }
+    let font_size = 16.0 * scale;
+    let pad = 8.0 * scale;
+    let max_w = 360.0 * scale;
+    let lines = wrap_text_cn(text, font, font_size, max_w, 8);
+    if lines.is_empty() {
+        return;
+    }
+
+    let line_h = font_size + 4.0 * scale;
+    let mut text_w = 0.0_f32;
+    for line in &lines {
+        let w = measure_text_f(line, font, font_size as u16, 1.0).width;
+        if w > text_w {
+            text_w = w;
+        }
+    }
+    let box_w = (text_w + 2.0 * pad).min(sw);
+    let box_h = lines.len() as f32 * line_h + 2.0 * pad;
+
+    // Default position: below and slightly right of the cursor.
+    let mut box_x = mouse_x + 12.0 * scale;
+    let mut box_y = mouse_y + 18.0 * scale;
+    // Flip horizontally if it would overflow the right edge.
+    if box_x + box_w > sw - 4.0 {
+        box_x = (mouse_x - box_w - 12.0 * scale).max(4.0);
+    }
+    if box_x < 4.0 {
+        box_x = 4.0;
+    }
+    // Flip vertically if it would overflow the bottom edge.
+    if box_y + box_h > sh - 4.0 {
+        box_y = (mouse_y - box_h - 12.0 * scale).max(4.0);
+    }
+
+    draw_rectangle(box_x, box_y, box_w, box_h, Color::new(0.05, 0.05, 0.1, 0.92));
+    draw_rectangle_lines(box_x, box_y, box_w, box_h, 1.5 * scale, Color::new(0.5, 0.75, 1.0, 0.9));
+
+    let mut ty = box_y + pad + font_size;
+    for line in &lines {
+        draw_text_f(line, box_x + pad, ty, font_size, WHITE, font);
+        ty += line_h;
+    }
 }
 
 /// A simple axis-aligned rectangle used for settings control layout.
@@ -1582,7 +1753,7 @@ fn draw_settings_menu(engine: &mut Engine, layout: &SettingsLayout, font: &Optio
         layout.panel_w,
         layout.panel_h,
         2.0 * scale,
-        Color::new(0.5, 0.5, 0.7, 0.8),
+        Color::new(0.35, 0.55, 0.85, 0.8),
     );
 
     // Title (centered at the top of the full-screen panel).
@@ -1678,19 +1849,19 @@ fn draw_slider_track(track: Rect4, fraction: f32, scale: f32) {
     // Track background.
     draw_rectangle(track.x, track.y, track.w, track.h, Color::new(0.2, 0.2, 0.3, 0.8));
     // Filled portion.
-    draw_rectangle(track.x, track.y, track.w * f, track.h, Color::new(0.6, 0.5, 0.9, 0.9));
+    draw_rectangle(track.x, track.y, track.w * f, track.h, Color::new(0.36, 0.61, 0.84, 0.9));
     // Knob.
     let knob_x = track.x + track.w * f;
     let knob_y = track.y + track.h / 2.0;
-    draw_circle(knob_x, knob_y, 9.0 * scale, Color::new(0.9, 0.85, 1.0, 1.0));
+    draw_circle(knob_x, knob_y, 9.0 * scale, Color::new(0.8, 0.9, 1.0, 1.0));
 }
 
 /// Draw an on/off toggle switch.
 fn draw_toggle(r: Rect4, on: bool, font: &Option<Font>, scale: f32) {
     let (bg, fg, label) = if on {
         (
-            Color::new(0.3, 0.6, 0.4, 0.9),
-            Color::new(0.85, 1.0, 0.85, 1.0),
+            Color::new(0.29, 0.62, 1.0, 0.9),
+            Color::new(0.85, 0.92, 1.0, 1.0),
             "ON",
         )
     } else {
@@ -1712,7 +1883,7 @@ fn draw_toggle(r: Rect4, on: bool, font: &Option<Font>, scale: f32) {
 /// rendered on top of all other controls.
 fn draw_dropdown_box(r: Rect4, resolution: (u32, u32), font: &Option<Font>, open: bool, scale: f32) {
     draw_rectangle(r.x, r.y, r.w, r.h, Color::new(0.15, 0.12, 0.22, 0.9));
-    draw_rectangle_lines(r.x, r.y, r.w, r.h, 1.5 * scale, Color::new(0.5, 0.45, 0.7, 0.8));
+    draw_rectangle_lines(r.x, r.y, r.w, r.h, 1.5 * scale, Color::new(0.35, 0.55, 0.85, 0.8));
     let label = format!("{}x{}", resolution.0, resolution.1);
     let label_size = 20.0 * scale;
     draw_text_f(&label, r.x + 12.0 * scale, r.y + r.h / 2.0 + 7.0 * scale, label_size, WHITE, font);
@@ -1724,7 +1895,7 @@ fn draw_dropdown_box(r: Rect4, resolution: (u32, u32), font: &Option<Font>, open
         r.x + r.w - 24.0 * scale,
         r.y + r.h / 2.0 + 7.0 * scale,
         arrow_size,
-        Color::new(0.7, 0.65, 0.9, 0.9),
+        Color::new(0.5, 0.75, 1.0, 0.9),
         font,
     );
 }
@@ -1738,14 +1909,14 @@ fn draw_dropdown_list(r: Rect4, resolution: (u32, u32), font: &Option<Font>, sca
     let list_h = item_h * presets.len() as f32;
     // List background.
     draw_rectangle(r.x, r.y + r.h, r.w, list_h, Color::new(0.12, 0.1, 0.2, 0.97));
-    draw_rectangle_lines(r.x, r.y + r.h, r.w, list_h, 1.0 * scale, Color::new(0.5, 0.45, 0.7, 0.6));
+    draw_rectangle_lines(r.x, r.y + r.h, r.w, list_h, 1.0 * scale, Color::new(0.35, 0.55, 0.85, 0.6));
     let item_size = 18.0 * scale;
     for (i, (w, h)) in presets.iter().enumerate() {
         let iy = r.y + r.h + i as f32 * item_h;
         let item_label = format!("{}x{}", w, h);
         let is_selected = (*w, *h) == resolution;
         let color = if is_selected {
-            Color::new(0.6, 0.5, 0.9, 0.9)
+            Color::new(0.36, 0.61, 0.84, 0.9)
         } else {
             WHITE
         };
@@ -1959,7 +2130,8 @@ fn handle_button_action(action: ButtonAction) -> Option<(UiMode, PendingUiAction
         ButtonAction::OpenLoadMenu => Some((UiMode::LoadMenu, PendingUiAction::None)),
         ButtonAction::OpenSettings => Some((UiMode::SettingsMenu, PendingUiAction::None)),
         ButtonAction::QuickSave | ButtonAction::QuickLoad
-        | ButtonAction::ToggleHide | ButtonAction::PrevPage | ButtonAction::NextPage => None,
+        | ButtonAction::ToggleHide | ButtonAction::PrevPage | ButtonAction::NextPage
+        | ButtonAction::AddPage => None,
     }
 }
 
@@ -1983,7 +2155,7 @@ fn draw_button(
     };
     draw_rectangle(x, y, w, h, bg_color);
     draw_rectangle_lines(x, y, w, h, 2.0 * scale,
-        if hover { Color::new(0.8, 0.7, 1.0, 1.0) } else { Color::new(0.3, 0.3, 0.5, 0.6) });
+        if hover { Color::new(0.5, 0.75, 1.0, 1.0) } else { Color::new(0.3, 0.3, 0.5, 0.6) });
 
     // Font size scales with the button height, capped to keep labels legible.
     let font_size = (h * 0.4).min(28.0 * scale);
@@ -2004,16 +2176,19 @@ fn draw_button(
     });
 }
 
-/// Draw the in-game HUD button group anchored to the bottom-left corner.
+/// Draw the in-game HUD button group anchored to the bottom-right corner.
 ///
 /// The group is only shown during normal gameplay (not on the title screen,
 /// menus, or while the HUD is hidden). Each button registers itself in the
 /// `buttons` vector so the generic click handler can dispatch its action.
-fn draw_hud_buttons(buttons: &mut Vec<ButtonRect>, sh: f32, font: &Option<Font>, scale: f32) {
-    let btn_w = 100.0 * scale;
+fn draw_hud_buttons(buttons: &mut Vec<ButtonRect>, sw: f32, sh: f32, font: &Option<Font>, scale: f32) {
+    let btn_w = 84.0 * scale;
     let btn_h = 36.0 * scale;
     let gap = 8.0 * scale;
-    let start_x = 20.0 * scale;
+    let count = 7usize;
+    let total_w = count as f32 * btn_w + (count - 1) as f32 * gap;
+    // Right-aligned: leave a 20px margin from the right edge.
+    let start_x = sw - total_w - 20.0 * scale;
     let start_y = sh - 50.0 * scale;
 
     let hud_buttons: [(&str, ButtonAction); 7] = [
@@ -2033,7 +2208,7 @@ fn draw_hud_buttons(buttons: &mut Vec<ButtonRect>, sh: f32, font: &Option<Font>,
     }
 }
 
-/// Draw a small semi-transparent button with a 16px font, used by the HUD
+/// Draw a small semi-transparent button with an 18px font, used by the HUD
 /// button group. Registers the button region for click handling.
 fn draw_small_button(
     x: f32,
@@ -2056,12 +2231,12 @@ fn draw_small_button(
     };
     draw_rectangle(x, y, w, h, bg_color);
     draw_rectangle_lines(x, y, w, h, 1.5 * scale, if hover {
-        Color::new(0.8, 0.7, 1.0, 0.9)
+        Color::new(0.5, 0.75, 1.0, 0.9)
     } else {
         Color::new(0.3, 0.3, 0.5, 0.5)
     });
 
-    let font_size = 16.0 * scale;
+    let font_size = 18.0 * scale;
     let tw = measure_text_f(label, font, font_size as u16, 1.0).width;
     draw_text_f(
         label,

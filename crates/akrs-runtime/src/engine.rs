@@ -174,7 +174,7 @@ impl Engine {
     /// Create a new engine from script source text.
     pub fn new(source: &str) -> Result<Self, Vec<CompileError>> {
         let vm = compile_and_create_vm(source)?;
-        let saves = SaveManager::new("saves", 20);
+        let saves = SaveManager::new("saves", 100);
 
         Ok(Self {
             vm,

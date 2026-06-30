@@ -42,7 +42,7 @@ impl Default for Settings {
             voice_volume: 1.0,
             skip_read_text: false,
             fullscreen: false,
-            resolution: (1280, 720),
+            resolution: (1920, 1080),
             auto_recovery: true,
         }
     }
