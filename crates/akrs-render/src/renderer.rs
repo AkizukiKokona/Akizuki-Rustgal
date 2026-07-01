@@ -94,9 +94,10 @@ fn can_render(text: &str, font: Option<Font>, size: u16) -> bool {
 ///
 /// Returns `(primary_font, fallback_font)`.  The primary font is the first
 /// candidate that passes verification, tried in this order:
-///   1. Runtime full-CJK font file (`assets/fonts/NotoSansCJK-Regular.ttc`).
-///   2. Embedded subset font (compiled into the binary).
-///   3. Platform system fonts.
+///   1. Runtime SourceHanSansSC-Regular-2.otf font file.
+///   2. Runtime NotoSansCJK-Regular.ttc font file (fallback).
+///   3. Embedded SourceHanSansSC-Regular-2.otf font (compiled into the binary).
+///   4. Platform system fonts.
 /// The fallback font is the first *system* font that passes verification, so
 /// that glyphs missing from the primary font can be drawn from the fallback.
 fn load_font_with_fallback() -> (Option<Font>, Option<Font>) {
@@ -114,39 +115,62 @@ fn load_font_with_fallback() -> (Option<Font>, Option<Font>) {
     let mut primary: Option<Font> = None;
     let mut fallback: Option<Font> = None;
 
-    // 1. Runtime full-CJK font file (top priority — covers every glyph).
-    let runtime_cjk_path = "assets/fonts/NotoSansCJK-Regular.ttc";
-    if let Ok(bytes) = std::fs::read(runtime_cjk_path) {
-        match load_ttf_font_from_bytes(&bytes) {
-            Ok(f) => {
-                if let Some(f) = verify_font(f) {
-                    eprintln!("[akrs-render] Chinese font loaded (runtime full CJK)");
-                    primary = Some(f);
+    // 1. Runtime SourceHanSansSC-Regular-2.otf font file (top priority).
+    let runtime_otf_path = "assets/fonts/SourceHanSansSC-Regular-2.otf";
+    match std::fs::read(runtime_otf_path) {
+        Ok(bytes) => {
+            match load_ttf_font_from_bytes(&bytes) {
+                Ok(f) => {
+                    if let Some(f) = verify_font(f) {
+                        eprintln!("[Font] SourceHanSansSC-Regular-2.otf 加载成功");
+                        primary = Some(f);
+                    }
+                }
+                Err(e) => {
+                    eprintln!("[Font] 字体加载失败：assets/fonts/SourceHanSansSC-Regular-2.otf (格式不支持: {:?})", e);
                 }
             }
-            Err(e) => {
-                eprintln!("[akrs-render] Runtime full CJK font load failed: {:?}", e);
+        }
+        Err(e) => {
+            eprintln!("[Font] 字体加载失败：assets/fonts/SourceHanSansSC-Regular-2.otf (文件不存在/读取失败: {:?})", e);
+        }
+    }
+
+    // 2. Runtime NotoSansCJK-Regular.ttc font file (second priority fallback).
+    if primary.is_none() {
+        let runtime_ttc_path = "assets/fonts/NotoSansCJK-Regular.ttc";
+        if let Ok(bytes) = std::fs::read(runtime_ttc_path) {
+            match load_ttf_font_from_bytes(&bytes) {
+                Ok(f) => {
+                    if let Some(f) = verify_font(f) {
+                        eprintln!("[akrs-render] Chinese font loaded (runtime full CJK TTC fallback)");
+                        primary = Some(f);
+                    }
+                }
+                Err(e) => {
+                    eprintln!("[akrs-render] Runtime full CJK TTC font load failed: {:?}", e);
+                }
             }
         }
     }
 
-    // 2. Embedded subset font (compiled into the binary) — fallback for primary.
+    // 3. Embedded SourceHanSansSC-Regular-2.otf font (compiled into the binary).
     if primary.is_none() {
-        let embedded: &[u8] = include_bytes!("../../../assets/fonts/NotoSansSC-Regular-subset.ttf");
+        let embedded: &[u8] = include_bytes!("../../../assets/fonts/SourceHanSansSC-Regular-2.otf");
         match load_ttf_font_from_bytes(embedded) {
             Ok(f) => {
                 if let Some(f) = verify_font(f) {
-                    eprintln!("[akrs-render] Chinese font loaded (embedded subset)");
+                    eprintln!("[Font] SourceHanSansSC-Regular-2.otf 内嵌字体加载成功");
                     primary = Some(f);
                 }
             }
             Err(e) => {
-                eprintln!("[akrs-render] Embedded font load failed: {:?}", e);
+                eprintln!("[Font] 内嵌字体加载失败：SourceHanSansSC-Regular-2.otf (格式不支持: {:?})", e);
             }
         }
     }
 
-    // 3. System fonts — fill primary (if still None) and/or the fallback font.
+    // 4. System fonts — fill primary (if still None) and/or the fallback font.
     for (name, path) in system_font_candidates() {
         if !path.exists() {
             continue;
@@ -343,12 +367,12 @@ impl UiTransition {
     }
 
     /// Alpha (0.0–1.0) for the overlay drawn on top of the scene.
-    /// Bell curve: transparent at the endpoints, peak 0.25 at the midpoint.
-    /// This keeps the overlay dim but never opaque, avoiding the "flash to
-    /// black" feel of the old three-phase transition.
+    /// Bell curve: transparent at the endpoints, peak 0.45 at the midpoint.
+    /// 足够暗以掩盖场景切换时的画面跳变（如首帧资源加载的占位符），
+    /// 但又不会完全变黑造成"闪黑"感。
     fn overlay_alpha(&self) -> f32 {
         if !self.active { return 0.0; }
-        0.25 * (1.0 - (2.0 * self.progress - 1.0).abs())
+        0.45 * (1.0 - (2.0 * self.progress - 1.0).abs())
     }
 }
 
@@ -358,26 +382,30 @@ enum TransitionKind {
     /// 场景切换转场（现有）：cross-fade bell curve，约 0.5s。
     /// 用于进入/离开游戏世界：标题↔游戏、读档进入游戏、回标题等。
     Scene,
-    /// 覆盖转场（新增）：纯色层线性透明度变化，淡入/淡出各 0.4s。
+    /// 覆盖转场：底层画面收缩淡化 + 叠层界面直接覆盖。
     /// 用于叠层界面开关：打开/关闭设置、存档、读档界面。
-    /// 背景保持渲染不暂停，纯色层叠加在画面上方。
+    /// 没有中间纯黑阶段，总时长约 0.3 秒，快而干脆。
     Cover,
 }
 
-/// 覆盖转场状态机：纯色（黑）层从透明线性渐变到不透明（FadeIn），
-/// 在中点 swap UI 模式，再从不透明线性渐变到透明（FadeOut）。
+/// 覆盖转场状态机：底层画面收缩淡化 → 中点 swap UI 模式 → 底层恢复。
+/// 叠层界面（设置/存档/读档）在 swap 后直接覆盖显示，无淡入动画。
 /// 与 `UiTransition` 并行存在，互不干扰；同一时刻仅允许一种转场播放。
 struct CoverTransition {
     active: bool,
     phase: UiTransPhase,
-    progress: f32, // 0.0 to 1.0 within the current half (FadeIn 或 FadeOut)
+    progress: f32, // 0.0 to 1.0 within the current half
     target_mode: UiMode,
     pending: PendingUiAction,
 }
 
 impl CoverTransition {
-    /// 单程时长（秒）：淡入 0.4s，淡出 0.4s，总 0.8s。
-    const HALF_DUR: f32 = 0.4;
+    /// 单程时长（秒）：收缩淡化 0.15s，恢复 0.15s，总 0.3s。
+    const HALF_DUR: f32 = 0.15;
+    /// 收缩目标缩放：底层画面缩放到 95%
+    const SHRINK_SCALE: f32 = 0.95;
+    /// 收缩目标透明度：底层画面淡化到 60%
+    const SHRINK_ALPHA: f32 = 0.60;
 
     fn new() -> Self {
         Self { active: false, phase: UiTransPhase::Out, progress: 0.0, target_mode: UiMode::Normal, pending: PendingUiAction::None }
@@ -385,7 +413,7 @@ impl CoverTransition {
 
     fn start(&mut self, target: UiMode, pending: PendingUiAction) {
         self.active = true;
-        self.phase = UiTransPhase::Out; // Out = 淡入（覆盖层渐显）
+        self.phase = UiTransPhase::Out; // Out = 收缩淡化阶段
         self.progress = 0.0;
         self.target_mode = target;
         self.pending = pending;
@@ -395,27 +423,54 @@ impl CoverTransition {
     fn update(&mut self, dt: f32) -> Option<(UiMode, PendingUiAction)> {
         if !self.active { return None; }
         self.progress += dt / Self::HALF_DUR;
-        if self.phase == UiTransPhase::Out && self.progress >= 1.0 {
-            // 覆盖层已完全不透明 → swap UI 模式 → 进入淡出
-            self.phase = UiTransPhase::In;
-            self.progress = 0.0;
-            return Some((self.target_mode, std::mem::replace(&mut self.pending, PendingUiAction::None)));
-        }
-        if self.phase == UiTransPhase::In && self.progress >= 1.0 {
-            self.progress = 0.0;
-            self.phase = UiTransPhase::Out;
-            self.active = false;
+        if self.progress >= 1.0 {
+            self.progress = 1.0;
+            if self.phase == UiTransPhase::Out {
+                // 收缩到极致 → swap UI 模式 → 进入恢复阶段
+                self.phase = UiTransPhase::In;
+                self.progress = 0.0;
+                return Some((self.target_mode, std::mem::replace(&mut self.pending, PendingUiAction::None)));
+            } else {
+                self.phase = UiTransPhase::Out;
+                self.progress = 0.0;
+                self.active = false;
+            }
         }
         None
     }
 
-    /// 覆盖层透明度。Out（淡入）阶段：0→1 线性；In（淡出）阶段：1→0 线性。
-    fn overlay_alpha(&self) -> f32 {
-        if !self.active { return 0.0; }
-        match self.phase {
+    /// ease-in-out 缓动：快而干脆，起始和结束都放缓。
+    fn ease_in_out(t: f32) -> f32 {
+        if t < 0.5 {
+            2.0 * t * t
+        } else {
+            1.0 - (-2.0 * t + 2.0).powi(2) / 2.0
+        }
+    }
+
+    /// 底层画面当前缩放（1.0 = 正常，SHRINK_SCALE = 最小）。
+    fn content_scale(&self) -> f32 {
+        if !self.active { return 1.0; }
+        let t = Self::ease_in_out(match self.phase {
             UiTransPhase::Out => self.progress,
             UiTransPhase::In => 1.0 - self.progress,
-        }
+        });
+        1.0 - (1.0 - Self::SHRINK_SCALE) * t
+    }
+
+    /// 底层画面当前透明度（1.0 = 正常，SHRINK_ALPHA = 最暗）。
+    fn content_alpha(&self) -> f32 {
+        if !self.active { return 1.0; }
+        let t = Self::ease_in_out(match self.phase {
+            UiTransPhase::Out => self.progress,
+            UiTransPhase::In => 1.0 - self.progress,
+        });
+        1.0 - (1.0 - Self::SHRINK_ALPHA) * t
+    }
+
+    /// 是否处于叠层界面已显示的阶段（In 阶段 = 设置页已覆盖在上方）。
+    fn overlay_visible(&self) -> bool {
+        self.active && self.phase == UiTransPhase::In
     }
 }
 
@@ -576,49 +631,56 @@ const SLOTS_PER_PAGE: usize = 8;
 
 /// HUD 按钮组的显隐动画状态。
 struct HudVisibility {
-    /// 0.0 = 完全隐藏（下沉），1.0 = 完全显示（上浮）。
+    /// 0.0 = 完全隐藏（下沉到屏幕外），1.0 = 完全显示。
     progress: f32,
 }
 
 impl HudVisibility {
-    /// 下沉距离（按钮自身高度 + 一点边距），单位：像素（设计基准）。
-    const SINK_PX: f32 = 56.0;
-    /// 平滑系数：每帧进度向目标靠近的比例。值越大越快。
-    /// 取 0.18 ≈ 约 8 帧（@60fps）走完 90% 距离，体感顺滑不拖沓。
-    const SMOOTH: f32 = 0.18;
+    /// 总位移距离：按钮完全下沉到屏幕底部下方（按钮高度 + 边距）。
+    /// 设计基准下按钮高 80px，下沉 120px 保证完全不可见。
+    const TRAVEL_PX: f32 = 120.0;
     /// 触发区域：在按钮组正上方额外延伸的高度，方便鼠标移入。
-    const HOVER_BAND_PX: f32 = 24.0;
+    const HOVER_BAND_PX: f32 = 80.0;
 
     fn new() -> Self {
         // 进入游戏时默认完全隐藏，无动画。
         Self { progress: 0.0 }
     }
 
-    /// 每帧更新进度。`hovered` 表示鼠标是否在触发区域内。
+    /// 每帧更新。`hovered` 表示鼠标是否在触发区域内。
+    /// 使用 ease-out 缓动：开始快，接近目标时减速。
     fn update(&mut self, hovered: bool, dt: f32) {
         let target = if hovered { 1.0 } else { 0.0 };
-        // 帧率无关的指数平滑：alpha ∈ (0,1]，dt 越大 alpha 越接近 1。
-        let alpha = 1.0 - (1.0 - Self::SMOOTH).powf(dt * 60.0);
-        self.progress += (target - self.progress) * alpha;
-        // 钳制，避免浮点漂移
+        // ease-out 插值：当前值向目标靠近，速度与距离成正比（快而干脆）。
+        // 帧率无关的指数逼近，系数调大为快速响应。
+        let speed = 8.0; // 越大越快
+        let delta = target - self.progress;
+        self.progress += delta * (1.0 - (-speed * dt).exp());
+        // 钳制
         if self.progress < 0.001 { self.progress = 0.0; }
         if self.progress > 0.999 { self.progress = 1.0; }
     }
 
-    /// 当前下沉偏移（像素，设计基准）。0 = 完全显示，SINK_PX = 完全下沉。
+    /// ease-out 缓动曲线：输出 0..1，起始快结束慢。
+    fn ease_out_cubic(t: f32) -> f32 {
+        1.0 - (1.0 - t).powi(3)
+    }
+
+    /// 当前下沉偏移（像素，设计基准）。0 = 完全显示，TRAVEL_PX = 完全下沉。
     fn sink_offset(&self) -> f32 {
-        (1.0 - self.progress) * Self::SINK_PX
+        (1.0 - Self::ease_out_cubic(self.progress)) * Self::TRAVEL_PX
     }
 
-    /// 当前整体透明度（0..1）。隐藏时趋近 0，显示时为 1。
+    /// 按钮整体透明度：默认 50% 半透明，完全显示时也是 50%。
+    /// 隐藏时为 0（完全不可见），中间线性过渡。
     fn alpha(&self) -> f32 {
-        self.progress
+        // 只要 progress > 0 就有 0.5 的基础透明度，隐藏时平滑淡出到 0
+        0.5 * self.progress.max(0.0)
     }
 
-    /// 按钮是否实质可见（用于点击命中判定）。低于 0.5 视为不可交互，
-    /// 避免在半隐藏状态下误触。
+    /// 按钮是否可交互：只要进度 > 0.3 就可以点击（上浮过程中即可操作）。
     fn is_interactable(&self) -> bool {
-        self.progress > 0.5
+        self.progress > 0.3
     }
 }
 
@@ -643,6 +705,11 @@ pub async fn run(mut engine: Engine) {
     // Load persistent settings (text speed, volume, etc.) before starting so
     // the player's preferences from the previous session are honored.
     engine.load_settings();
+    // Force reset resolution to 1920x1080 windowed, ignoring saved settings.
+    let mut settings = engine.settings().clone();
+    settings.resolution = (1920, 1080);
+    settings.fullscreen = false;
+    *engine.settings_mut() = settings;
     // If a crash-recovery autosave exists from a previous run, prompt the
     // player to resume before showing the title screen.
     let mut ui_mode = if engine.has_autosave() {
@@ -663,6 +730,8 @@ pub async fn run(mut engine: Engine) {
     let mut dragging_slider: Option<usize> = None;
     // Whether the resolution dropdown in the settings menu is expanded.
     let mut dropdown_open: bool = false;
+    // 当前设置页选中的 Tab（0=游戏，1=画面，2=存档）。
+    let mut settings_tab: usize = 0;
     // Current page index for the save / load menus (grid paging).
     let mut save_page: usize = 0;
     let mut load_page: usize = 0;
@@ -740,7 +809,9 @@ pub async fn run(mut engine: Engine) {
         buttons.clear();
 
         // Draw based on phase and UI mode
-        clear_background(BLACK);
+        // 使用深天蓝色清屏而非纯黑，避免首帧或加载时突兀的黑色闪烁，
+        // 与整体 UI 主题色保持一致。
+        clear_background(Color::new(0.03, 0.08, 0.15, 1.0));
 
         // Update UI transitions. 两种转场都推进动画；任一到达中点 swap 时
         // 返回 Some((mode, pending))，由下方统一处理（逻辑与单转场时一致）。
@@ -799,14 +870,21 @@ pub async fn run(mut engine: Engine) {
             draw_dim_overlay(sw, sh, 0.6);
             draw_autosave_prompt(&engine, &mut buttons, sw, sh, &font, scale);
         } else if ui_mode == UiMode::SettingsMenu {
-            // Full-screen settings page: opaque background + full-screen layout.
-            // Sliders/toggles/dropdown are not button-based, so the generic
-            // click handler is skipped for this mode (see below).
-            draw_rectangle(0.0, 0.0, sw, sh, Color::new(0.05, 0.05, 0.1, 1.0));
-            draw_settings_menu(&mut engine, &settings_layout, &font, dropdown_open, scale);
+            // 叠层式设置页：先画底层场景（保持渲染，营造"叠在画面上"的效果），
+            // 再画设置面板。CoverTransition 期间的淡化由转场 overlay 统一处理。
+            if engine.phase() != EnginePhase::Title {
+                draw_scene(&engine, &mut assets, sw, sh, false, &font, scale).await;
+            } else {
+                draw_title_screen(&mut buttons, sw, sh, &mut assets, &font, scale);
+            }
+            draw_settings_menu(&mut engine, &settings_layout, &font, dropdown_open, settings_tab, scale);
         } else if ui_mode != UiMode::Normal {
-            // Save/Load menus: full-screen opaque background + full-screen grid.
-            draw_rectangle(0.0, 0.0, sw, sh, Color::new(0.05, 0.05, 0.1, 1.0));
+            // Save/Load 叠层菜单：先画底层场景，再画存档/读档面板。
+            if engine.phase() != EnginePhase::Title {
+                draw_scene(&engine, &mut assets, sw, sh, false, &font, scale).await;
+            } else {
+                draw_title_screen(&mut buttons, sw, sh, &mut assets, &font, scale);
+            }
             match ui_mode {
                 UiMode::SaveMenu => draw_save_menu(&engine, &mut buttons, sw, sh, &font, scale, save_page, save_displayed_slots),
                 UiMode::LoadMenu => draw_load_menu(&engine, &mut buttons, sw, sh, &font, scale, load_page, load_displayed_slots),
@@ -852,7 +930,7 @@ pub async fn run(mut engine: Engine) {
         if !ui_transition.active && !cover_transition.active {
             if ui_mode == UiMode::SettingsMenu {
                 if let Some((target, pending, kind)) = handle_settings_interaction(
-                    &mut engine, &settings_layout, &mut dragging_slider, &mut dropdown_open, scale,
+                    &mut engine, &settings_layout, &mut dragging_slider, &mut dropdown_open, &mut settings_tab, scale,
                 ) {
                     start_transition(&mut ui_transition, &mut cover_transition, kind, target, pending);
                 }
@@ -944,15 +1022,21 @@ pub async fn run(mut engine: Engine) {
             }
         }
 
-        // Draw transition overlay (black fade) on top of everything.
-        // 两种转场互斥，至多一个 active；覆盖转场期间游戏画面仍在下方渲染
-        // （见上方 draw 分支，覆盖转场不改变渲染流程），纯色层叠加在上方。
+        // Draw transition overlay on top of everything.
+        // 两种转场互斥，至多一个 active。
+        // - Scene 转场：bell curve 黑色覆盖（原逻辑不变）
+        // - Cover 转场：底层画面淡化（暗色覆盖）模拟收缩淡化效果，
+        //   叠层界面（设置/存档/读档）在 swap 后直接绘制在上方，不淡入。
         if ui_transition.active {
             let alpha = ui_transition.overlay_alpha();
             draw_rectangle(0.0, 0.0, sw, sh, Color::new(0.0, 0.0, 0.0, alpha));
         } else if cover_transition.active {
-            let alpha = cover_transition.overlay_alpha();
-            draw_rectangle(0.0, 0.0, sw, sh, Color::new(0.0, 0.0, 0.0, alpha));
+            // 淡化强度：Out 阶段从 0→40%（底层渐暗），In 阶段保持 40%（底层保持淡化，设置页盖其上）
+            // 用 content_alpha 反过来算：淡化强度 = 1 - content_alpha
+            let dim_alpha = 1.0 - cover_transition.content_alpha();
+            if dim_alpha > 0.001 {
+                draw_rectangle(0.0, 0.0, sw, sh, Color::new(0.0, 0.0, 0.0, dim_alpha));
+            }
         }
 
         next_frame().await;
@@ -967,7 +1051,7 @@ fn draw_title_screen(buttons: &mut Vec<ButtonRect>, sw: f32, sh: f32, _assets: &
 
     // Title text
     let title = "Akizuki*Rustgal";
-    let title_font_size = 72.0 * scale;
+    let title_font_size = 288.0 * scale;
     let title_w = measure_text_f(title, font, title_font_size as u16, 1.0).width;
     draw_text_f(
         title,
@@ -980,12 +1064,12 @@ fn draw_title_screen(buttons: &mut Vec<ButtonRect>, sw: f32, sh: f32, _assets: &
 
     // Subtitle
     let subtitle = "视觉小说引擎";
-    let sub_size = 28.0 * scale;
+    let sub_size = 112.0 * scale;
     let sub_w = measure_text_f(subtitle, font, sub_size as u16, 1.0).width;
     draw_text_f(
         subtitle,
         (sw - sub_w) / 2.0,
-        sh * 0.25 + 80.0 * scale,
+        sh * 0.25 + 320.0 * scale,
         sub_size,
         Color::new(0.6, 0.6, 0.7, 1.0),
         font,
@@ -1061,6 +1145,7 @@ async fn draw_background(scene: &SceneState, assets: &mut AssetManager, sw: f32,
                 },
             );
         } else {
+            eprintln!("[资源加载失败] 背景图片加载失败，将使用占位符");
             // Placeholder: colored rectangle based on resource name hash
             let placeholder_color = name_to_color(&bg.name);
             draw_rectangle(0.0, 0.0, sw, sh, Color::new(
@@ -1080,7 +1165,7 @@ async fn draw_characters(scene: &SceneState, assets: &mut AssetManager, sw: f32,
     for char_state in &scene.characters {
         let x_frac = char_state.position.x_fraction();
         let sprite_name = if let Some(pose) = &char_state.pose {
-            format!("{}_{}.png", char_state.name, pose)
+            format!("{}.png", pose)
         } else {
             format!("{}.png", char_state.name)
         };
@@ -1104,6 +1189,7 @@ async fn draw_characters(scene: &SceneState, assets: &mut AssetManager, sw: f32,
                 },
             );
         } else {
+            eprintln!("[资源加载失败] 立绘图片加载失败，将使用占位符（角色：{}）", char_state.name);
             // Placeholder: colored rectangle
             let placeholder_color = name_to_color(&char_state.name);
             let char_w = 200.0 * scale;
@@ -1117,9 +1203,9 @@ async fn draw_characters(scene: &SceneState, assets: &mut AssetManager, sw: f32,
             // Draw character name on placeholder
             draw_text_f(
                 &char_state.name,
-                x + 10.0 * scale,
-                y + 30.0 * scale,
-                24.0 * scale,
+                x + 40.0 * scale,
+                y + 120.0 * scale,
+                96.0 * scale,
                 WHITE,
                 font,
             );
@@ -1128,37 +1214,68 @@ async fn draw_characters(scene: &SceneState, assets: &mut AssetManager, sw: f32,
 }
 
 fn draw_dialogue(dialogue: &akrs_runtime::DialogueState, sw: f32, sh: f32, font: &Option<Font>, scale: f32) {
-    let box_h = 280.0 * scale;
-    let box_y = sh - box_h - 20.0 * scale;
+    let box_h = 1120.0 * scale;
+    let box_y = sh - box_h - 80.0 * scale;
     let box_x = 0.0;
     let box_w = sw;
+    let pad = 80.0 * scale;
+    let name_size = 112.0 * scale;
+    let text_size = 104.0 * scale;
 
-    // Dialogue box background: light-blue translucent panel.
-    draw_rectangle(box_x, box_y, box_w, box_h, Color::new(0.68, 0.85, 0.90, 0.6));
-    // Border
-    draw_rectangle_lines(box_x, box_y, box_w, box_h, 2.0 * scale, Color::new(0.4, 0.7, 0.9, 0.8));
+    // 对话框背景：从上到下渐变色（顶部半透明 → 底部完全透明）
+    // 用 16 段矩形近似垂直渐变，顶部透明度在现有基础上再低 10%。
+    let seg_count = 16;
+    let seg_h = box_h / seg_count as f32;
+    for i in 0..seg_count {
+        let t = i as f32 / (seg_count - 1) as f32;
+        // 顶部 alpha 0.54（原 0.6 再降 10%），底部 alpha 0.0
+        let alpha = 0.54 * (1.0 - t);
+        let seg_y = box_y + i as f32 * seg_h;
+        // 天蓝色系主题色：浅天蓝背景
+        draw_rectangle(box_x, seg_y, box_w, seg_h, Color::new(0.55, 0.78, 0.92, alpha));
+    }
+    // 顶部边线（天蓝色）
+    draw_rectangle(box_x, box_y, box_w, 3.0 * scale, Color::new(0.3, 0.6, 0.85, 0.9));
 
-    // Speaker name
+    let text_left = if dialogue.speaker.is_empty() {
+        // 旁白：与左边距对齐
+        pad
+    } else {
+        // 对话：正文向右偏移，与角色名形成层次感
+        pad + 160.0 * scale
+    };
+    let text_max_w = box_w - text_left - pad;
+
+    // Speaker name（角色名居左）
     if !dialogue.speaker.is_empty() {
         draw_text_f(
             &dialogue.speaker,
-            box_x + 20.0 * scale,
-            box_y + 28.0 * scale,
-            28.0 * scale,
-            Color::new(0.15, 0.3, 0.5, 1.0),
+            pad,
+            box_y + name_size + 20.0 * scale,
+            name_size,
+            Color::new(0.1, 0.35, 0.6, 1.0),
             font,
         );
     }
+
+    // 文本起始 y
+    let text_y = if dialogue.speaker.is_empty() {
+        // 旁白：顶部空一行（段间距）
+        box_y + pad + text_size + text_size * 0.8
+    } else {
+        // 对话：角色名下方
+        box_y + name_size + 80.0 * scale + text_size
+    };
 
     // Dialogue text (typewriter)
     let displayed: String = dialogue.full_text.chars().take(dialogue.displayed_chars).collect();
     draw_text_wrapped(
         &displayed,
-        box_x + 20.0 * scale,
-        box_y + (if dialogue.speaker.is_empty() { 30.0 } else { 60.0 }) * scale,
-        box_w - 40.0 * scale,
-        26.0 * scale,
-        Color::new(0.1, 0.15, 0.2, 1.0),
+        text_left,
+        text_y,
+        text_max_w,
+        text_size,
+        Color::new(0.08, 0.12, 0.18, 1.0),
         font,
         scale,
     );
@@ -1169,11 +1286,11 @@ fn draw_dialogue(dialogue: &akrs_runtime::DialogueState, sw: f32, sh: f32, font:
         let pulse = 0.5 + 0.5 * (t * 2.0 * 3.14159 / 1.5).sin();
         let alpha = 0.3 + pulse * 0.7;
         let size_mult = 0.85 + pulse * 0.25;
-        let indicator_size = 24.0 * scale * size_mult;
+        let indicator_size = 96.0 * scale * size_mult;
         draw_text_f(
             "▼",
-            box_x + box_w - 40.0 * scale,
-            box_y + box_h - 20.0 * scale,
+            box_x + box_w - 160.0 * scale,
+            box_y + box_h - 80.0 * scale,
             indicator_size,
             Color::new(0.8, 0.8, 0.9, alpha),
             font,
@@ -1184,7 +1301,7 @@ fn draw_dialogue(dialogue: &akrs_runtime::DialogueState, sw: f32, sh: f32, font:
 fn draw_choices(choices: &akrs_runtime::ChoicesState, sw: f32, sh: f32, font: &Option<Font>, scale: f32) {
     // Prompt
     if let Some(prompt) = &choices.prompt {
-        let prompt_size = 32.0 * scale;
+        let prompt_size = 128.0 * scale;
         let pw = measure_text_f(prompt, font, prompt_size as u16, 1.0).width;
         draw_text_f(
             prompt,
@@ -1200,7 +1317,7 @@ fn draw_choices(choices: &akrs_runtime::ChoicesState, sw: f32, sh: f32, font: &O
     let opt_w = 500.0 * scale;
     let opt_h = 60.0 * scale;
     let opt_x = (sw - opt_w) / 2.0;
-    let _total_h = choices.options.len() as f32 * (opt_h + 15.0 * scale);
+    let _total_h = choices.options.len() as f32 * (opt_h + 60.0 * scale);
     let mut opt_y = sh * 0.3;
 
     for (i, opt) in choices.options.iter().enumerate() {
@@ -1211,22 +1328,22 @@ fn draw_choices(choices: &akrs_runtime::ChoicesState, sw: f32, sh: f32, font: &O
             Color::new(0.05, 0.05, 0.1, 0.85)
         };
         draw_rectangle(opt_x, opt_y, opt_w, opt_h, bg_color);
-        draw_rectangle_lines(opt_x, opt_y, opt_w, opt_h, 2.0 * scale,
+        draw_rectangle_lines(opt_x, opt_y, opt_w, opt_h, 8.0 * scale,
             if is_selected { Color::new(0.29, 0.62, 1.0, 1.0) } else { Color::new(0.3, 0.3, 0.4, 0.6) });
 
-        let opt_font = 24.0 * scale;
+        let opt_font = 96.0 * scale;
         let text_color = if opt.available { WHITE } else { Color::new(0.4, 0.4, 0.4, 0.8) };
         let tw = measure_text_f(&opt.text, font, opt_font as u16, 1.0).width;
         draw_text_f(
             &opt.text,
             opt_x + (opt_w - tw) / 2.0,
-            opt_y + 38.0 * scale,
+            opt_y + 152.0 * scale,
             opt_font,
             text_color,
             font,
         );
 
-        opt_y += opt_h + 15.0 * scale;
+        opt_y += opt_h + 60.0 * scale;
     }
 }
 
@@ -1248,7 +1365,7 @@ fn draw_dim_overlay(sw: f32, sh: f32, alpha: f32) {
 fn draw_story_ended(sw: f32, sh: f32, buttons: &mut Vec<ButtonRect>, font: &Option<Font>, scale: f32) {
     draw_dim_overlay(sw, sh, 0.8);
     let text = "故事结束";
-    let text_size = 64.0 * scale;
+    let text_size = 256.0 * scale;
     let tw = measure_text_f(text, font, text_size as u16, 1.0).width;
     draw_text_f(text, (sw - tw) / 2.0, sh * 0.4, text_size, WHITE, font);
 
@@ -1307,11 +1424,11 @@ fn draw_autosave_prompt(engine: &Engine, buttons: &mut Vec<ButtonRect>, sw: f32,
     );
 
     let center_x = sw / 2.0;
-    let mut cursor_y = dialog_y + 56.0 * scale;
+    let mut cursor_y = dialog_y + 224.0 * scale;
 
     // Title.
     let title = "检测到未正常退出";
-    let title_size = 36.0 * scale;
+    let title_size = 144.0 * scale;
     let tw = measure_text_f(title, font, title_size as u16, 1.0).width;
     draw_text_f(
         title,
@@ -1321,28 +1438,28 @@ fn draw_autosave_prompt(engine: &Engine, buttons: &mut Vec<ButtonRect>, sw: f32,
         Color::new(0.8, 0.9, 1.0, 1.0),
         font,
     );
-    cursor_y += 50.0 * scale;
+    cursor_y += 200.0 * scale;
 
     // Divider.
     draw_rectangle(
-        dialog_x + 40.0 * scale,
+        dialog_x + 160.0 * scale,
         cursor_y,
-        dialog_w - 80.0 * scale,
-        1.0 * scale,
+        dialog_w - 320.0 * scale,
+        4.0 * scale,
         Color::new(0.4, 0.35, 0.55, 0.6),
     );
-    cursor_y += 36.0 * scale;
+    cursor_y += 144.0 * scale;
 
     // Message (two lines for readability).
     let line1 = "检测到上次未正常退出的游戏进度。";
     let line2 = "是否继续上次的游戏？";
-    let msg_size = 24.0 * scale;
+    let msg_size = 96.0 * scale;
     let l1w = measure_text_f(line1, font, msg_size as u16, 1.0).width;
     let l2w = measure_text_f(line2, font, msg_size as u16, 1.0).width;
     draw_text_f(line1, center_x - l1w / 2.0, cursor_y, msg_size, WHITE, font);
-    cursor_y += 36.0 * scale;
+    cursor_y += 144.0 * scale;
     draw_text_f(line2, center_x - l2w / 2.0, cursor_y, msg_size, WHITE, font);
-    cursor_y += 40.0 * scale;
+    cursor_y += 160.0 * scale;
 
     // Autosave summary (section + play time), if readable.
     if let Some(save) = engine.saves().load_autosave().ok() {
@@ -1351,7 +1468,7 @@ fn draw_autosave_prompt(engine: &Engine, buttons: &mut Vec<ButtonRect>, sw: f32,
             save.metadata.section_name,
             format_play_time(save.metadata.play_time_secs),
         );
-        let summary_size = 22.0 * scale;
+        let summary_size = 88.0 * scale;
         let sw2 = measure_text_f(&summary, font, summary_size as u16, 1.0).width;
         draw_text_f(
             &summary,
@@ -1385,7 +1502,7 @@ fn draw_panel(sw: f32, sh: f32, title: &str, font: &Option<Font>, scale: f32) {
     // Subtle full-screen frame.
     draw_rectangle_lines(0.0, 0.0, sw, sh, 2.0 * scale, Color::new(0.35, 0.55, 0.85, 0.8));
 
-    let title_size = 48.0 * scale;
+    let title_size = 192.0 * scale;
     let tw = measure_text_f(title, font, title_size as u16, 1.0).width;
     draw_text_f(title, (sw - tw) / 2.0, sh * 0.1, title_size, WHITE, font);
 }
@@ -1460,10 +1577,10 @@ fn draw_slot_grid(
     is_save: bool,
 ) {
     let cols = 4; // 2 rows × 4 columns = SLOTS_PER_PAGE
-    let cell_w = 280.0 * scale;
-    let cell_h = 160.0 * scale;
-    let gap_x = 20.0 * scale;
-    let gap_y = 20.0 * scale;
+    let cell_w = 1120.0 * scale;
+    let cell_h = 640.0 * scale;
+    let gap_x = 80.0 * scale;
+    let gap_y = 80.0 * scale;
 
     let grid_w = cols as f32 * cell_w + (cols - 1) as f32 * gap_x;
     let grid_x = (sw - grid_w) / 2.0;
@@ -1536,13 +1653,13 @@ fn draw_slot_cell(
     draw_rectangle(x, y, w, h, Color::new(0.08, 0.07, 0.14, 0.95));
     draw_rectangle_lines(x, y, w, h, 1.5 * scale, Color::new(0.35, 0.55, 0.85, 0.7));
 
-    let pad = 12.0 * scale;
+    let pad = 48.0 * scale;
     let slot_label = format!("存档位 {}", slot + 1);
     draw_text_f(
         &slot_label,
         x + pad,
-        y + 24.0 * scale,
-        18.0 * scale,
+        y + 96.0 * scale,
+        72.0 * scale,
         Color::new(0.8, 0.9, 1.0, 1.0),
         font,
     );
@@ -1554,24 +1671,24 @@ fn draw_slot_cell(
         draw_text_f(
             &ts,
             x + pad,
-            y + 46.0 * scale,
-            14.0 * scale,
+            y + 184.0 * scale,
+            56.0 * scale,
             Color::new(0.7, 0.7, 0.8, 1.0),
             font,
         );
 
         // Chapter name: 1 line, ellipsized if it overflows.
-        let section_size = 16.0 * scale;
+        let section_size = 64.0 * scale;
         let section = fit_text(&m.section_name, font, section_size, w - 2.0 * pad);
-        draw_text_f(&section, x + pad, y + 68.0 * scale, section_size, WHITE, font);
+        draw_text_f(&section, x + pad, y + 272.0 * scale, section_size, WHITE, font);
 
         // Description: up to 2 lines, character-wrapped, ellipsized on overflow.
-        let desc_size = 14.0 * scale;
+        let desc_size = 56.0 * scale;
         let desc_lines = wrap_text_cn(&m.description, font, desc_size, w - 2.0 * pad, 2);
-        let mut desc_y = y + 90.0 * scale;
+        let mut desc_y = y + 360.0 * scale;
         for line in &desc_lines {
             draw_text_f(line, x + pad, desc_y, desc_size, Color::new(0.75, 0.75, 0.85, 1.0), font);
-            desc_y += desc_size + 4.0 * scale;
+            desc_y += desc_size + 16.0 * scale;
         }
 
         // On hover, surface the full description as a tooltip.
@@ -1580,13 +1697,13 @@ fn draw_slot_cell(
         }
     } else {
         // Empty slot: centered "空" + a dimming overlay (visually disabled).
-        let empty_size = 24.0 * scale;
+        let empty_size = 96.0 * scale;
         let label = "空";
         let lw = measure_text_f(label, font, empty_size as u16, 1.0).width;
         draw_text_f(
             label,
             x + (w - lw) / 2.0,
-            y + h / 2.0 + 8.0 * scale,
+            y + h / 2.0 + 32.0 * scale,
             empty_size,
             Color::new(0.5, 0.5, 0.55, 1.0),
             font,
@@ -1621,14 +1738,14 @@ fn draw_page_nav(
     total_pages: usize,
     can_add_page: bool,
 ) {
-    let btn_w = 60.0 * scale;
-    let btn_h = 44.0 * scale;
-    let gap = 16.0 * scale;
+    let btn_w = 240.0 * scale;
+    let btn_h = 176.0 * scale;
+    let gap = 64.0 * scale;
 
     let label = format!("{}/{}", page + 1, total_pages);
-    let label_size = 20.0 * scale;
+    let label_size = 80.0 * scale;
     let lw = measure_text_f(&label, font, label_size as u16, 1.0).width;
-    let label_w = lw + 24.0 * scale;
+    let label_w = lw + 96.0 * scale;
 
     // The "+" button sits to the left of "←" and only appears on the last page
     // when more slots can still be revealed.
@@ -1746,15 +1863,15 @@ fn draw_tooltip(text: &str, mouse_x: f32, mouse_y: f32, sw: f32, sh: f32, font: 
     if text.is_empty() {
         return;
     }
-    let font_size = 16.0 * scale;
-    let pad = 8.0 * scale;
+    let font_size = 64.0 * scale;
+    let pad = 32.0 * scale;
     let max_w = 360.0 * scale;
     let lines = wrap_text_cn(text, font, font_size, max_w, 8);
     if lines.is_empty() {
         return;
     }
 
-    let line_h = font_size + 4.0 * scale;
+    let line_h = font_size + 16.0 * scale;
     let mut text_w = 0.0_f32;
     for line in &lines {
         let w = measure_text_f(line, font, font_size as u16, 1.0).width;
@@ -1766,18 +1883,18 @@ fn draw_tooltip(text: &str, mouse_x: f32, mouse_y: f32, sw: f32, sh: f32, font: 
     let box_h = lines.len() as f32 * line_h + 2.0 * pad;
 
     // Default position: below and slightly right of the cursor.
-    let mut box_x = mouse_x + 12.0 * scale;
-    let mut box_y = mouse_y + 18.0 * scale;
+    let mut box_x = mouse_x + 48.0 * scale;
+    let mut box_y = mouse_y + 72.0 * scale;
     // Flip horizontally if it would overflow the right edge.
-    if box_x + box_w > sw - 4.0 {
-        box_x = (mouse_x - box_w - 12.0 * scale).max(4.0);
+    if box_x + box_w > sw - 16.0 {
+        box_x = (mouse_x - box_w - 48.0 * scale).max(16.0);
     }
-    if box_x < 4.0 {
-        box_x = 4.0;
+    if box_x < 16.0 {
+        box_x = 16.0;
     }
     // Flip vertically if it would overflow the bottom edge.
-    if box_y + box_h > sh - 4.0 {
-        box_y = (mouse_y - box_h - 12.0 * scale).max(4.0);
+    if box_y + box_h > sh - 16.0 {
+        box_y = (mouse_y - box_h - 48.0 * scale).max(16.0);
     }
 
     draw_rectangle(box_x, box_y, box_w, box_h, Color::new(0.05, 0.05, 0.1, 0.92));
@@ -1799,6 +1916,9 @@ struct Rect4 {
     h: f32,
 }
 
+/// Tab 标签页数量和名称。
+const SETTINGS_TAB_NAMES: [&str; 3] = ["游戏", "画面", "存档"];
+
 /// Pre-computed geometry for every control in the settings menu.
 ///
 /// Computing this once per frame lets both `draw_settings_menu` (rendering)
@@ -1810,12 +1930,18 @@ struct SettingsLayout {
     panel_y: f32,
     panel_w: f32,
     panel_h: f32,
+    /// Tab 栏中每个 Tab 的 rect。
+    tab_rects: [Rect4; 3],
+    /// 内容区域（Tab 栏下方）的顶部 y。
+    content_top: f32,
     /// X position of the left-aligned labels.
     label_x: f32,
     /// X position of the value text shown to the right of each slider.
     value_x: f32,
-    /// Vertical center of each of the 6 rows.
-    row_mids: [f32; 6],
+    /// 游戏 Tab 行：文本速度、BGM 音量、音效音量、自动恢复
+    game_row_mids: [f32; 4],
+    /// 画面 Tab 行：全屏模式、分辨率
+    display_row_mids: [f32; 2],
     /// Visible slider track bars for indices 0 (text_speed), 1 (bgm), 2 (sfx).
     slider_tracks: [Rect4; 3],
     /// Expanded hit regions for the sliders (taller, easier to grab).
@@ -1828,73 +1954,99 @@ struct SettingsLayout {
     back_btn: Rect4,
 }
 
-/// Compute the full-screen settings menu layout from the current screen size
-/// and UI scale.  The panel covers the entire window.
+/// Compute the settings menu layout. Panel is a centered floating overlay
+/// (not full-screen) with a tab bar at the top.
 fn compute_settings_layout(sw: f32, sh: f32, scale: f32) -> SettingsLayout {
-    // Full-screen panel.
-    let panel_x = 0.0;
-    let panel_y = 0.0;
-    let panel_w = sw;
-    let panel_h = sh;
+    // 居中面板：宽 75% 屏宽，高 70% 屏高。
+    let panel_w = sw * 0.75;
+    let panel_h = sh * 0.70;
+    let panel_x = (sw - panel_w) / 2.0;
+    let panel_y = (sh - panel_h) / 2.0;
 
-    let label_x = panel_x + 40.0 * scale;
-    let control_x = panel_x + 300.0 * scale;
-    let track_w = (panel_w - 300.0 * scale - 240.0 * scale).max(120.0 * scale);
-    let value_x = control_x + track_w + 20.0 * scale;
+    // Tab 栏：顶部，每个 Tab 等宽。
+    let tab_bar_h = 140.0 * scale;
+    let tab_w = panel_w / SETTINGS_TAB_NAMES.len() as f32;
+    let mut tab_rects = [Rect4::default(); 3];
+    for i in 0..SETTINGS_TAB_NAMES.len() {
+        tab_rects[i] = Rect4 {
+            x: panel_x + i as f32 * tab_w,
+            y: panel_y,
+            w: tab_w,
+            h: tab_bar_h,
+        };
+    }
+    let content_top = panel_y + tab_bar_h;
 
-    let row_top = sh * 0.22;
-    let row_h = 72.0 * scale;
-    let mut row_mids = [0.0; 6];
-    for i in 0..6 {
-        row_mids[i] = row_top + i as f32 * row_h + row_h / 2.0;
+    let label_x = panel_x + 120.0 * scale;
+    let control_x = panel_x + panel_w * 0.45;
+    let track_w = (panel_w * 0.55 - 120.0 * scale).max(320.0 * scale);
+    let value_x = control_x + track_w + 60.0 * scale;
+
+    // 游戏 Tab 内容行（4 行：文本速度、BGM、音效、自动恢复）
+    let game_top = content_top + 100.0 * scale;
+    let game_row_h = 200.0 * scale;
+    let mut game_row_mids = [0.0; 4];
+    for i in 0..4 {
+        game_row_mids[i] = game_top + i as f32 * game_row_h + game_row_h / 2.0;
     }
 
-    let track_h = 12.0 * scale;
+    // 画面 Tab 内容行（2 行：全屏、分辨率）
+    let display_top = content_top + 120.0 * scale;
+    let display_row_h = 220.0 * scale;
+    let mut display_row_mids = [0.0; 2];
+    for i in 0..2 {
+        display_row_mids[i] = display_top + i as f32 * display_row_h + display_row_h / 2.0;
+    }
+
+    let track_h = 36.0 * scale;
     let mut slider_tracks = [Rect4::default(); 3];
     let mut slider_hits = [Rect4::default(); 3];
     for i in 0..3 {
-        let mid = row_mids[i];
+        let mid = game_row_mids[i];
         slider_tracks[i] = Rect4 {
             x: control_x,
             y: mid - track_h / 2.0,
             w: track_w,
             h: track_h,
         };
-        // Hit area is the track expanded vertically for easier grabbing.
         slider_hits[i] = Rect4 {
-            x: control_x - 6.0 * scale,
-            y: mid - 20.0 * scale,
-            w: track_w + 12.0 * scale,
-            h: 40.0 * scale,
+            x: control_x - 20.0 * scale,
+            y: mid - 60.0 * scale,
+            w: track_w + 40.0 * scale,
+            h: 120.0 * scale,
         };
     }
 
-    let toggle_w = 80.0 * scale;
-    let toggle_h = 32.0 * scale;
+    let toggle_w = 240.0 * scale;
+    let toggle_h = 100.0 * scale;
     let mut toggles = [Rect4::default(); 2];
-    for i in 0..2 {
-        let mid = row_mids[3 + i];
-        toggles[i] = Rect4 {
-            x: control_x,
-            y: mid - toggle_h / 2.0,
-            w: toggle_w,
-            h: toggle_h,
-        };
-    }
-
-    let dropdown_mid = row_mids[5];
-    let dropdown = Rect4 {
+    // toggle 0: auto_recovery（游戏 Tab）
+    toggles[0] = Rect4 {
         x: control_x,
-        y: dropdown_mid - 18.0 * scale,
-        w: 200.0 * scale,
-        h: 36.0 * scale,
+        y: game_row_mids[3] - toggle_h / 2.0,
+        w: toggle_w,
+        h: toggle_h,
+    };
+    // toggle 1: fullscreen（画面 Tab）
+    toggles[1] = Rect4 {
+        x: control_x,
+        y: display_row_mids[0] - toggle_h / 2.0,
+        w: toggle_w,
+        h: toggle_h,
     };
 
-    let btn_w = 240.0 * scale;
-    let btn_h = 50.0 * scale;
+    let dropdown = Rect4 {
+        x: control_x,
+        y: display_row_mids[1] - 60.0 * scale,
+        w: 640.0 * scale,
+        h: 120.0 * scale,
+    };
+
+    let btn_w = 720.0 * scale;
+    let btn_h = 160.0 * scale;
     let back_btn = Rect4 {
-        x: (sw - btn_w) / 2.0,
-        y: panel_y + panel_h - btn_h - 30.0 * scale,
+        x: panel_x + (panel_w - btn_w) / 2.0,
+        y: panel_y + panel_h - btn_h - 80.0 * scale,
         w: btn_w,
         h: btn_h,
     };
@@ -1904,9 +2056,12 @@ fn compute_settings_layout(sw: f32, sh: f32, scale: f32) -> SettingsLayout {
         panel_y,
         panel_w,
         panel_h,
+        tab_rects,
+        content_top,
         label_x,
         value_x,
-        row_mids,
+        game_row_mids,
+        display_row_mids,
         slider_tracks,
         slider_hits,
         toggles,
@@ -1915,86 +2070,129 @@ fn compute_settings_layout(sw: f32, sh: f32, scale: f32) -> SettingsLayout {
     }
 }
 
-/// Draw the interactive full-screen settings menu. Reads live values from the
-/// engine so dragging a slider is reflected immediately.  The dropdown list
-/// is drawn last (via `draw_dropdown_list`) so it floats above the back button.
-fn draw_settings_menu(engine: &mut Engine, layout: &SettingsLayout, font: &Option<Font>, dropdown_open: bool, scale: f32) {
-    // Subtle full-screen frame around the settings page.
+/// Draw the interactive settings menu with tabbed layout. Sky-blue theme.
+fn draw_settings_menu(engine: &mut Engine, layout: &SettingsLayout, font: &Option<Font>, dropdown_open: bool, tab: usize, scale: f32) {
+    // 半透明面板背景（天蓝色系，85% 不透明）
+    draw_rectangle(
+        layout.panel_x, layout.panel_y, layout.panel_w, layout.panel_h,
+        Color::new(0.06, 0.15, 0.28, 0.88),
+    );
+    // 面板边框（天蓝色）
     draw_rectangle_lines(
-        layout.panel_x,
-        layout.panel_y,
-        layout.panel_w,
-        layout.panel_h,
+        layout.panel_x, layout.panel_y, layout.panel_w, layout.panel_h,
         2.0 * scale,
-        Color::new(0.35, 0.55, 0.85, 0.8),
+        Color::new(0.40, 0.70, 0.95, 0.9),
     );
 
-    // Title (centered at the top of the full-screen panel).
-    let title = "设置";
-    let title_size = 48.0 * scale;
-    let tw = measure_text_f(title, font, title_size as u16, 1.0).width;
-    draw_text_f(
-        title,
-        layout.panel_x + (layout.panel_w - tw) / 2.0,
-        layout.panel_y + 70.0 * scale,
-        title_size,
-        WHITE,
-        font,
+    // Tab 栏分隔线
+    draw_rectangle(
+        layout.panel_x,
+        layout.content_top - 2.0 * scale,
+        layout.panel_w,
+        2.0 * scale,
+        Color::new(0.40, 0.70, 0.95, 0.6),
     );
+
+    // 绘制 Tab
+    let tab_font_size = 64.0 * scale;
+    for (i, name) in SETTINGS_TAB_NAMES.iter().enumerate() {
+        let rect = layout.tab_rects[i];
+        let active = i == tab;
+        if active {
+            // 选中 Tab：天蓝高亮背景
+            draw_rectangle(
+                rect.x, rect.y, rect.w, rect.h,
+                Color::new(0.15, 0.40, 0.65, 0.9),
+            );
+            // 底部高亮线
+            draw_rectangle(
+                rect.x,
+                rect.y + rect.h - 4.0 * scale,
+                rect.w,
+                4.0 * scale,
+                Color::new(0.55, 0.85, 1.0, 1.0),
+            );
+        }
+        let tw = measure_text_f(name, font, tab_font_size as u16, 1.0).width;
+        let text_color = if active {
+            Color::new(1.0, 1.0, 1.0, 1.0)
+        } else {
+            Color::new(0.65, 0.75, 0.85, 0.9)
+        };
+        draw_text_f(
+            name,
+            rect.x + (rect.w - tw) / 2.0,
+            rect.y + rect.h / 2.0 + tab_font_size / 3.0,
+            tab_font_size,
+            text_color,
+            font,
+        );
+    }
 
     let settings = engine.settings();
-    let label_size = 24.0 * scale;
-    let value_size = 22.0 * scale;
+    let label_size = 72.0 * scale;
+    let value_size = 64.0 * scale;
 
-    // Row 1: text speed (0-999).
-    draw_text_f("文本速度", layout.label_x, layout.row_mids[0] + 8.0 * scale, label_size, WHITE, font);
-    draw_slider_track(layout.slider_tracks[0], settings.text_speed / 999.0, scale);
-    draw_text_f(
-        &format!("{:.0} 字/秒", settings.text_speed),
-        layout.value_x,
-        layout.row_mids[0] + 8.0 * scale,
-        value_size,
-        WHITE,
-        font,
-    );
+    match tab {
+        0 => {
+            // 游戏 Tab：文本速度、BGM 音量、音效音量、自动恢复
+            let rows = layout.game_row_mids;
 
-    // Row 2: BGM volume (0.0-1.0).
-    draw_text_f("BGM 音量", layout.label_x, layout.row_mids[1] + 8.0 * scale, label_size, WHITE, font);
-    draw_slider_track(layout.slider_tracks[1], settings.bgm_volume, scale);
-    draw_text_f(
-        &format!("{:.0}%", settings.bgm_volume * 100.0),
-        layout.value_x,
-        layout.row_mids[1] + 8.0 * scale,
-        value_size,
-        WHITE,
-        font,
-    );
+            draw_text_f("文本速度", layout.label_x, rows[0] + 24.0 * scale, label_size, WHITE, font);
+            draw_slider_track(layout.slider_tracks[0], settings.text_speed / 999.0, scale);
+            draw_text_f(
+                &format!("{:.0} 字/秒", settings.text_speed),
+                layout.value_x, rows[0] + 24.0 * scale,
+                value_size, WHITE, font,
+            );
 
-    // Row 3: SFX volume (0.0-1.0).
-    draw_text_f("音效音量", layout.label_x, layout.row_mids[2] + 8.0 * scale, label_size, WHITE, font);
-    draw_slider_track(layout.slider_tracks[2], settings.sfx_volume, scale);
-    draw_text_f(
-        &format!("{:.0}%", settings.sfx_volume * 100.0),
-        layout.value_x,
-        layout.row_mids[2] + 8.0 * scale,
-        value_size,
-        WHITE,
-        font,
-    );
+            draw_text_f("BGM 音量", layout.label_x, rows[1] + 24.0 * scale, label_size, WHITE, font);
+            draw_slider_track(layout.slider_tracks[1], settings.bgm_volume, scale);
+            draw_text_f(
+                &format!("{:.0}%", settings.bgm_volume * 100.0),
+                layout.value_x, rows[1] + 24.0 * scale,
+                value_size, WHITE, font,
+            );
 
-    // Row 4: auto-recovery toggle.
-    draw_text_f("自动恢复", layout.label_x, layout.row_mids[3] + 8.0 * scale, label_size, WHITE, font);
-    draw_toggle(layout.toggles[0], settings.auto_recovery, font, scale);
+            draw_text_f("音效音量", layout.label_x, rows[2] + 24.0 * scale, label_size, WHITE, font);
+            draw_slider_track(layout.slider_tracks[2], settings.sfx_volume, scale);
+            draw_text_f(
+                &format!("{:.0}%", settings.sfx_volume * 100.0),
+                layout.value_x, rows[2] + 24.0 * scale,
+                value_size, WHITE, font,
+            );
 
-    // Row 5: fullscreen toggle.
-    draw_text_f("全屏模式", layout.label_x, layout.row_mids[4] + 8.0 * scale, label_size, WHITE, font);
-    draw_toggle(layout.toggles[1], settings.fullscreen, font, scale);
+            draw_text_f("自动恢复", layout.label_x, rows[3] + 24.0 * scale, label_size, WHITE, font);
+            draw_toggle(layout.toggles[0], settings.auto_recovery, font, scale);
+        }
+        1 => {
+            // 画面 Tab：全屏模式、分辨率
+            let rows = layout.display_row_mids;
 
-    // Row 6: resolution dropdown (collapsed box only — the list is drawn last).
-    draw_text_f("分辨率", layout.label_x, layout.row_mids[5] + 8.0 * scale, label_size, WHITE, font);
-    draw_dropdown_box(layout.dropdown, settings.resolution, font, dropdown_open, scale);
+            draw_text_f("全屏模式", layout.label_x, rows[0] + 24.0 * scale, label_size, WHITE, font);
+            draw_toggle(layout.toggles[1], settings.fullscreen, font, scale);
 
-    // Back button (visual only; clicks are handled by handle_settings_interaction).
+            draw_text_f("分辨率", layout.label_x, rows[1] + 24.0 * scale, label_size, WHITE, font);
+            draw_dropdown_box(layout.dropdown, settings.resolution, font, dropdown_open, scale);
+        }
+        2 => {
+            // 存档 Tab：预留占位
+            let placeholder = "存档管理功能开发中…";
+            let ph_size = 64.0 * scale;
+            let tw = measure_text_f(placeholder, font, ph_size as u16, 1.0).width;
+            draw_text_f(
+                placeholder,
+                layout.panel_x + (layout.panel_w - tw) / 2.0,
+                layout.content_top + (layout.panel_h - layout.content_top + layout.panel_y) / 2.0,
+                ph_size,
+                Color::new(0.65, 0.75, 0.85, 0.8),
+                font,
+            );
+        }
+        _ => {}
+    }
+
+    // Back button (sky blue theme).
     let mut back_buttons = Vec::new();
     draw_button(
         layout.back_btn.x,
@@ -2008,9 +2206,8 @@ fn draw_settings_menu(engine: &mut Engine, layout: &SettingsLayout, font: &Optio
         scale,
     );
 
-    // Draw the expanded dropdown list LAST so it is rendered above every other
-    // control (including the back button) — fixes the z-order issue.
-    if dropdown_open {
+    // Draw the expanded dropdown list LAST so it renders above other controls.
+    if dropdown_open && tab == 1 {
         draw_dropdown_list(layout.dropdown, settings.resolution, font, scale);
     }
 }
@@ -2026,7 +2223,7 @@ fn draw_slider_track(track: Rect4, fraction: f32, scale: f32) {
     // Knob.
     let knob_x = track.x + track.w * f;
     let knob_y = track.y + track.h / 2.0;
-    draw_circle(knob_x, knob_y, 9.0 * scale, Color::new(0.8, 0.9, 1.0, 1.0));
+    draw_circle(knob_x, knob_y, 36.0 * scale, Color::new(0.8, 0.9, 1.0, 1.0));
 }
 
 /// Draw an on/off toggle switch.
@@ -2045,10 +2242,10 @@ fn draw_toggle(r: Rect4, on: bool, font: &Option<Font>, scale: f32) {
         )
     };
     draw_rectangle(r.x, r.y, r.w, r.h, bg);
-    draw_rectangle_lines(r.x, r.y, r.w, r.h, 1.5 * scale, fg);
-    let label_size = 18.0 * scale;
+    draw_rectangle_lines(r.x, r.y, r.w, r.h, 6.0 * scale, fg);
+    let label_size = 72.0 * scale;
     let tw = measure_text_f(label, font, label_size as u16, 1.0).width;
-    draw_text_f(label, r.x + (r.w - tw) / 2.0, r.y + r.h / 2.0 + 6.0 * scale, label_size, fg, font);
+    draw_text_f(label, r.x + (r.w - tw) / 2.0, r.y + r.h / 2.0 + 24.0 * scale, label_size, fg, font);
 }
 
 /// Draw only the collapsed current-value box of the resolution dropdown.  The
@@ -2056,17 +2253,17 @@ fn draw_toggle(r: Rect4, on: bool, font: &Option<Font>, scale: f32) {
 /// rendered on top of all other controls.
 fn draw_dropdown_box(r: Rect4, resolution: (u32, u32), font: &Option<Font>, open: bool, scale: f32) {
     draw_rectangle(r.x, r.y, r.w, r.h, Color::new(0.15, 0.12, 0.22, 0.9));
-    draw_rectangle_lines(r.x, r.y, r.w, r.h, 1.5 * scale, Color::new(0.35, 0.55, 0.85, 0.8));
+    draw_rectangle_lines(r.x, r.y, r.w, r.h, 6.0 * scale, Color::new(0.35, 0.55, 0.85, 0.8));
     let label = format!("{}x{}", resolution.0, resolution.1);
-    let label_size = 20.0 * scale;
-    draw_text_f(&label, r.x + 12.0 * scale, r.y + r.h / 2.0 + 7.0 * scale, label_size, WHITE, font);
+    let label_size = 80.0 * scale;
+    draw_text_f(&label, r.x + 48.0 * scale, r.y + r.h / 2.0 + 28.0 * scale, label_size, WHITE, font);
     // Dropdown arrow.
     let arrow = if open { "v" } else { ">" };
-    let arrow_size = 18.0 * scale;
+    let arrow_size = 72.0 * scale;
     draw_text_f(
         arrow,
-        r.x + r.w - 24.0 * scale,
-        r.y + r.h / 2.0 + 7.0 * scale,
+        r.x + r.w - 96.0 * scale,
+        r.y + r.h / 2.0 + 28.0 * scale,
         arrow_size,
         Color::new(0.5, 0.75, 1.0, 0.9),
         font,
@@ -2077,13 +2274,13 @@ fn draw_dropdown_box(r: Rect4, resolution: (u32, u32), font: &Option<Font>, open
 /// the current-value box.  Call this after every other control so the list
 /// appears on top (correct z-order).
 fn draw_dropdown_list(r: Rect4, resolution: (u32, u32), font: &Option<Font>, scale: f32) {
-    let item_h = 32.0 * scale;
+    let item_h = 128.0 * scale;
     let presets = Settings::resolution_presets();
     let list_h = item_h * presets.len() as f32;
     // List background.
     draw_rectangle(r.x, r.y + r.h, r.w, list_h, Color::new(0.12, 0.1, 0.2, 0.97));
-    draw_rectangle_lines(r.x, r.y + r.h, r.w, list_h, 1.0 * scale, Color::new(0.35, 0.55, 0.85, 0.6));
-    let item_size = 18.0 * scale;
+    draw_rectangle_lines(r.x, r.y + r.h, r.w, list_h, 4.0 * scale, Color::new(0.35, 0.55, 0.85, 0.6));
+    let item_size = 72.0 * scale;
     for (i, (w, h)) in presets.iter().enumerate() {
         let iy = r.y + r.h + i as f32 * item_h;
         let item_label = format!("{}x{}", w, h);
@@ -2093,21 +2290,18 @@ fn draw_dropdown_list(r: Rect4, resolution: (u32, u32), font: &Option<Font>, sca
         } else {
             WHITE
         };
-        draw_text_f(&item_label, r.x + 12.0 * scale, iy + item_h / 2.0 + 6.0 * scale, item_size, color, font);
+        draw_text_f(&item_label, r.x + 48.0 * scale, iy + item_h / 2.0 + 24.0 * scale, item_size, color, font);
     }
 }
 
-/// Handle all mouse interaction for the settings menu: slider dragging,
-/// toggle clicking, dropdown cycling, and the back button.
-///
-/// This runs every frame (not just on click) so that an in-progress slider
-/// drag follows the mouse smoothly while the button is held. Returns a UI
-/// transition request when the back button is clicked.
+/// Handle all mouse interaction for the settings menu: tab switching,
+/// slider dragging, toggle clicking, dropdown cycling, and the back button.
 fn handle_settings_interaction(
     engine: &mut Engine,
     layout: &SettingsLayout,
     dragging_slider: &mut Option<usize>,
     dropdown_open: &mut bool,
+    tab: &mut usize,
     scale: f32,
 ) -> Option<(UiMode, PendingUiAction, TransitionKind)> {
     let (mx, my) = mouse_position();
@@ -2119,6 +2313,7 @@ fn handle_settings_interaction(
     if let Some(i) = *dragging_slider
         && down
         && i < 3
+        && *tab == 0
     {
         let track = layout.slider_tracks[i];
         update_slider_value(engine, i, mx, track);
@@ -2131,56 +2326,72 @@ fn handle_settings_interaction(
 
     // A fresh press starts a new interaction.
     if pressed {
-        // Sliders: begin dragging.
-        for i in 0..3 {
-            if point_in_rect(mx, my, layout.slider_hits[i]) {
-                *dragging_slider = Some(i);
-                let track = layout.slider_tracks[i];
-                update_slider_value(engine, i, mx, track);
+        // Tab 切换：优先检测，点击任何 Tab 就切换。
+        for i in 0..SETTINGS_TAB_NAMES.len() {
+            if point_in_rect(mx, my, layout.tab_rects[i]) {
+                *tab = i;
+                *dropdown_open = false;
+                *dragging_slider = None;
                 return None;
             }
         }
-        // Toggles: click to flip.
-        for i in 0..2 {
-            if point_in_rect(mx, my, layout.toggles[i]) {
-                let settings = engine.settings_mut();
-                match i {
-                    0 => settings.auto_recovery = !settings.auto_recovery,
-                    1 => settings.fullscreen = !settings.fullscreen,
-                    _ => {}
+
+        match *tab {
+            0 => {
+                // 游戏 Tab：sliders + toggle 0
+                for i in 0..3 {
+                    if point_in_rect(mx, my, layout.slider_hits[i]) {
+                        *dragging_slider = Some(i);
+                        let track = layout.slider_tracks[i];
+                        update_slider_value(engine, i, mx, track);
+                        return None;
+                    }
                 }
-                return None;
+                if point_in_rect(mx, my, layout.toggles[0]) {
+                    let settings = engine.settings_mut();
+                    settings.auto_recovery = !settings.auto_recovery;
+                    return None;
+                }
             }
-        }
-        // Dropdown: toggle open/closed, or select an item from the list.
-        if point_in_rect(mx, my, layout.dropdown) {
-            *dropdown_open = !*dropdown_open;
-            return None;
-        }
-        if *dropdown_open {
-            let item_h = 32.0 * scale;
-            let presets = Settings::resolution_presets();
-            for (i, (w, h)) in presets.iter().enumerate() {
-                let item_rect = Rect4 {
-                    x: layout.dropdown.x,
-                    y: layout.dropdown.y + layout.dropdown.h + i as f32 * item_h,
-                    w: layout.dropdown.w,
-                    h: item_h,
-                };
-                if point_in_rect(mx, my, item_rect) {
-                    engine.settings_mut().resolution = (*w, *h);
+            1 => {
+                // 画面 Tab：toggle 1 (fullscreen) + dropdown
+                if point_in_rect(mx, my, layout.toggles[1]) {
+                    let settings = engine.settings_mut();
+                    settings.fullscreen = !settings.fullscreen;
+                    return None;
+                }
+                if point_in_rect(mx, my, layout.dropdown) {
+                    *dropdown_open = !*dropdown_open;
+                    return None;
+                }
+                if *dropdown_open {
+                    let item_h = 128.0 * scale;
+                    let presets = Settings::resolution_presets();
+                    for (i, (w, h)) in presets.iter().enumerate() {
+                        let item_rect = Rect4 {
+                            x: layout.dropdown.x,
+                            y: layout.dropdown.y + layout.dropdown.h + i as f32 * item_h,
+                            w: layout.dropdown.w,
+                            h: item_h,
+                        };
+                        if point_in_rect(mx, my, item_rect) {
+                            engine.settings_mut().resolution = (*w, *h);
+                            *dropdown_open = false;
+                            return None;
+                        }
+                    }
                     *dropdown_open = false;
                     return None;
                 }
             }
-            // Clicked outside the list: close it.
-            *dropdown_open = false;
-            return None;
+            _ => {}
         }
+
         // Back button: persist settings and return to the game.
         if point_in_rect(mx, my, layout.back_btn) {
             let _ = engine.save_settings();
             *dragging_slider = None;
+            *dropdown_open = false;
             return Some((UiMode::Normal, PendingUiAction::None, TransitionKind::Cover));
         }
     }
@@ -2337,7 +2548,7 @@ fn draw_button(
         if hover { Color::new(0.5, 0.75, 1.0, 1.0) } else { Color::new(0.3, 0.3, 0.5, 0.6) });
 
     // Font size scales with the button height, capped to keep labels legible.
-    let font_size = (h * 0.4).min(28.0 * scale);
+    let font_size = (h * 0.4).min(112.0 * scale);
     let tw = measure_text_f(label, font, font_size as u16, 1.0).width;
     draw_text_f(
         label,
@@ -2356,12 +2567,14 @@ fn draw_button(
 }
 
 // ─── HUD 按钮组布局常量（设计基准像素）───
-const HUD_BTN_W: f32 = 84.0;
-const HUD_BTN_H: f32 = 36.0;
-const HUD_BTN_GAP: f32 = 8.0;
+/// HUD 按钮宽度：刚好容纳 3~4 个中文字符
+const HUD_BTN_W: f32 = 200.0;
+const HUD_BTN_H: f32 = 80.0;
+const HUD_BTN_GAP: f32 = 12.0;
 const HUD_BTN_COUNT: usize = 7;
-const HUD_RIGHT_MARGIN: f32 = 20.0;
-const HUD_BOTTOM_MARGIN: f32 = 50.0;
+const HUD_RIGHT_MARGIN: f32 = 40.0;
+/// 贴近屏幕底部但不超出边界
+const HUD_BOTTOM_MARGIN: f32 = 40.0;
 
 /// 计算 HUD 按钮组的触发区域（含上方缓冲带），用于鼠标悬停检测。
 /// 返回 (x, y, w, h)，已按 scale 缩放。
@@ -2449,41 +2662,47 @@ fn draw_small_button(
     let hover = mx >= x && mx <= x + w && my >= y && my <= y + h;
     let pressed = hover && is_mouse_button_down(MouseButton::Left);
 
-    // 三态颜色（RGB 为设计值，A 由 alpha 缩放）
-    let (bg_r, bg_g, bg_b, bg_a_base, border_r, border_g, border_b, border_a_base, scale_factor, dy) = if pressed {
-        // 按下：颜色加深、按压下移 1px、轻微缩小
-        (0.08, 0.05, 0.18, 0.95, 0.35, 0.55, 0.85, 1.0, 0.96, 1.0 * scale)
+    // 三态颜色（天蓝色系，A 由整体 alpha 缩放）
+    let (bg_color, border_color, text_alpha, dy) = if pressed {
+        // 按下：颜色加深、轻微下移
+        (
+            Color::new(0.12, 0.35, 0.55, 0.60 * alpha),
+            Color::new(0.5, 0.8, 1.0, 0.90 * alpha),
+            1.0,
+            1.5 * scale,
+        )
     } else if hover {
-        // 悬停：高亮、放大
-        (0.18, 0.12, 0.30, 0.92, 0.55, 0.80, 1.00, 1.0, 1.06, 0.0)
+        // 悬停：高亮
+        (
+            Color::new(0.20, 0.50, 0.75, 0.55 * alpha),
+            Color::new(0.6, 0.85, 1.0, 0.95 * alpha),
+            1.0,
+            0.0,
+        )
     } else {
-        // 默认：低亮度半透明
-        (0.05, 0.05, 0.12, 0.70, 0.30, 0.30, 0.50, 0.55, 1.00, 0.0)
+        // 默认：50% 半透明
+        (
+            Color::new(0.10, 0.25, 0.45, 0.50 * alpha),
+            Color::new(0.35, 0.55, 0.80, 0.60 * alpha),
+            0.9,
+            0.0,
+        )
     };
 
-    // 按缩放因子调整绘制尺寸（以中心为基准）
-    let draw_w = w * scale_factor;
-    let draw_h = h * scale_factor;
-    let draw_x = x + (w - draw_w) / 2.0;
-    let draw_y = y + (h - draw_h) / 2.0 + dy;
-
-    let bg_color = Color::new(bg_r, bg_g, bg_b, bg_a_base * alpha);
-    draw_rectangle(draw_x, draw_y, draw_w, draw_h, bg_color);
+    draw_rectangle(x, y + dy, w, h, bg_color);
     draw_rectangle_lines(
-        draw_x, draw_y, draw_w, draw_h,
-        1.5 * scale,
-        Color::new(border_r, border_g, border_b, border_a_base * alpha),
+        x, y + dy, w, h,
+        2.0 * scale,
+        border_color,
     );
 
-    let font_size = 18.0 * scale;
+    let font_size = 36.0 * scale;
     let tw = measure_text_f(label, font, font_size as u16, 1.0).width;
-    // 文字透明度随 alpha 走；悬停/按下时略提亮
-    let text_alpha = if pressed { 0.95 } else if hover { 1.0 } else { 0.85 } * alpha;
     let text_color = Color::new(1.0, 1.0, 1.0, text_alpha);
     draw_text_f(
         label,
-        draw_x + (draw_w - tw) / 2.0,
-        draw_y + draw_h / 2.0 + font_size / 3.0,
+        x + (w - tw) / 2.0,
+        y + dy + h / 2.0 + font_size / 3.0,
         font_size,
         text_color,
         font,
@@ -2500,7 +2719,7 @@ fn draw_small_button(
 fn draw_text_wrapped(text: &str, x: f32, y: f32, max_w: f32, font_size: f32, color: Color, font: &Option<Font>, scale: f32) {
     let mut current_y = y;
     let mut current_line = String::new();
-    let line_gap = 8.0 * scale;
+    let line_gap = 32.0 * scale;
 
     for word in text.split_whitespace() {
         let test_line = if current_line.is_empty() {
