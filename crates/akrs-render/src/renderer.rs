@@ -602,6 +602,11 @@ pub async fn run(mut engine: Engine) {
     let mut load_displayed_slots: usize = 24;
     // UI transition state machine for smooth page switches.
     let mut ui_transition = UiTransition::new();
+    // 上一次实际应用到窗口的全屏状态。
+    // window_conf() 中 fullscreen 初始化为 false，故此处同步为 false。
+    // 每帧检测 settings.fullscreen 是否与此值不一致，若不一致则切换窗口全屏状态，
+    // 这样既能响应设置菜单中的切换，也能在启动时应用上次保存的偏好。
+    let mut last_fullscreen_applied: bool = false;
 
     // Check title music
     if !assets.check_music("title_bgm.mp3") {
@@ -613,6 +618,17 @@ pub async fn run(mut engine: Engine) {
         let (sw, sh) = (screen_width(), screen_height());
         // UI scale factor relative to the 1280×720 design baseline.
         let scale = ui_scale(sw, sh);
+
+        // 全屏状态同步：检测 settings.fullscreen 是否与上次应用到窗口的值
+        // 不一致，若不一致则调用 set_fullscreen 实际切换窗口模式。
+        // 这使得设置菜单中的开关真正生效，并在启动时应用上次的偏好。
+        {
+            let want_fullscreen = engine.settings().fullscreen;
+            if want_fullscreen != last_fullscreen_applied {
+                set_fullscreen(want_fullscreen);
+                last_fullscreen_applied = want_fullscreen;
+            }
+        }
 
         // The player clicked the window's close button. Autosave the current
         // progress (unless we're on the title screen or the story has ended)
@@ -941,14 +957,15 @@ async fn draw_scene(engine: &Engine, assets: &mut AssetManager, sw: f32, sh: f32
         return;
     }
 
-    // Draw dialogue box
-    if let Some(dialogue) = &scene.dialogue {
-        draw_dialogue(dialogue, sw, sh, font, scale);
-    }
-
+    // 选择菜单显示时，自动隐藏对话框文本，直到选择完成。
     // Draw choices
     if let Some(choices) = &scene.choices {
         draw_choices(choices, sw, sh, font, scale);
+    } else {
+        // Draw dialogue box（仅在无选项时显示）
+        if let Some(dialogue) = &scene.dialogue {
+            draw_dialogue(dialogue, sw, sh, font, scale);
+        }
     }
 }
 
@@ -1047,14 +1064,13 @@ fn draw_dialogue(dialogue: &akrs_runtime::DialogueState, sw: f32, sh: f32, font:
     let box_w = sw;
 
     // 对话框背景：平滑渐变效果
-    // 顶部透明度：10%（几乎不透明），底部透明度：0%（完全透明）
+    // 顶部：几乎不透明（alpha=0.9），底部：完全透明（alpha=0.0）
     // 使用 32 段绘制实现平滑渐变
     let gradient_segments = 32;
     let segment_h = box_h / gradient_segments as f32;
     for i in 0..gradient_segments {
         let seg_y = box_y + i as f32 * segment_h;
-        // 透明度从顶部 0.10 线性过渡到底部 0.0
-        let alpha_top = 0.10;
+        let alpha_top = 0.9;
         let alpha_bottom = 0.0;
         let t = i as f32 / (gradient_segments - 1) as f32;
         let alpha = alpha_top * (1.0 - t) + alpha_bottom * t;
