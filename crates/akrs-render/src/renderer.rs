@@ -1177,7 +1177,7 @@ async fn draw_title_screen(buttons: &mut Vec<ButtonRect>, sw: f32, sh: f32, asse
         title_x,
         title_y + title_font_size,
         title_font_size,
-        Color::new(0.1, 0.3, 0.6, 1.0),
+        WHITE,
         font,
     );
 
@@ -1191,13 +1191,13 @@ async fn draw_title_screen(buttons: &mut Vec<ButtonRect>, sw: f32, sh: f32, asse
         sub_x,
         sub_y + sub_size,
         sub_size,
-        Color::new(0.25, 0.45, 0.7, 1.0),
+        WHITE,
         font,
     );
 
-    // 按钮（左下角，变窄）
-    let btn_w = 220.0 * scale;
-    let btn_h = 52.0 * scale;
+    // 按钮（左下角，稍微放大）
+    let btn_w = 260.0 * scale;
+    let btn_h = 56.0 * scale;
     let btn_x = title_x;
 
     let mut labels: Vec<(&str, ButtonAction)> = Vec::new();
@@ -1234,7 +1234,7 @@ async fn draw_title_screen(buttons: &mut Vec<ButtonRect>, sw: f32, sh: f32, asse
     let line_y = sub_y + sub_size + 30.0 * scale;
     let line_w = (max_text_w + 10.0 * scale).min(panel_w - left_pad - 20.0 * scale);
     draw_rectangle(title_x, line_y, line_w, 2.0 * scale,
-        Color::new(0.4, 0.6, 0.85, 0.6));
+        Color::new(1.0, 1.0, 1.0, 0.7));
 
     // 从下往上排列按钮
     let total_btn_h = labels.len() as f32 * btn_h + (labels.len() - 1) as f32 * 14.0 * scale;
