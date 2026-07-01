@@ -1154,4 +1154,22 @@ Aki: "Oh. I see."
         assert_eq!(c.pose.as_deref(), Some("kokonabody1"));
         assert_eq!(c.position, akrs_core::Position::Left);
     }
+
+    #[test]
+    fn test_bg_fade_transition_runs() {
+        let src = r#"
+# Stage
+@bg bg1 with fade
+"hi"
+~~
+"#;
+        let mut engine = Engine::start_running(src).unwrap();
+        // bg fade transition should be active immediately after start
+        assert!(engine.scene().transition.is_some(), "bg fade should start");
+        let initial_progress = engine.scene().transition.as_ref().unwrap().progress;
+        // Advance time
+        engine.update(0.1);
+        let later_progress = engine.scene().transition.as_ref().unwrap().progress;
+        assert!(later_progress > initial_progress, "transition progress should advance");
+    }
 }

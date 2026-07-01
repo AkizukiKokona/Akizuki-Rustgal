@@ -294,6 +294,8 @@ enum PendingUiAction {
     ApplySettings,
     /// 放弃设置更改并返回。
     DiscardSettings,
+    /// 故事结束后自动返回标题（淡入淡出，无按钮，不保留继续存档）。
+    StoryEndToTitle,
 }
 
 /// 确认对话框的类型，用于显示不同的提示文本。
@@ -366,12 +368,17 @@ impl UiTransition {
     }
 
     /// Alpha (0.0–1.0) for the overlay drawn on top of the scene.
-    /// Bell curve: transparent at the endpoints, peak 0.25 at the midpoint.
-    /// This keeps the overlay dim but never opaque, avoiding the "flash to
-    /// black" feel of the old three-phase transition.
+    /// 经典淡入淡出：Out 阶段 0→1（渐暗到全黑），In 阶段 1→0（从全黑渐亮）。
+    /// 屏幕切换发生在 Out→In 的交界点（alpha=1.0），此时画面完全被黑色覆盖，
+    /// 切换不可见，因此不会有"闪一下"的感觉。
     fn overlay_alpha(&self) -> f32 {
         if !self.active { return 0.0; }
-        0.25 * (1.0 - (2.0 * self.progress - 1.0).abs())
+        match self.phase {
+            UiTransPhase::Out => self.progress * 2.0,     // 0.0 → 1.0
+            UiTransPhase::In  => (1.0 - self.progress) * 2.0, // 1.0 → 0.0
+        }
+        .min(1.0)
+        .max(0.0)
     }
 }
 
@@ -724,6 +731,15 @@ pub async fn run(mut engine: Engine) {
         // Clear buttons for this frame
         buttons.clear();
 
+        // 故事结束时自动淡入淡出返回标题（无需任何按钮或提示）。
+        // 检测刚进入 StoryEnded 阶段且尚未开始过渡的情况。
+        if engine.phase() == EnginePhase::StoryEnded
+            && ui_mode == UiMode::Normal
+            && !ui_transition.active
+        {
+            ui_transition.start(UiMode::Normal, PendingUiAction::StoryEndToTitle);
+        }
+
         // Draw based on phase and UI mode
         clear_background(BLACK);
 
@@ -797,6 +813,21 @@ pub async fn run(mut engine: Engine) {
                     // 放弃设置后返回之前的模式
                     ui_mode = settings_prev_mode;
                 }
+                PendingUiAction::StoryEndToTitle => {
+                    // 故事结束自动返回标题：重置引擎，删除继续存档，不显示继续游戏按钮
+                    let _ = engine.delete_continue();
+                    has_continue_save = false;
+                    let source = engine.source().to_string();
+                    let saved_settings = engine.settings().clone();
+                    if let Ok(mut new_engine) = Engine::new(&source) {
+                        *new_engine.settings_mut() = saved_settings;
+                        engine = new_engine;
+                        title_music_played = false;
+                    }
+                    hud_hidden = false;
+                    settings_snapshot = None;
+                    ui_mode = UiMode::Normal;
+                }
             }
         }
 
@@ -835,7 +866,6 @@ pub async fn run(mut engine: Engine) {
                         draw_title_screen(&mut buttons, sw, sh, &mut assets, &font, scale, has_continue_save);
                     } else if engine.phase() == EnginePhase::StoryEnded {
                         draw_scene(&engine, &mut assets, sw, sh, true, &font, scale).await;
-                        draw_story_ended(sw, sh, &mut buttons, &font, scale);
                     } else {
                         // 游戏中：只绘制场景（不绘制可交互 HUD，因为确认对话框期间不需要 HUD 交互）。
                         draw_scene(&engine, &mut assets, sw, sh, !hud_hidden, &font, scale).await;
@@ -862,7 +892,6 @@ pub async fn run(mut engine: Engine) {
             draw_title_screen(&mut buttons, sw, sh, &mut assets, &font, scale, has_continue_save);
         } else if engine.phase() == EnginePhase::StoryEnded {
             draw_scene(&engine, &mut assets, sw, sh, true, &font, scale).await;
-            draw_story_ended(sw, sh, &mut buttons, &font, scale);
         } else {
             // In-game: draw the scene. When the HUD is hidden, only the
             // background and characters are drawn (no dialogue box, choices,
@@ -919,36 +948,20 @@ pub async fn run(mut engine: Engine) {
                     ) {
                         match action {
                             ButtonAction::ConfirmYes => {
-                                // 根据确认类型直接执行操作（不使用 UI 过渡，避免闪屏）。
                                 let prev_mode = confirm_return_mode;
                                 let ctype = confirm_type.take();
                                 confirm_type = None;
-                                ui_mode = prev_mode;
                                 match ctype {
                                     Some(ConfirmType::BackToTitle) => {
-                                        // 保存"继续游戏"存档并返回标题
-                                        let _ = engine.save_continue();
-                                        has_continue_save = true;
-                                        let source = engine.source().to_string();
-                                        let saved_settings = engine.settings().clone();
-                                        if let Ok(mut new_engine) = Engine::new(&source) {
-                                            *new_engine.settings_mut() = saved_settings;
-                                            engine = new_engine;
-                                            title_music_played = false;
-                                        }
-                                        hud_hidden = false;
-                                        settings_snapshot = None;
+                                        ui_mode = prev_mode;
+                                        ui_transition.start(UiMode::Normal, PendingUiAction::BackToTitle);
                                     }
                                     Some(ConfirmType::UnappliedSettings) => {
-                                        // 放弃设置更改，恢复快照
-                                        if let Some(snapshot) = settings_snapshot.clone() {
-                                            *engine.settings_mut() = snapshot;
-                                        }
-                                        settings_snapshot = None;
-                                        // 返回设置菜单之前的模式
-                                        ui_mode = settings_prev_mode;
+                                        ui_transition.start(settings_prev_mode, PendingUiAction::DiscardSettings);
                                     }
-                                    _ => {}
+                                    _ => {
+                                        ui_mode = prev_mode;
+                                    }
                                 }
                             }
                             ButtonAction::ConfirmNo => {
@@ -1014,19 +1027,10 @@ pub async fn run(mut engine: Engine) {
                             ui_mode = UiMode::ConfirmDialog;
                         }
                         ButtonAction::StartGame => {
-                            // 直接开始游戏（不使用 UI 过渡，避免闪屏）。
-                            // 清除"继续游戏"存档（开始新游戏）。
-                            let _ = engine.delete_continue();
-                            has_continue_save = false;
-                            engine.start_game();
-                            hud_hidden = false;
-                            ui_mode = UiMode::Normal;
+                            ui_transition.start(UiMode::Normal, PendingUiAction::StartGame);
                         }
                         ButtonAction::ContinueGame => {
-                            // 直接继续游戏（不使用 UI 过渡，避免闪屏）。
-                            let _ = engine.load_continue();
-                            hud_hidden = false;
-                            ui_mode = UiMode::Normal;
+                            ui_transition.start(UiMode::Normal, PendingUiAction::ContinueGame);
                         }
                         ButtonAction::OpenSettings => {
                             // 进入设置时记录当前模式
@@ -1512,28 +1516,6 @@ fn draw_transition(scene: &SceneState, sw: f32, sh: f32) {
 
 fn draw_dim_overlay(sw: f32, sh: f32, alpha: f32) {
     draw_rectangle(0.0, 0.0, sw, sh, Color::new(0.0, 0.0, 0.0, alpha));
-}
-
-fn draw_story_ended(sw: f32, sh: f32, buttons: &mut Vec<ButtonRect>, font: &Option<Font>, scale: f32) {
-    draw_dim_overlay(sw, sh, 0.8);
-    let text = "故事结束";
-    let text_size = 64.0 * scale;
-    let tw = measure_text_f(text, font, text_size as u16, 1.0).width;
-    draw_text_f(text, (sw - tw) / 2.0, sh * 0.4, text_size, WHITE, font);
-
-    let btn_w = 250.0 * scale;
-    let btn_h = 50.0 * scale;
-    draw_button(
-        (sw - btn_w) / 2.0,
-        sh * 0.55,
-        btn_w,
-        btn_h,
-        "返回标题",
-        buttons,
-        ButtonAction::BackToTitle,
-        font,
-        scale,
-    );
 }
 
 /// Crash-recovery prompt shown at startup when an autosave is detected.
