@@ -74,7 +74,7 @@ impl AssetManager {
         let path_str = path.to_string_lossy().to_string();
 
         if !path.exists() {
-            eprintln!("[资源加载失败] 文件不存在：{}", path_str);
+            eprintln!("[Warning] Missing resource: {} (expected at {})", name, path_str);
             self.cache.insert(key, None);
             return None;
         }
@@ -86,7 +86,7 @@ impl AssetManager {
                 Some(texture)
             }
             Err(e) => {
-                eprintln!("[资源加载失败] 无法加载 {}：{}", path_str, e);
+                eprintln!("[Warning] Failed to load texture '{}': {}", path_str, e);
                 self.cache.insert(key, None);
                 None
             }
