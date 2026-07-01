@@ -10,9 +10,11 @@
 //!
 //! 所有文件操作使用 `Result` 风格的错误处理，不会 panic；失败信息显示在底部状态栏。
 
+use std::collections::HashMap;
 use std::path::PathBuf;
 
 use eframe::egui;
+use egui::{ColorImage, TextureHandle};
 
 use akrs_core::{compile, format_location, CompileError, ErrSeverity, Position};
 use akrs_runtime::{Engine, EnginePhase};
@@ -87,6 +89,60 @@ Aki: "Oh. I see."
 const GITHUB_URL: &str = "https://github.com/AkizukiKokona/Akizuki-Rustgal";
 
 // ---------------------------------------------------------------------------
+// 立绘预览
+// ---------------------------------------------------------------------------
+
+/// 右栏预览的标签页。
+#[derive(Clone, Copy, PartialEq)]
+enum PreviewTab {
+    /// 剧本运行预览。
+    Script,
+    /// 立绘摆放预览（无需启动游戏进程）。
+    Sprite,
+}
+
+/// 立绘预览状态：允许作者在不启动游戏的情况下调整立绘位置与大小，
+/// 并生成对应的 `.akrs` 语法。
+///
+/// 位置采用百分比坐标（0.0–1.0）以适配多分辨率，与运行时渲染逻辑一致。
+struct SpritePreview {
+    /// 角色名（用于生成 `+ 角色 ...` 语法，为空时使用立绘资源名）。
+    character_name: String,
+    /// 当前选中的立绘资源名（不含扩展名，对应 `assets/characters/{name}.png`）。
+    selected: String,
+    /// 水平位置百分比（0.0=最左，1.0=最右），默认 0.5（居中）。
+    x_percent: f32,
+    /// 垂直位置百分比（0.0=最上，1.0=底部站立），默认 1.0。
+    y_percent: f32,
+    /// 大小倍数，默认 1.0。
+    scale: f32,
+    /// 已加载的纹理缓存（按立绘名称索引，避免每帧重新解码）。
+    textures: HashMap<String, TextureHandle>,
+    /// `assets/characters/` 中可用的立绘列表（不含扩展名）。
+    available: Vec<String>,
+    /// 已扫描的立绘目录（用于检测变更后重新扫描）。
+    scanned_dir: Option<PathBuf>,
+    /// 最近一次加载错误信息。
+    load_error: Option<String>,
+}
+
+impl Default for SpritePreview {
+    fn default() -> Self {
+        Self {
+            character_name: String::new(),
+            selected: String::new(),
+            x_percent: 0.5,
+            y_percent: 1.0,
+            scale: 1.0,
+            textures: HashMap::new(),
+            available: Vec::new(),
+            scanned_dir: None,
+            load_error: None,
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
 // 编辑器应用状态
 // ---------------------------------------------------------------------------
 
@@ -116,6 +172,10 @@ pub struct EditorApp {
     show_welcome: bool,
     /// 是否显示「关于」对话框。
     show_about: bool,
+    /// 右栏预览的当前标签页。
+    preview_tab: PreviewTab,
+    /// 立绘预览状态。
+    sprite_preview: SpritePreview,
 }
 
 impl Default for EditorApp {
@@ -134,6 +194,8 @@ impl Default for EditorApp {
             theme_applied: false,
             show_welcome: true,
             show_about: false,
+            preview_tab: PreviewTab::Script,
+            sprite_preview: SpritePreview::default(),
         };
         app.refresh_file_list();
         app
@@ -449,6 +511,230 @@ impl EditorApp {
             );
         }
     }
+
+    /// 渲染立绘预览面板：允许作者在不启动游戏的情况下调整立绘位置与大小，
+    /// 实时查看效果，并生成对应的 `.akrs` 语法。
+    ///
+    /// 位置与大小语义与运行时渲染（`akrs_render`）完全一致：
+    /// - 立绘自然高度为预览区高度的 80%，再乘以 `scale`。
+    /// - `x_percent` 控制立绘水平中心点的百分比位置。
+    /// - `y_percent = 1.0` 时立绘底部贴齐预览区底部（留小边距）；
+    ///   `y_percent < 1.0` 时立绘中心点对齐到预览区该百分比位置。
+    fn show_sprite_preview(&mut self, ui: &mut egui::Ui) {
+        let ctx = ui.ctx().clone();
+
+        // 扫描 assets/characters/ 目录（检测变更后重新扫描）。
+        let chars_dir = self.work_dir.join("assets").join("characters");
+        if self.sprite_preview.scanned_dir.as_ref() != Some(&chars_dir) {
+            self.sprite_preview.available.clear();
+            if let Ok(entries) = std::fs::read_dir(&chars_dir) {
+                let mut names: Vec<String> = entries
+                    .filter_map(|e| e.ok())
+                    .filter_map(|e| {
+                        let p = e.path();
+                        if p.extension().is_some_and(|ext| ext.eq_ignore_ascii_case("png")) {
+                            p.file_stem().map(|n| n.to_string_lossy().into_owned())
+                        } else {
+                            None
+                        }
+                    })
+                    .collect();
+                names.sort();
+                self.sprite_preview.available = names;
+            }
+            self.sprite_preview.scanned_dir = Some(chars_dir);
+            // 默认选中第一个可用立绘。
+            if self.sprite_preview.selected.is_empty() {
+                if let Some(first) = self.sprite_preview.available.first() {
+                    self.sprite_preview.selected = first.clone();
+                    self.sprite_preview.character_name = first.clone();
+                }
+            }
+        }
+
+        // -- 立绘选择 --
+        ui.label("选择立绘：");
+        let selected_empty = self.sprite_preview.selected.is_empty();
+        egui::ComboBox::from_id_source("sprite_preview_select")
+            .selected_text(if selected_empty {
+                "（无可用立绘）"
+            } else {
+                self.sprite_preview.selected.as_str()
+            })
+            .show_ui(ui, |ui| {
+                for name in &self.sprite_preview.available {
+                    ui.selectable_value(
+                        &mut self.sprite_preview.selected,
+                        name.clone(),
+                        name,
+                    );
+                }
+            });
+
+        ui.add_space(4.0);
+        ui.label("角色名（用于生成语法，留空则使用立绘名）：");
+        ui.text_edit_singleline(&mut self.sprite_preview.character_name);
+
+        ui.add_space(8.0);
+
+        // -- 位置与大小滑块 --
+        ui.horizontal(|ui| {
+            ui.label("X 位置:");
+            ui.add(
+                egui::Slider::new(&mut self.sprite_preview.x_percent, 0.0..=1.0)
+                    .step_by(0.01)
+                    .fixed_decimals(2),
+            );
+        });
+        ui.horizontal(|ui| {
+            ui.label("Y 位置:");
+            ui.add(
+                egui::Slider::new(&mut self.sprite_preview.y_percent, 0.0..=1.0)
+                    .step_by(0.01)
+                    .fixed_decimals(2),
+            );
+        });
+        ui.horizontal(|ui| {
+            ui.label("大小:  ");
+            ui.add(
+                egui::Slider::new(&mut self.sprite_preview.scale, 0.1..=3.0)
+                    .step_by(0.05)
+                    .fixed_decimals(2),
+            );
+        });
+
+        ui.add_space(2.0);
+        ui.label(
+            egui::RichText::new("默认：X=0.5（居中）  Y=1.0（底部站立）  大小=1.0")
+                .small()
+                .color(egui::Color32::from_rgb(140, 150, 170)),
+        );
+
+        ui.add_space(8.0);
+
+        // -- 预览区域（16:9，模拟游戏屏幕）--
+        let avail_w = ui.available_width();
+        let preview_w = avail_w;
+        let preview_h = (preview_w * 9.0 / 16.0).max(180.0);
+
+        let (rect, _response) = ui.allocate_exact_size(
+            egui::Vec2::new(preview_w, preview_h),
+            egui::Sense::hover(),
+        );
+
+        let painter = ui.painter();
+        // 预览背景（模拟游戏屏幕）。
+        painter.rect_filled(rect, 0.0, egui::Color32::from_rgb(28, 28, 38));
+        painter.rect_stroke(
+            rect,
+            0.0,
+            egui::Stroke::new(1.0, egui::Color32::from_rgb(80, 80, 100)),
+        );
+
+        // 加载并渲染立绘。
+        if !self.sprite_preview.selected.is_empty() {
+            let selected = self.sprite_preview.selected.clone();
+            let need_load = !self.sprite_preview.textures.contains_key(&selected);
+            if need_load {
+                let path = self
+                    .work_dir
+                    .join("assets")
+                    .join("characters")
+                    .join(format!("{}.png", selected));
+                match image::open(&path) {
+                    Ok(img) => {
+                        let rgba = img.to_rgba8();
+                        let (w, h) = (rgba.width() as usize, rgba.height() as usize);
+                        let color_image =
+                            ColorImage::from_rgba_unmultiplied([w, h], rgba.as_raw());
+                        let handle = ctx.load_texture(&selected, color_image, Default::default());
+                        self.sprite_preview.textures.insert(selected.clone(), handle);
+                        self.sprite_preview.load_error = None;
+                    }
+                    Err(e) => {
+                        self.sprite_preview.load_error = Some(format!("加载失败：{}", e));
+                    }
+                }
+            }
+
+            if let Some(handle) = self.sprite_preview.textures.get(&selected) {
+                let tex_w = handle.size()[0] as f32;
+                let tex_h = handle.size()[1] as f32;
+                // 与运行时一致：立绘自然高度 = 预览区高度 × 80%。
+                let scale_factor = (preview_h * 0.8) / tex_h;
+                let draw_w = tex_w * scale_factor * self.sprite_preview.scale;
+                let draw_h = tex_h * scale_factor * self.sprite_preview.scale;
+                let x_frac = self.sprite_preview.x_percent;
+                let y_frac = self.sprite_preview.y_percent;
+                // x：立绘中心点对齐到预览区 x_frac。
+                let x = rect.left() + preview_w * x_frac - draw_w / 2.0;
+                // y：1.0 时底部贴齐（留 50/1080 比例边距，与游戏一致）；
+                //    否则立绘中心点对齐到预览区 y_frac。
+                let bottom_margin = preview_h * (50.0 / 1080.0);
+                let y = if (y_frac - 1.0).abs() < 0.001 {
+                    rect.bottom() - draw_h - bottom_margin
+                } else {
+                    rect.top() + preview_h * y_frac - draw_h / 2.0
+                };
+                let dest_rect = egui::Rect::from_min_size(
+                    egui::pos2(x, y),
+                    egui::Vec2::new(draw_w, draw_h),
+                );
+                painter.image(
+                    handle.id(),
+                    dest_rect,
+                    egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)),
+                    egui::Color32::WHITE,
+                );
+            } else if let Some(err) = &self.sprite_preview.load_error {
+                painter.text(
+                    rect.center(),
+                    egui::Align2::CENTER_CENTER,
+                    err,
+                    egui::FontId::proportional(12.0),
+                    egui::Color32::from_rgb(255, 150, 150),
+                );
+            }
+        } else {
+            painter.text(
+                rect.center(),
+                egui::Align2::CENTER_CENTER,
+                "请在 assets/characters/ 放置 PNG 立绘",
+                egui::FontId::proportional(12.0),
+                egui::Color32::from_rgb(140, 150, 170),
+            );
+        }
+
+        ui.add_space(8.0);
+
+        // -- 生成的语法 --
+        ui.separator();
+        ui.strong("生成的语法：");
+        let name = if self.sprite_preview.character_name.trim().is_empty() {
+            self.sprite_preview.selected.clone()
+        } else {
+            self.sprite_preview.character_name.clone()
+        };
+        let syntax = format!(
+            "+ {} at {:.2},{:.2} size {:.2}",
+            name, self.sprite_preview.x_percent, self.sprite_preview.y_percent, self.sprite_preview.scale
+        );
+        ui.label(
+            egui::RichText::new(&syntax)
+                .monospace()
+                .color(egui::Color32::from_rgb(200, 220, 255)),
+        );
+        ui.horizontal(|ui| {
+            if ui.button("复制到剪贴板").clicked() {
+                ctx.output_mut(|o| o.copied_text = syntax.clone());
+                self.status = "语法已复制到剪贴板".to_string();
+            }
+            if ui.button("追加到脚本").clicked() {
+                self.editor_content.push_str(&format!("{}\n", syntax));
+                self.status = "语法已追加到脚本末尾".to_string();
+            }
+        });
+    }
 }
 
 impl eframe::App for EditorApp {
@@ -630,23 +916,35 @@ impl eframe::App for EditorApp {
             .show(ctx, |ui| {
                 ui.heading("预览");
                 ui.horizontal(|ui| {
-                    if ui.button("运行").clicked() {
-                        self.run_script();
-                    }
-                    if self.engine.is_some() {
-                        if ui.button("前进").clicked() {
-                            if let Some(engine) = self.engine.as_mut() {
-                                let _ = engine.advance();
-                            }
-                        }
-                        if ui.button("停止").clicked() {
-                            self.engine = None;
-                            self.status = "预览已停止".to_string();
-                        }
-                    }
+                    ui.selectable_value(&mut self.preview_tab, PreviewTab::Script, "剧本");
+                    ui.selectable_value(&mut self.preview_tab, PreviewTab::Sprite, "立绘");
                 });
                 ui.separator();
-                self.show_preview(ui);
+                match self.preview_tab {
+                    PreviewTab::Script => {
+                        ui.horizontal(|ui| {
+                            if ui.button("运行").clicked() {
+                                self.run_script();
+                            }
+                            if self.engine.is_some() {
+                                if ui.button("前进").clicked() {
+                                    if let Some(engine) = self.engine.as_mut() {
+                                        let _ = engine.advance();
+                                    }
+                                }
+                                if ui.button("停止").clicked() {
+                                    self.engine = None;
+                                    self.status = "预览已停止".to_string();
+                                }
+                            }
+                        });
+                        ui.separator();
+                        self.show_preview(ui);
+                    }
+                    PreviewTab::Sprite => {
+                        self.show_sprite_preview(ui);
+                    }
+                }
             });
 
         // ---- 中央面板：编辑器或欢迎页 -----------------------------------

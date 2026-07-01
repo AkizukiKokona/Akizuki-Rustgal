@@ -101,6 +101,10 @@ pub struct DirectionAction {
     /// 立绘资源名（如 `kokonabody1`），由 `+ 角色 (立绘)` 语法指定。
     pub pose: Option<String>,
     pub position: Option<Position>,
+    /// 立绘变换：精确的位置百分比与大小倍数。
+    /// 由 `at x,y size s` 语法指定。None 表示使用默认值。
+    #[serde(default)]
+    pub transform: SpriteTransform,
     pub transition: Option<Transition>,
 }
 
@@ -135,6 +139,34 @@ impl Position {
             Self::Right => 0.75,
             Self::Custom(x) => *x,
         }
+    }
+    /// Y 锚点百分比（0.0=顶部，1.0=底部）。预定义位置默认底部站立。
+    pub fn y_fraction(&self) -> f32 {
+        match self {
+            Self::Left | Self::Center | Self::Right => 1.0,
+            Self::Custom(_) => 1.0,
+        }
+    }
+}
+
+/// 立绘变换：精确控制立绘的位置（按百分比）与大小（倍数）。
+///
+/// 用于扩展 `DirectionAction`，让剧本作者可以自由控制立绘摆放。
+/// `x`、`y` 均为 0.0~1.0 的屏幕百分比，`scale` 为相对于默认高度的倍数。
+/// 所有字段均可选：未指定时使用默认值（由渲染器决定，通常是居中、底部站立）。
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq)]
+pub struct SpriteTransform {
+    /// 水平位置百分比（0.0=最左，1.0=最右）。None 表示用 position 字段。
+    pub x: Option<f32>,
+    /// 垂直位置百分比（0.0=最上，1.0=最下）。None 表示默认底部站立。
+    pub y: Option<f32>,
+    /// 大小倍数（1.0=默认大小）。None 表示默认 1.0。
+    pub scale: Option<f32>,
+}
+
+impl Default for SpriteTransform {
+    fn default() -> Self {
+        Self { x: None, y: None, scale: None }
     }
 }
 

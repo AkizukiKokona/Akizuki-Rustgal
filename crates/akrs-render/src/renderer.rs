@@ -287,6 +287,7 @@ enum PendingUiAction {
     LoadSlot(usize),
     ContinueAutosave,
     DiscardAutosave,
+    #[allow(dead_code)]
     BackToTitle,
     Quit,
     /// 应用设置更改并返回。
@@ -631,6 +632,9 @@ pub async fn run(mut engine: Engine) {
     // 每帧检测 settings.fullscreen 是否与此值不一致，若不一致则切换窗口全屏状态，
     // 这样既能响应设置菜单中的切换，也能在启动时应用上次保存的偏好。
     let mut last_fullscreen_applied: bool = false;
+    // 已应用的全屏设置值。只有点击"应用"按钮时才会更新此值。
+    // 启动时用 engine.settings().fullscreen 初始化（应用上次保存的偏好）。
+    let mut applied_fullscreen: bool = engine.settings().fullscreen;
     // 设置菜单进入时保存的设置快照，用于检测是否有未应用的更改。
     let mut settings_snapshot: Option<Settings> = None;
     // 确认对话框的类型（返回标题/未应用设置退出）。
@@ -653,11 +657,11 @@ pub async fn run(mut engine: Engine) {
         // UI scale factor relative to the 1280×720 design baseline.
         let scale = ui_scale(sw, sh);
 
-        // 全屏状态同步：检测 settings.fullscreen 是否与上次应用到窗口的值
-        // 不一致，若不一致则调用 set_fullscreen 实际切换窗口模式。
+        // 全屏状态同步：使用 applied_fullscreen（已应用的值）而非正在编辑的值。
+        // 这样设置菜单中切换全屏开关不会立即生效，只有点击"应用"后才生效。
         // 从全屏恢复为窗口时，恢复为屏幕面积的 1/2 大小。
         {
-            let want_fullscreen = engine.settings().fullscreen;
+            let want_fullscreen = applied_fullscreen;
             if want_fullscreen != last_fullscreen_applied {
                 set_fullscreen(want_fullscreen);
                 // 如果从全屏恢复为窗口模式，设置窗口大小为 1/2 屏幕
@@ -778,6 +782,8 @@ pub async fn run(mut engine: Engine) {
                 }
                 PendingUiAction::ApplySettings => {
                     let _ = engine.save_settings();
+                    // 同步已应用的全屏值，使下一帧的全屏同步逻辑生效。
+                    applied_fullscreen = engine.settings().fullscreen;
                     settings_snapshot = None;
                     // 应用设置后返回之前的模式
                     ui_mode = settings_prev_mode;
@@ -814,9 +820,35 @@ pub async fn run(mut engine: Engine) {
             draw_rectangle(0.0, 0.0, sw, sh, Color::new(0.05, 0.05, 0.1, 1.0));
             draw_settings_menu(&mut engine, &settings_layout, &font, dropdown_open, scale);
         } else if ui_mode == UiMode::ConfirmDialog {
-            // 确认对话框：半透明背景 + 居中对话框
-            draw_rectangle(0.0, 0.0, sw, sh, Color::new(0.05, 0.05, 0.1, 1.0));
-            draw_dim_overlay(sw, sh, 0.5);
+            // 确认对话框：先绘制底层界面（保持上下文可见），再叠加 8% 黑色 + 对话框。
+            // confirm_return_mode 记录了确认对话框返回后应恢复的模式，据此绘制底层。
+            match confirm_return_mode {
+                UiMode::SettingsMenu => {
+                    if settings_snapshot.is_none() {
+                        settings_snapshot = Some(engine.settings().clone());
+                    }
+                    draw_rectangle(0.0, 0.0, sw, sh, Color::new(0.05, 0.05, 0.1, 1.0));
+                    draw_settings_menu(&mut engine, &settings_layout, &font, dropdown_open, scale);
+                }
+                UiMode::Normal => {
+                    if engine.phase() == EnginePhase::Title {
+                        draw_title_screen(&mut buttons, sw, sh, &mut assets, &font, scale, has_continue_save);
+                    } else if engine.phase() == EnginePhase::StoryEnded {
+                        draw_scene(&engine, &mut assets, sw, sh, true, &font, scale).await;
+                        draw_story_ended(sw, sh, &mut buttons, &font, scale);
+                    } else {
+                        // 游戏中：只绘制场景（不绘制可交互 HUD，因为确认对话框期间不需要 HUD 交互）。
+                        draw_scene(&engine, &mut assets, sw, sh, !hud_hidden, &font, scale).await;
+                    }
+                }
+                _ => {
+                    // 其他模式（存档/读档菜单等）：绘制不透明背景作为兜底。
+                    draw_rectangle(0.0, 0.0, sw, sh, Color::new(0.05, 0.05, 0.1, 1.0));
+                }
+            }
+            // 8% 黑色叠层（透明度 0.08），让底层界面仍可见但变暗。
+            draw_rectangle(0.0, 0.0, sw, sh, Color::new(0.0, 0.0, 0.0, 0.08));
+            // 居中确认对话框
             draw_confirm_dialog(&mut buttons, sw, sh, &font, scale, confirm_type);
         } else if ui_mode != UiMode::Normal {
             // Save/Load menus: full-screen opaque background + full-screen grid.
@@ -887,17 +919,37 @@ pub async fn run(mut engine: Engine) {
                     ) {
                         match action {
                             ButtonAction::ConfirmYes => {
-                                // 根据确认类型执行相应操作
-                                match confirm_type {
+                                // 根据确认类型直接执行操作（不使用 UI 过渡，避免闪屏）。
+                                let prev_mode = confirm_return_mode;
+                                let ctype = confirm_type.take();
+                                confirm_type = None;
+                                ui_mode = prev_mode;
+                                match ctype {
                                     Some(ConfirmType::BackToTitle) => {
-                                        ui_transition.start(UiMode::Normal, PendingUiAction::BackToTitle);
+                                        // 保存"继续游戏"存档并返回标题
+                                        let _ = engine.save_continue();
+                                        has_continue_save = true;
+                                        let source = engine.source().to_string();
+                                        let saved_settings = engine.settings().clone();
+                                        if let Ok(mut new_engine) = Engine::new(&source) {
+                                            *new_engine.settings_mut() = saved_settings;
+                                            engine = new_engine;
+                                            title_music_played = false;
+                                        }
+                                        hud_hidden = false;
+                                        settings_snapshot = None;
                                     }
                                     Some(ConfirmType::UnappliedSettings) => {
-                                        ui_transition.start(UiMode::Normal, PendingUiAction::DiscardSettings);
+                                        // 放弃设置更改，恢复快照
+                                        if let Some(snapshot) = settings_snapshot.clone() {
+                                            *engine.settings_mut() = snapshot;
+                                        }
+                                        settings_snapshot = None;
+                                        // 返回设置菜单之前的模式
+                                        ui_mode = settings_prev_mode;
                                     }
                                     _ => {}
                                 }
-                                confirm_type = None;
                             }
                             ButtonAction::ConfirmNo => {
                                 // 取消确认，返回之前的模式
@@ -960,6 +1012,21 @@ pub async fn run(mut engine: Engine) {
                             confirm_type = Some(ConfirmType::BackToTitle);
                             confirm_return_mode = ui_mode;
                             ui_mode = UiMode::ConfirmDialog;
+                        }
+                        ButtonAction::StartGame => {
+                            // 直接开始游戏（不使用 UI 过渡，避免闪屏）。
+                            // 清除"继续游戏"存档（开始新游戏）。
+                            let _ = engine.delete_continue();
+                            has_continue_save = false;
+                            engine.start_game();
+                            hud_hidden = false;
+                            ui_mode = UiMode::Normal;
+                        }
+                        ButtonAction::ContinueGame => {
+                            // 直接继续游戏（不使用 UI 过渡，避免闪屏）。
+                            let _ = engine.load_continue();
+                            hud_hidden = false;
+                            ui_mode = UiMode::Normal;
                         }
                         ButtonAction::OpenSettings => {
                             // 进入设置时记录当前模式
@@ -1169,7 +1236,11 @@ async fn draw_background(scene: &SceneState, assets: &mut AssetManager, sw: f32,
 
 async fn draw_characters(scene: &SceneState, assets: &mut AssetManager, sw: f32, sh: f32, font: &Option<Font>, scale: f32) {
     for char_state in &scene.characters {
-        let x_frac = char_state.position.x_fraction();
+        // 优先使用精确百分比位置（custom_x/custom_y）；否则回退到 position 字段。
+        let x_frac = char_state.custom_x.unwrap_or_else(|| char_state.position.x_fraction());
+        // y 百分比：None 时默认底部站立（1.0）。
+        // 注意：custom_y 的语义是立绘中心点的 y 百分比，便于作者控制纵向位置。
+        let y_frac = char_state.custom_y.unwrap_or(1.0);
         let sprite_name = if let Some(pose) = &char_state.pose {
             pose.clone()
         } else {
@@ -1179,11 +1250,20 @@ async fn draw_characters(scene: &SceneState, assets: &mut AssetManager, sw: f32,
         if let Some(tex) = assets.get_texture(AssetKind::Character, &sprite_name).await {
             let tex_w = tex.width();
             let tex_h = tex.height();
+            // 默认立绘高度为屏幕高度的 80%，再乘以 char_state.scale。
             let scale_factor = (sh * 0.8) / tex_h;
             let draw_w = tex_w * scale_factor;
             let draw_h = tex_h * scale_factor;
+            // x：按 x_frac 百分比水平居中。
             let x = sw * x_frac - draw_w / 2.0 + char_state.offset_x;
-            let y = sh - draw_h - 50.0 * scale; // Stand on the bottom
+            // y：按 y_frac 百分比定位立绘中心点。
+            // 当 y_frac=1.0（底部）时，立绘底部贴齐屏幕底部（留 50px*scale 边距），
+            // 与原有行为一致；y_frac<1.0 时立绘中心点对齐到屏幕 y_frac 位置。
+            let y = if (y_frac - 1.0).abs() < 0.001 {
+                sh - draw_h - 50.0 * scale
+            } else {
+                sh * y_frac - draw_h / 2.0
+            };
             draw_texture_ex(
                 tex.clone(),
                 x,
@@ -1197,10 +1277,14 @@ async fn draw_characters(scene: &SceneState, assets: &mut AssetManager, sw: f32,
         } else {
             // Placeholder: colored rectangle
             let placeholder_color = name_to_color(&char_state.name);
-            let char_w = 200.0 * scale;
-            let char_h = 400.0 * scale;
+            let char_w = 200.0 * scale * char_state.scale;
+            let char_h = 400.0 * scale * char_state.scale;
             let x = sw * x_frac - char_w / 2.0 + char_state.offset_x;
-            let y = sh - char_h - 50.0 * scale;
+            let y = if (y_frac - 1.0).abs() < 0.001 {
+                sh - char_h - 50.0 * scale
+            } else {
+                sh * y_frac - char_h / 2.0
+            };
             draw_rectangle(
                 x, y, char_w, char_h,
                 Color::new(placeholder_color.0, placeholder_color.1, placeholder_color.2, char_state.alpha),
@@ -1562,10 +1646,8 @@ fn draw_autosave_prompt(engine: &Engine, buttons: &mut Vec<ButtonRect>, sw: f32,
 }
 
 /// Draw a confirmation dialog for returning to title or discarding settings.
+/// 注意：全屏 8% 黑色叠层已由调用方绘制，此函数只绘制居中的对话框面板。
 fn draw_confirm_dialog(buttons: &mut Vec<ButtonRect>, sw: f32, sh: f32, font: &Option<Font>, scale: f32, confirm_type: Option<ConfirmType>) {
-    // Full-screen semi-transparent backdrop.
-    draw_rectangle(0.0, 0.0, sw, sh, Color::new(0.0, 0.0, 0.0, 0.55));
-
     // Centered dialog panel.
     let dialog_w = (600.0 * scale).min(sw - 80.0 * scale);
     let dialog_h = (280.0 * scale).min(sh - 80.0 * scale);

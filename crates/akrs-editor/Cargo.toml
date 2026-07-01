@@ -9,6 +9,8 @@ akrs-core = { workspace = true }
 akrs-runtime = { workspace = true }
 eframe = { workspace = true }
 egui = { workspace = true }
+# 用于在编辑器中解码 PNG 立绘以供预览（不启动游戏进程）。
+image = { version = "0.24", default-features = false, features = ["png"] }
 
 [build-dependencies]
 winres = "0.1"

@@ -867,21 +867,27 @@ impl Engine {
 
                 let pose = action.pose.clone();
                 let position = action.position;
+                let transform = action.transform;
                 if self.transition.is_active() {
                     match position {
-                        Some(pos) => self.scene.character_enter_at(
+                        Some(pos) => self.scene.character_enter_at_with(
                             action.character.clone(),
                             pose,
                             pos,
+                            transform,
                         ),
-                        None => self.scene.character_enter(action.character.clone(), pose),
+                        None => self.scene.character_enter_with(
+                            action.character.clone(),
+                            pose,
+                            transform,
+                        ),
                     }
                 } else {
                     self.transition.start(
                         kind,
                         &mut self.scene,
                         None,
-                        vec![(action.character.clone(), pose, position)],
+                        vec![(action.character.clone(), pose, position, transform)],
                         vec![],
                         None,
                     );

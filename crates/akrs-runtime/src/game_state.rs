@@ -6,7 +6,7 @@
 //! No rendering code lives here; this is purely data. The renderer (e.g.,
 //! `akrs_render` with macroquad) interprets this data to draw.
 
-use akrs_core::{Position, Transition};
+use akrs_core::{Position, SpriteTransform, Transition};
 use serde::{Deserialize, Serialize};
 
 /// Complete render state for one frame.
@@ -64,6 +64,12 @@ pub struct CharacterState {
     pub offset_x: f32,
     /// Scale factor.
     pub scale: f32,
+    /// 精确百分比位置（由 `at x,y` 语法设置）。
+    /// None 时使用 position 字段。
+    #[serde(default)]
+    pub custom_x: Option<f32>,
+    #[serde(default)]
+    pub custom_y: Option<f32>,
 }
 
 impl Default for CharacterState {
@@ -75,6 +81,8 @@ impl Default for CharacterState {
             alpha: 1.0,
             offset_x: 0.0,
             scale: 1.0,
+            custom_x: None,
+            custom_y: None,
         }
     }
 }
@@ -186,31 +194,64 @@ impl SceneState {
     /// - 1 existing → existing moves to Left, new gets Right
     /// Does not support more than 2 characters.
     pub fn character_enter(&mut self, name: String, pose: Option<String>) {
+        self.character_enter_with(name, pose, SpriteTransform::default())
+    }
+
+    /// Add or update a character with a transform (位置百分比 + 大小倍数)。
+    /// 如果 transform 中指定了 custom_x/custom_y，则使用精确百分比位置；
+    /// 否则使用 auto_layout 自动布局。
+    pub fn character_enter_with(
+        &mut self,
+        name: String,
+        pose: Option<String>,
+        transform: SpriteTransform,
+    ) {
         // Remove existing instance of this character (re-enter replaces)
         self.characters.retain(|c| c.name != name);
+        // 若提供了 size，则 scale 用之；否则默认 1.0
+        let scale = transform.scale.unwrap_or(1.0);
         self.characters.push(CharacterState {
             name,
             pose,
-            position: Position::Center, // temporary; auto_layout will fix
+            position: Position::Center, // temporary; auto_layout will fix if no custom_x
             alpha: 1.0,
             offset_x: 0.0,
-            scale: 1.0,
+            scale,
+            custom_x: transform.x,
+            custom_y: transform.y,
         });
-        self.auto_layout();
+        // 若有自定义位置，则不运行 auto_layout（保留自定义位置）
+        if transform.x.is_none() {
+            self.auto_layout();
+        }
     }
 
     /// Add or update a character at an explicit position.
     /// Unlike `character_enter`, this does NOT run auto_layout — the given
     /// position is respected. Caller is responsible for the 2-character limit.
     pub fn character_enter_at(&mut self, name: String, pose: Option<String>, position: Position) {
+        self.character_enter_at_with(name, pose, position, SpriteTransform::default())
+    }
+
+    /// 带 transform 的显式位置入场。
+    pub fn character_enter_at_with(
+        &mut self,
+        name: String,
+        pose: Option<String>,
+        position: Position,
+        transform: SpriteTransform,
+    ) {
         self.characters.retain(|c| c.name != name);
+        let scale = transform.scale.unwrap_or(1.0);
         self.characters.push(CharacterState {
             name,
             pose,
             position,
             alpha: 1.0,
             offset_x: 0.0,
-            scale: 1.0,
+            scale,
+            custom_x: transform.x,
+            custom_y: transform.y,
         });
     }
 

@@ -197,10 +197,13 @@ impl Parser {
         self.advance(); // +
         self.skip_newlines();
 
-        // Parse: Character [(pose)] [enters|exits] [position] [with transition]
+        // Parse: Character [(pose)] [enters|exits] [position|at x[,y]] [size s] [with transition]
         // - `+ 心夏 (kokonabody1) 居中`           (新语法：立绘 + 中文位置)
         // - `+ 心夏 居左`                         (新语法：仅位置)
         // - `+ 心夏`                              (新语法：默认居中)
+        // - `+ 心夏 at 0.3,0.8`                   (百分比位置：x=30%, y=80%)
+        // - `+ 心夏 at 0.5 size 1.2`              (百分比位置 + 大小倍数)
+        // - `+ 心夏 size 0.9`                     (仅大小，位置默认居中)
         // - `+ Aki enters from left with fade`   (旧语法：向后兼容)
         let character = self.expect_ident("character name")?;
 
@@ -216,6 +219,8 @@ impl Parser {
         let mut kind = DirectionKind::Enter;
         let mut position = None;
         let mut transition = None;
+        // 立绘变换（精确百分比位置与大小倍数）
+        let mut transform = SpriteTransform::default();
 
         while !self.is_at_end() && !matches!(self.peek().kind, TokenKind::Newline | TokenKind::Eof) {
             if let TokenKind::Ident(s) = &self.peek().kind {
@@ -225,7 +230,7 @@ impl Parser {
                         kind = DirectionKind::Exit;
                         self.advance();
                     }
-                    "from" | "to" | "at" => {
+                    "from" | "to" => {
                         self.advance();
                         if let TokenKind::Ident(pos_name) = &self.peek().kind.clone() {
                             position = Position::from_name(pos_name)
@@ -239,6 +244,28 @@ impl Parser {
                                 });
                             }
                         }
+                    }
+                    "at" => {
+                        // 新语法：`at x` 或 `at x,y`（百分比位置）
+                        self.advance();
+                        let (xv, yv) = self.parse_percent_pair()?;
+                        transform.x = Some(xv);
+                        if let Some(yv) = yv {
+                            transform.y = Some(yv);
+                        }
+                    }
+                    "size" => {
+                        // 新语法：`size s`（大小倍数）
+                        self.advance();
+                        let s = self.parse_number_value("size value")?;
+                        if s <= 0.0 {
+                            return Err(ParseError {
+                                message: format!("size must be positive, got {}", s),
+                                span: self.current_span(),
+                                hint: Some("use a positive number like 1.0, 1.5, 0.8".to_string()),
+                            });
+                        }
+                        transform.scale = Some(s as f32);
                     }
                     "with" => {
                         self.advance();
@@ -272,9 +299,43 @@ impl Parser {
 
         self.consume_newline();
         Ok(Node::Direction {
-            action: DirectionAction { kind, character, pose, position, transition },
+            action: DirectionAction { kind, character, pose, position, transform, transition },
             span,
         })
+    }
+
+    /// 解析一个数字值（Integer 或 Float），返回 f64。用于 `size`、`at` 等参数。
+    fn parse_number_value(&mut self, ctx: &str) -> Result<f64, ParseError> {
+        match &self.peek().kind.clone() {
+            TokenKind::Float(f) => {
+                let v = *f;
+                self.advance();
+                Ok(v)
+            }
+            TokenKind::Integer(i) => {
+                let v = *i as f64;
+                self.advance();
+                Ok(v)
+            }
+            other => Err(ParseError {
+                message: format!("expected a number for {}, got {}", ctx, other),
+                span: self.current_span(),
+                hint: None,
+            }),
+        }
+    }
+
+    /// 解析百分比位置对：`x` 或 `x,y`（x、y 均为 0.0~1.0 的百分比）。
+    /// 返回 (x, Option<y>)。
+    fn parse_percent_pair(&mut self) -> Result<(f32, Option<f32>), ParseError> {
+        let x = self.parse_number_value("position x%")? as f32;
+        let mut y = None;
+        if self.check(&TokenKind::Comma) {
+            self.advance();
+            let yv = self.parse_number_value("position y%")? as f32;
+            y = Some(yv);
+        }
+        Ok((x, y))
     }
 
     /// Parse character exit direction: `- Character [exits] [with transition]`
@@ -322,6 +383,7 @@ impl Parser {
                 character,
                 pose: None,
                 position: None,
+                transform: SpriteTransform::default(),
                 transition,
             },
             span,
@@ -865,6 +927,76 @@ mod tests {
                 assert_eq!(action.character, "Aki");
                 assert_eq!(action.pose.as_deref(), Some("happy"));
                 assert_eq!(action.position, Some(Position::Left));
+                assert_eq!(action.transition, Some(Transition::Fade));
+            }
+            _ => panic!("expected Direction"),
+        }
+    }
+
+    #[test]
+    fn test_direction_at_xy_percent() {
+        let p = parse("# S\n+ 心夏 (kokonabody1) at 0.3,0.8\n");
+        match &p.sections[0].nodes[0] {
+            Node::Direction { action, .. } => {
+                assert_eq!(action.character, "心夏");
+                assert_eq!(action.pose.as_deref(), Some("kokonabody1"));
+                assert_eq!(action.transform.x, Some(0.3));
+                assert_eq!(action.transform.y, Some(0.8));
+                assert_eq!(action.transform.scale, None);
+                assert_eq!(action.position, None);
+            }
+            _ => panic!("expected Direction"),
+        }
+    }
+
+    #[test]
+    fn test_direction_at_x_only() {
+        let p = parse("# S\n+ 心夏 at 0.5\n");
+        match &p.sections[0].nodes[0] {
+            Node::Direction { action, .. } => {
+                assert_eq!(action.transform.x, Some(0.5));
+                assert_eq!(action.transform.y, None);
+            }
+            _ => panic!("expected Direction"),
+        }
+    }
+
+    #[test]
+    fn test_direction_at_xy_size() {
+        let p = parse("# S\n+ 心夏 at 0.5 size 1.2\n");
+        match &p.sections[0].nodes[0] {
+            Node::Direction { action, .. } => {
+                assert_eq!(action.transform.x, Some(0.5));
+                assert_eq!(action.transform.y, None);
+                assert_eq!(action.transform.scale, Some(1.2));
+            }
+            _ => panic!("expected Direction"),
+        }
+    }
+
+    #[test]
+    fn test_direction_size_only() {
+        let p = parse("# S\n+ 心夏 size 0.9\n");
+        match &p.sections[0].nodes[0] {
+            Node::Direction { action, .. } => {
+                assert_eq!(action.transform.x, None);
+                assert_eq!(action.transform.y, None);
+                assert_eq!(action.transform.scale, Some(0.9));
+            }
+            _ => panic!("expected Direction"),
+        }
+    }
+
+    #[test]
+    fn test_direction_at_xy_size_with_transition() {
+        let p = parse("# S\n+ 心夏 (kokonabody1) at 0.3,0.8 size 1.2 with fade\n");
+        match &p.sections[0].nodes[0] {
+            Node::Direction { action, .. } => {
+                assert_eq!(action.character, "心夏");
+                assert_eq!(action.pose.as_deref(), Some("kokonabody1"));
+                assert_eq!(action.transform.x, Some(0.3));
+                assert_eq!(action.transform.y, Some(0.8));
+                assert_eq!(action.transform.scale, Some(1.2));
                 assert_eq!(action.transition, Some(Transition::Fade));
             }
             _ => panic!("expected Direction"),
