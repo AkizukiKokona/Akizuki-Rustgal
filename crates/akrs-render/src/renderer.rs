@@ -272,6 +272,8 @@ enum UiMode {
     SettingsMenu,
     /// Startup prompt shown when a crash-recovery autosave is detected.
     AutoSavePrompt,
+    /// 确认对话框（用于返回标题、未应用设置退出等）。
+    ConfirmDialog,
 }
 
 /// Actions deferred to the swap point of a UI transition.
@@ -279,12 +281,27 @@ enum UiMode {
 enum PendingUiAction {
     None,
     StartGame,
+    /// 从"继续游戏"存档槽位加载。
+    ContinueGame,
     SaveSlot(usize),
     LoadSlot(usize),
     ContinueAutosave,
     DiscardAutosave,
     BackToTitle,
     Quit,
+    /// 应用设置更改并返回。
+    ApplySettings,
+    /// 放弃设置更改并返回。
+    DiscardSettings,
+}
+
+/// 确认对话框的类型，用于显示不同的提示文本。
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum ConfirmType {
+    /// 返回标题界面的确认。
+    BackToTitle,
+    /// 未应用设置时退出设置菜单的确认。
+    UnappliedSettings,
 }
 
 /// Phase of a UI transition animation.
@@ -371,6 +388,8 @@ struct ButtonRect {
 #[derive(Debug, Clone, Copy, PartialEq)]
 enum ButtonAction {
     StartGame,
+    /// 从"继续游戏"存档槽位加载（从游戏返回标题后保存的进度）。
+    ContinueGame,
     LoadGame,
     Settings,
     Quit,
@@ -405,6 +424,11 @@ enum ButtonAction {
     /// Extend the visible slot count by one page (used on the last page when
     /// more slots are still available beyond the currently displayed range).
     AddPage,
+    // ── Confirm dialog actions ───
+    /// 确认执行（返回标题/放弃设置等）。
+    ConfirmYes,
+    /// 取消确认对话框。
+    ConfirmNo,
 }
 
 /// 窗口配置 for macroquad。
@@ -607,6 +631,16 @@ pub async fn run(mut engine: Engine) {
     // 每帧检测 settings.fullscreen 是否与此值不一致，若不一致则切换窗口全屏状态，
     // 这样既能响应设置菜单中的切换，也能在启动时应用上次保存的偏好。
     let mut last_fullscreen_applied: bool = false;
+    // 设置菜单进入时保存的设置快照，用于检测是否有未应用的更改。
+    let mut settings_snapshot: Option<Settings> = None;
+    // 确认对话框的类型（返回标题/未应用设置退出）。
+    let mut confirm_type: Option<ConfirmType> = None;
+    // 确认对话框返回后应切换到的 UI 模式。
+    let mut confirm_return_mode: UiMode = UiMode::Normal;
+    // 是否有"继续游戏"存档。
+    let mut has_continue_save: bool = engine.has_continue_save();
+    // 进入设置菜单前的 UI 模式（用于返回时恢复）。
+    let mut settings_prev_mode: UiMode = UiMode::Normal;
 
     // Check title music
     if !assets.check_music("title_bgm.mp3") {
@@ -621,11 +655,17 @@ pub async fn run(mut engine: Engine) {
 
         // 全屏状态同步：检测 settings.fullscreen 是否与上次应用到窗口的值
         // 不一致，若不一致则调用 set_fullscreen 实际切换窗口模式。
-        // 这使得设置菜单中的开关真正生效，并在启动时应用上次的偏好。
+        // 从全屏恢复为窗口时，恢复为屏幕面积的 1/2 大小。
         {
             let want_fullscreen = engine.settings().fullscreen;
             if want_fullscreen != last_fullscreen_applied {
                 set_fullscreen(want_fullscreen);
+                // 如果从全屏恢复为窗口模式，设置窗口大小为 1/2 屏幕
+                if !want_fullscreen && last_fullscreen_applied {
+                    let (screen_w, screen_h) = get_screen_size();
+                    let (win_w, win_h) = calculate_window_size(screen_w, screen_h);
+                    request_new_screen_size(win_w as f32, win_h as f32);
+                }
                 last_fullscreen_applied = want_fullscreen;
             }
         }
@@ -691,6 +731,13 @@ pub async fn run(mut engine: Engine) {
                 PendingUiAction::StartGame => {
                     engine.start_game();
                     hud_hidden = false;
+                    // 开始新游戏时清除"继续游戏"存档
+                    let _ = engine.delete_continue();
+                    has_continue_save = false;
+                }
+                PendingUiAction::ContinueGame => {
+                    let _ = engine.load_continue();
+                    hud_hidden = false;
                 }
                 PendingUiAction::SaveSlot(slot) => {
                     engine.save(slot);
@@ -710,6 +757,9 @@ pub async fn run(mut engine: Engine) {
                     let _ = engine.delete_autosave();
                 }
                 PendingUiAction::BackToTitle => {
+                    // 保存"继续游戏"存档
+                    let _ = engine.save_continue();
+                    has_continue_save = true;
                     let source = engine.source().to_string();
                     let saved_settings = engine.settings().clone();
                     if let Ok(mut new_engine) = Engine::new(&source) {
@@ -718,11 +768,28 @@ pub async fn run(mut engine: Engine) {
                         title_music_played = false;
                     }
                     hud_hidden = false;
+                    // 清除设置快照
+                    settings_snapshot = None;
                 }
                 PendingUiAction::Quit => {
                     let _ = engine.delete_autosave();
                     let _ = engine.save_settings();
                     std::process::exit(0);
+                }
+                PendingUiAction::ApplySettings => {
+                    let _ = engine.save_settings();
+                    settings_snapshot = None;
+                    // 应用设置后返回之前的模式
+                    ui_mode = settings_prev_mode;
+                }
+                PendingUiAction::DiscardSettings => {
+                    // 恢复进入设置菜单前的设置快照
+                    if let Some(snapshot) = settings_snapshot.clone() {
+                        *engine.settings_mut() = snapshot;
+                    }
+                    settings_snapshot = None;
+                    // 放弃设置后返回之前的模式
+                    ui_mode = settings_prev_mode;
                 }
             }
         }
@@ -737,11 +804,20 @@ pub async fn run(mut engine: Engine) {
             draw_dim_overlay(sw, sh, 0.6);
             draw_autosave_prompt(&engine, &mut buttons, sw, sh, &font, scale);
         } else if ui_mode == UiMode::SettingsMenu {
+            // 进入设置菜单时保存当前设置的快照（仅一次）
+            if settings_snapshot.is_none() {
+                settings_snapshot = Some(engine.settings().clone());
+            }
             // Full-screen settings page: opaque background + full-screen layout.
             // Sliders/toggles/dropdown are not button-based, so the generic
             // click handler is skipped for this mode (see below).
             draw_rectangle(0.0, 0.0, sw, sh, Color::new(0.05, 0.05, 0.1, 1.0));
             draw_settings_menu(&mut engine, &settings_layout, &font, dropdown_open, scale);
+        } else if ui_mode == UiMode::ConfirmDialog {
+            // 确认对话框：半透明背景 + 居中对话框
+            draw_rectangle(0.0, 0.0, sw, sh, Color::new(0.05, 0.05, 0.1, 1.0));
+            draw_dim_overlay(sw, sh, 0.5);
+            draw_confirm_dialog(&mut buttons, sw, sh, &font, scale, confirm_type);
         } else if ui_mode != UiMode::Normal {
             // Save/Load menus: full-screen opaque background + full-screen grid.
             draw_rectangle(0.0, 0.0, sw, sh, Color::new(0.05, 0.05, 0.1, 1.0));
@@ -751,7 +827,7 @@ pub async fn run(mut engine: Engine) {
                 _ => {}
             }
         } else if engine.phase() == EnginePhase::Title {
-            draw_title_screen(&mut buttons, sw, sh, &mut assets, &font, scale);
+            draw_title_screen(&mut buttons, sw, sh, &mut assets, &font, scale, has_continue_save);
         } else if engine.phase() == EnginePhase::StoryEnded {
             draw_scene(&engine, &mut assets, sw, sh, true, &font, scale).await;
             draw_story_ended(sw, sh, &mut buttons, &font, scale);
@@ -790,8 +866,47 @@ pub async fn run(mut engine: Engine) {
             if ui_mode == UiMode::SettingsMenu {
                 if let Some((target, pending)) = handle_settings_interaction(
                     &mut engine, &settings_layout, &mut dragging_slider, &mut dropdown_open, scale,
+                    &settings_snapshot, &mut settings_prev_mode,
                 ) {
-                    ui_transition.start(target, pending);
+                    // 如果返回确认对话框，设置确认类型
+                    if target == UiMode::ConfirmDialog {
+                        confirm_type = Some(ConfirmType::UnappliedSettings);
+                        confirm_return_mode = UiMode::SettingsMenu;
+                        ui_mode = UiMode::ConfirmDialog;
+                    } else {
+                        ui_transition.start(target, pending);
+                    }
+                }
+            } else if ui_mode == UiMode::ConfirmDialog {
+                // 确认对话框的按钮处理
+                if is_mouse_button_pressed(MouseButton::Left) {
+                    let (mx, my) = mouse_position();
+                    if let Some(action) = handle_click(
+                        mx, my, &buttons, &mut engine, &ui_mode, &mut hud_hidden,
+                        sw, sh, scale,
+                    ) {
+                        match action {
+                            ButtonAction::ConfirmYes => {
+                                // 根据确认类型执行相应操作
+                                match confirm_type {
+                                    Some(ConfirmType::BackToTitle) => {
+                                        ui_transition.start(UiMode::Normal, PendingUiAction::BackToTitle);
+                                    }
+                                    Some(ConfirmType::UnappliedSettings) => {
+                                        ui_transition.start(UiMode::Normal, PendingUiAction::DiscardSettings);
+                                    }
+                                    _ => {}
+                                }
+                                confirm_type = None;
+                            }
+                            ButtonAction::ConfirmNo => {
+                                // 取消确认，返回之前的模式
+                                ui_mode = confirm_return_mode;
+                                confirm_type = None;
+                            }
+                            _ => {}
+                        }
+                    }
                 }
             } else if is_mouse_button_pressed(MouseButton::Left) {
                 let (mx, my) = mouse_position();
@@ -840,6 +955,22 @@ pub async fn run(mut engine: Engine) {
                             let total_pages = ((*displayed + SLOTS_PER_PAGE - 1) / SLOTS_PER_PAGE).max(1);
                             *page = total_pages - 1;
                         }
+                        ButtonAction::BackToTitle => {
+                            // 返回标题需要确认
+                            confirm_type = Some(ConfirmType::BackToTitle);
+                            confirm_return_mode = ui_mode;
+                            ui_mode = UiMode::ConfirmDialog;
+                        }
+                        ButtonAction::OpenSettings => {
+                            // 进入设置时记录当前模式
+                            settings_prev_mode = ui_mode;
+                            ui_transition.start(UiMode::SettingsMenu, PendingUiAction::None);
+                        }
+                        ButtonAction::Settings => {
+                            // 从标题进入设置时记录当前模式
+                            settings_prev_mode = UiMode::Normal;
+                            ui_transition.start(UiMode::SettingsMenu, PendingUiAction::None);
+                        }
                         _ => {
                             // Transition action.
                             if let Some((target, pending)) = handle_button_action(action) {
@@ -857,14 +988,38 @@ pub async fn run(mut engine: Engine) {
                 // Ignore Esc during a UI transition.
             } else if ui_mode == UiMode::AutoSavePrompt {
                 // The recovery prompt requires an explicit choice; ignore Esc.
+            } else if ui_mode == UiMode::ConfirmDialog {
+                // 确认对话框按 Esc 取消，返回之前的模式
+                ui_mode = confirm_return_mode;
+                confirm_type = None;
             } else if ui_mode == UiMode::SettingsMenu {
-                // Leaving the settings menu persists the current settings.
-                let _ = engine.save_settings();
+                // 设置菜单按 Esc：检测是否有未应用的更改
                 dragging_slider = None;
-                ui_transition.start(UiMode::Normal, PendingUiAction::None);
+                let has_changes = if let Some(snapshot) = settings_snapshot.clone() {
+                    let current = engine.settings();
+                    current.text_speed != snapshot.text_speed
+                        || current.bgm_volume != snapshot.bgm_volume
+                        || current.sfx_volume != snapshot.sfx_volume
+                        || current.auto_recovery != snapshot.auto_recovery
+                        || current.fullscreen != snapshot.fullscreen
+                        || current.resolution != snapshot.resolution
+                } else {
+                    false
+                };
+                if has_changes {
+                    // 有更改，显示确认对话框
+                    confirm_type = Some(ConfirmType::UnappliedSettings);
+                    confirm_return_mode = UiMode::SettingsMenu;
+                    ui_mode = UiMode::ConfirmDialog;
+                } else {
+                    // 无更改，直接返回
+                    ui_transition.start(settings_prev_mode, PendingUiAction::DiscardSettings);
+                }
             } else if ui_mode != UiMode::Normal {
                 ui_transition.start(UiMode::Normal, PendingUiAction::None);
             } else if engine.phase() != EnginePhase::Title {
+                // 游戏中按 Esc 进入设置菜单，记录当前模式
+                settings_prev_mode = ui_mode;
                 ui_transition.start(UiMode::SettingsMenu, PendingUiAction::None);
             }
         }
@@ -890,7 +1045,7 @@ pub async fn run(mut engine: Engine) {
 
 // ─── Drawing functions ───
 
-fn draw_title_screen(buttons: &mut Vec<ButtonRect>, sw: f32, sh: f32, _assets: &mut AssetManager, font: &Option<Font>, scale: f32) {
+fn draw_title_screen(buttons: &mut Vec<ButtonRect>, sw: f32, sh: f32, _assets: &mut AssetManager, font: &Option<Font>, scale: f32, has_continue_save: bool) {
     // Background: dark gradient
     draw_rectangle(0.0, 0.0, sw, sh, Color::new(0.05, 0.05, 0.1, 1.0));
 
@@ -925,6 +1080,12 @@ fn draw_title_screen(buttons: &mut Vec<ButtonRect>, sw: f32, sh: f32, _assets: &
     let btn_h = 60.0 * scale;
     let btn_x = (sw - btn_w) / 2.0;
     let mut btn_y = sh * 0.45;
+
+    // 如果有"继续游戏"存档，在"开始游戏"前显示"继续游戏"按钮
+    if has_continue_save {
+        draw_button(btn_x, btn_y, btn_w, btn_h, "继续游戏", buttons, ButtonAction::ContinueGame, font, scale);
+        btn_y += btn_h + 20.0 * scale;
+    }
 
     let labels = [
         ("开始游戏", ButtonAction::StartGame),
@@ -1064,20 +1225,27 @@ fn draw_dialogue(dialogue: &akrs_runtime::DialogueState, sw: f32, sh: f32, font:
     let box_w = sw;
 
     // 对话框背景：平滑渐变效果
-    // 顶部：几乎不透明（alpha=0.9），底部：完全透明（alpha=0.0）
-    // 使用 32 段绘制实现平滑渐变
-    let gradient_segments = 32;
-    let segment_h = box_h / gradient_segments as f32;
+    // 顶部：15%透明（alpha=0.85），底部：完全透明（alpha=0.0）
+    // 渐变延伸到屏幕底部，使用 64 段绘制实现更平滑过渡
+    let gradient_segments = 64;
+    // 渐变区域从对话框顶部一直延伸到屏幕底部
+    let gradient_start_y = box_y;
+    let gradient_end_y = sh; // 屏幕底部
+    let total_gradient_h = gradient_end_y - gradient_start_y;
+    let segment_h = total_gradient_h / gradient_segments as f32;
     for i in 0..gradient_segments {
-        let seg_y = box_y + i as f32 * segment_h;
-        let alpha_top = 0.9;
-        let alpha_bottom = 0.0;
+        let seg_y = gradient_start_y + i as f32 * segment_h;
+        let alpha_top = 0.85; // 顶部 15% 透明 = 85% 不透明
+        let alpha_bottom = 0.0; // 底部完全透明
         let t = i as f32 / (gradient_segments - 1) as f32;
         let alpha = alpha_top * (1.0 - t) + alpha_bottom * t;
-        draw_rectangle(box_x, seg_y, box_w, segment_h, Color::new(0.68, 0.85, 0.90, alpha));
+        // 只在对话框区域内绘制，但渐变计算覆盖到屏幕底部
+        if seg_y < box_y + box_h {
+            let draw_h = segment_h.min(box_y + box_h - seg_y);
+            draw_rectangle(box_x, seg_y, box_w, draw_h, Color::new(0.68, 0.85, 0.90, alpha));
+        }
     }
-    // 边框
-    draw_rectangle_lines(box_x, box_y, box_w, box_h, 2.0 * scale, Color::new(0.4, 0.7, 0.9, 0.8));
+    // 边框已移除（用户反馈边框线看着难受）
 
     let name_font_size = 42.0 * scale;
     let text_font_size = 39.0 * scale;
@@ -1391,6 +1559,95 @@ fn draw_autosave_prompt(engine: &Engine, buttons: &mut Vec<ButtonRect>, sw: f32,
 
     draw_button(btn1_x, btn_y, btn_w, btn_h, "继续游戏", buttons, ButtonAction::ContinueAutosave, font, scale);
     draw_button(btn2_x, btn_y, btn_w, btn_h, "重新开始", buttons, ButtonAction::DiscardAutosave, font, scale);
+}
+
+/// Draw a confirmation dialog for returning to title or discarding settings.
+fn draw_confirm_dialog(buttons: &mut Vec<ButtonRect>, sw: f32, sh: f32, font: &Option<Font>, scale: f32, confirm_type: Option<ConfirmType>) {
+    // Full-screen semi-transparent backdrop.
+    draw_rectangle(0.0, 0.0, sw, sh, Color::new(0.0, 0.0, 0.0, 0.55));
+
+    // Centered dialog panel.
+    let dialog_w = (600.0 * scale).min(sw - 80.0 * scale);
+    let dialog_h = (280.0 * scale).min(sh - 80.0 * scale);
+    let dialog_x = (sw - dialog_w) / 2.0;
+    let dialog_y = (sh - dialog_h) / 2.0;
+
+    // Panel background + border.
+    draw_rectangle(
+        dialog_x,
+        dialog_y,
+        dialog_w,
+        dialog_h,
+        Color::new(0.08, 0.06, 0.15, 0.97),
+    );
+    draw_rectangle_lines(
+        dialog_x,
+        dialog_y,
+        dialog_w,
+        dialog_h,
+        2.0 * scale,
+        Color::new(0.29, 0.62, 1.0, 0.9),
+    );
+    // Top accent line.
+    draw_rectangle(
+        dialog_x,
+        dialog_y,
+        dialog_w,
+        4.0 * scale,
+        Color::new(0.29, 0.62, 1.0, 0.8),
+    );
+
+    let center_x = sw / 2.0;
+    let mut cursor_y = dialog_y + 48.0 * scale;
+
+    // Title and message based on confirm type.
+    let (title, message): (&str, &str) = match confirm_type {
+        Some(ConfirmType::BackToTitle) => ("确认返回标题", "确定要返回标题界面吗？\n当前进度将自动保存为「继续游戏」。"),
+        Some(ConfirmType::UnappliedSettings) => ("设置未应用", "设置更改尚未应用。\n确定要放弃更改并退出吗？"),
+        None => ("确认", "确定要执行此操作吗？"),
+    };
+
+    let title_size = 32.0 * scale;
+    let tw = measure_text_f(title, font, title_size as u16, 1.0).width;
+    draw_text_f(
+        title,
+        center_x - tw / 2.0,
+        cursor_y,
+        title_size,
+        Color::new(0.8, 0.9, 1.0, 1.0),
+        font,
+    );
+    cursor_y += 50.0 * scale;
+
+    // Divider.
+    draw_rectangle(
+        dialog_x + 40.0 * scale,
+        cursor_y,
+        dialog_w - 80.0 * scale,
+        1.0 * scale,
+        Color::new(0.4, 0.35, 0.55, 0.6),
+    );
+    cursor_y += 30.0 * scale;
+
+    // Message (split into lines).
+    let msg_size = 22.0 * scale;
+    for line in message.lines() {
+        let lw = measure_text_f(line, font, msg_size as u16, 1.0).width;
+        draw_text_f(line, center_x - lw / 2.0, cursor_y, msg_size, WHITE, font);
+        cursor_y += 32.0 * scale;
+    }
+
+    // Action buttons.
+    let btn_w = 180.0 * scale;
+    let btn_h = 50.0 * scale;
+    let gap = 30.0 * scale;
+    let total_w = btn_w * 2.0 + gap;
+    let btn1_x = center_x - total_w / 2.0;
+    let btn2_x = btn1_x + btn_w + gap;
+    let btn_y = dialog_y + dialog_h - btn_h - 30.0 * scale;
+
+    draw_button(btn1_x, btn_y, btn_w, btn_h, "确定", buttons, ButtonAction::ConfirmYes, font, scale);
+    draw_button(btn2_x, btn_y, btn_w, btn_h, "取消", buttons, ButtonAction::ConfirmNo, font, scale);
 }
 
 // ─── Menu drawing ───
@@ -1841,8 +2098,10 @@ struct SettingsLayout {
     toggles: [Rect4; 2],
     /// Resolution dropdown hit rect.
     dropdown: Rect4,
-    /// "返回游戏" button hit rect.
-    back_btn: Rect4,
+    /// "应用" button hit rect.
+    apply_btn: Rect4,
+    /// "取消" button hit rect.
+    cancel_btn: Rect4,
 }
 
 /// Compute the full-screen settings menu layout from the current screen size
@@ -1907,11 +2166,22 @@ fn compute_settings_layout(sw: f32, sh: f32, scale: f32) -> SettingsLayout {
         h: 36.0 * scale,
     };
 
-    let btn_w = 240.0 * scale;
+    // 两个按钮：应用和取消
+    let btn_w = 180.0 * scale;
     let btn_h = 50.0 * scale;
-    let back_btn = Rect4 {
-        x: (sw - btn_w) / 2.0,
-        y: panel_y + panel_h - btn_h - 30.0 * scale,
+    let btn_gap = 40.0 * scale;
+    let total_btn_w = btn_w * 2.0 + btn_gap;
+    let btn_start_x = (sw - total_btn_w) / 2.0;
+    let btn_y = panel_y + panel_h - btn_h - 30.0 * scale;
+    let apply_btn = Rect4 {
+        x: btn_start_x,
+        y: btn_y,
+        w: btn_w,
+        h: btn_h,
+    };
+    let cancel_btn = Rect4 {
+        x: btn_start_x + btn_w + btn_gap,
+        y: btn_y,
         w: btn_w,
         h: btn_h,
     };
@@ -1928,7 +2198,8 @@ fn compute_settings_layout(sw: f32, sh: f32, scale: f32) -> SettingsLayout {
         slider_hits,
         toggles,
         dropdown,
-        back_btn,
+        apply_btn,
+        cancel_btn,
     }
 }
 
@@ -2011,22 +2282,33 @@ fn draw_settings_menu(engine: &mut Engine, layout: &SettingsLayout, font: &Optio
     draw_text_f("分辨率", layout.label_x, layout.row_mids[5] + 8.0 * scale, label_size, WHITE, font);
     draw_dropdown_box(layout.dropdown, settings.resolution, font, dropdown_open, scale);
 
-    // Back button (visual only; clicks are handled by handle_settings_interaction).
-    let mut back_buttons = Vec::new();
+    // 两个按钮：应用和取消（视觉绘制，点击由 handle_settings_interaction 处理）
+    let mut btns = Vec::new();
     draw_button(
-        layout.back_btn.x,
-        layout.back_btn.y,
-        layout.back_btn.w,
-        layout.back_btn.h,
-        "返回游戏",
-        &mut back_buttons,
-        ButtonAction::CloseMenu,
+        layout.apply_btn.x,
+        layout.apply_btn.y,
+        layout.apply_btn.w,
+        layout.apply_btn.h,
+        "应用",
+        &mut btns,
+        ButtonAction::ConfirmYes, // 暂用这个 action，实际处理在 handle_settings_interaction
+        font,
+        scale,
+    );
+    draw_button(
+        layout.cancel_btn.x,
+        layout.cancel_btn.y,
+        layout.cancel_btn.w,
+        layout.cancel_btn.h,
+        "取消",
+        &mut btns,
+        ButtonAction::ConfirmNo, // 暂用这个 action，实际处理在 handle_settings_interaction
         font,
         scale,
     );
 
     // Draw the expanded dropdown list LAST so it is rendered above every other
-    // control (including the back button) — fixes the z-order issue.
+    // control (including the buttons) — fixes the z-order issue.
     if dropdown_open {
         draw_dropdown_list(layout.dropdown, settings.resolution, font, scale);
     }
@@ -2126,6 +2408,8 @@ fn handle_settings_interaction(
     dragging_slider: &mut Option<usize>,
     dropdown_open: &mut bool,
     scale: f32,
+    settings_snapshot: &Option<Settings>,
+    _settings_prev_mode: &mut UiMode,
 ) -> Option<(UiMode, PendingUiAction)> {
     let (mx, my) = mouse_position();
     let down = is_mouse_button_down(MouseButton::Left);
@@ -2194,11 +2478,33 @@ fn handle_settings_interaction(
             *dropdown_open = false;
             return None;
         }
-        // Back button: persist settings and return to the game.
-        if point_in_rect(mx, my, layout.back_btn) {
-            let _ = engine.save_settings();
+        // 应用按钮：保存设置并返回
+        if point_in_rect(mx, my, layout.apply_btn) {
             *dragging_slider = None;
-            return Some((UiMode::Normal, PendingUiAction::None));
+            return Some((UiMode::Normal, PendingUiAction::ApplySettings));
+        }
+        // 取消按钮：检测是否有更改，若有则显示确认对话框
+        if point_in_rect(mx, my, layout.cancel_btn) {
+            *dragging_slider = None;
+            // 检测设置是否有更改
+            let has_changes = if let Some(snapshot) = settings_snapshot {
+                let current = engine.settings();
+                current.text_speed != snapshot.text_speed
+                    || current.bgm_volume != snapshot.bgm_volume
+                    || current.sfx_volume != snapshot.sfx_volume
+                    || current.auto_recovery != snapshot.auto_recovery
+                    || current.fullscreen != snapshot.fullscreen
+                    || current.resolution != snapshot.resolution
+            } else {
+                false
+            };
+            if has_changes {
+                // 需要确认，返回确认对话框模式，pending 会在调用者处理
+                return Some((UiMode::ConfirmDialog, PendingUiAction::None));
+            } else {
+                // 无更改，直接返回
+                return Some((UiMode::Normal, PendingUiAction::DiscardSettings));
+            }
         }
     }
     None
@@ -2307,12 +2613,13 @@ fn handle_choice_click(mx: f32, my: f32, engine: &mut Engine, sw: f32, sh: f32, 
 fn handle_button_action(action: ButtonAction) -> Option<(UiMode, PendingUiAction)> {
     match action {
         ButtonAction::StartGame => Some((UiMode::Normal, PendingUiAction::StartGame)),
+        ButtonAction::ContinueGame => Some((UiMode::Normal, PendingUiAction::ContinueGame)),
         ButtonAction::LoadGame => Some((UiMode::LoadMenu, PendingUiAction::None)),
         ButtonAction::Settings => Some((UiMode::SettingsMenu, PendingUiAction::None)),
         ButtonAction::Quit => Some((UiMode::Normal, PendingUiAction::Quit)),
         ButtonAction::SaveSlot(slot) => Some((UiMode::Normal, PendingUiAction::SaveSlot(slot))),
         ButtonAction::LoadSlot(slot) => Some((UiMode::Normal, PendingUiAction::LoadSlot(slot))),
-        ButtonAction::BackToTitle => Some((UiMode::Normal, PendingUiAction::BackToTitle)),
+        ButtonAction::BackToTitle => Some((UiMode::ConfirmDialog, PendingUiAction::None)), // 先显示确认对话框
         ButtonAction::BackToGame | ButtonAction::CloseMenu => Some((UiMode::Normal, PendingUiAction::None)),
         ButtonAction::ContinueAutosave => Some((UiMode::Normal, PendingUiAction::ContinueAutosave)),
         ButtonAction::DiscardAutosave => Some((UiMode::Normal, PendingUiAction::DiscardAutosave)),
@@ -2322,6 +2629,8 @@ fn handle_button_action(action: ButtonAction) -> Option<(UiMode, PendingUiAction
         ButtonAction::QuickSave | ButtonAction::QuickLoad
         | ButtonAction::ToggleHide | ButtonAction::PrevPage | ButtonAction::NextPage
         | ButtonAction::AddPage => None,
+        ButtonAction::ConfirmYes => Some((UiMode::Normal, PendingUiAction::None)), // 由调用者处理具体确认逻辑
+        ButtonAction::ConfirmNo => Some((UiMode::Normal, PendingUiAction::None)),  // 返回上一个模式
     }
 }
 

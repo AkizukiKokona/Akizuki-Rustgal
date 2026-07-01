@@ -532,6 +532,83 @@ impl Engine {
         events
     }
 
+    // ─── Continue save (返回标题后继续游戏) ───
+
+    /// Save the current game state for "继续游戏" feature.
+    ///
+    /// Called when the player returns to title from in-game.
+    pub fn save_continue(&mut self) -> Vec<EngineEvent> {
+        let mut events = Vec::new();
+
+        // Nothing to save on the title screen or after the story ended.
+        if self.phase == EnginePhase::Title || self.phase == EnginePhase::StoryEnded {
+            return events;
+        }
+
+        let vm_state = self.vm.save_state();
+        let description = self
+            .scene
+            .dialogue
+            .as_ref()
+            .map(|d| {
+                format!(
+                    "{}: {}",
+                    d.speaker,
+                    &d.full_text[..d.full_text
+                        .char_indices()
+                        .take(30)
+                        .last()
+                        .map(|(i, _)| i)
+                        .unwrap_or(0)]
+                )
+            })
+            .unwrap_or_else(|| self.current_section_name.clone());
+
+        match self.saves.save_continue(
+            vm_state,
+            &self.current_section_name,
+            self.play_time as u64,
+            &description,
+        ) {
+            Ok(_) => {}
+            Err(e) => events.push(EngineEvent::Error { message: e }),
+        }
+        events
+    }
+
+    /// Load the continue save and resume the game.
+    pub fn load_continue(&mut self) -> Vec<EngineEvent> {
+        let mut events = Vec::new();
+
+        match self.saves.load_continue() {
+            Ok(save) => {
+                self.vm.load_state(save.vm_state);
+                self.scene.show_title = false;
+                self.phase = EnginePhase::Running;
+                self.scene.clear_text();
+                self.process_events_into(&mut events);
+            }
+            Err(e) => {
+                events.push(EngineEvent::Error { message: e });
+            }
+        }
+        events
+    }
+
+    /// Check whether a continue save exists.
+    pub fn has_continue_save(&self) -> bool {
+        self.saves.has_continue_save()
+    }
+
+    /// Delete the continue save.
+    pub fn delete_continue(&mut self) -> Vec<EngineEvent> {
+        let mut events = Vec::new();
+        if let Err(e) = self.saves.delete_continue() {
+            events.push(EngineEvent::Error { message: e });
+        }
+        events
+    }
+
     /// Reload the script from new source text (hot reload).
     pub fn reload_script(&mut self, source: &str) -> Result<(), Vec<String>> {
         self.reload_script_internal(source)

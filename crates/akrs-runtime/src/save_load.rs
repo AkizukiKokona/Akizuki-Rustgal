@@ -244,6 +244,86 @@ impl SaveManager {
         }
         Ok(())
     }
+
+    // ─── Continue save (返回标题后继续游戏) ───
+    //
+    // 从游戏返回标题界面时自动保存，用于"继续游戏"功能。
+    // 与 autosave 类似，使用独立文件 `continue.json`。
+
+    /// Path to the continue save file.
+    fn continue_path(&self) -> PathBuf {
+        self.save_dir.join("continue.json")
+    }
+
+    /// Save the current game state for "继续游戏" feature.
+    pub fn save_continue(
+        &self,
+        vm_state: VmState,
+        section_name: &str,
+        play_time_secs: u64,
+        description: &str,
+    ) -> Result<SaveMetadata, String> {
+        let timestamp = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or(0);
+
+        // 使用一个特殊的槽位号表示"继续游戏"存档
+        const CONTINUE_SLOT_MARKER: usize = usize::MAX - 1;
+
+        let metadata = SaveMetadata {
+            slot: CONTINUE_SLOT_MARKER,
+            timestamp,
+            section_name: section_name.to_string(),
+            play_time_secs,
+            description: description.to_string(),
+        };
+
+        let save = SaveSlot {
+            metadata: metadata.clone(),
+            vm_state,
+            settings: SettingsSnapshot {
+                text_speed: 30.0,
+                bgm_volume: 0.8,
+                sfx_volume: 1.0,
+            },
+        };
+
+        let json = serde_json::to_string_pretty(&save)
+            .map_err(|e| format!("failed to serialize continue save: {}", e))?;
+
+        std::fs::write(self.continue_path(), json)
+            .map_err(|e| format!("failed to write continue save file: {}", e))?;
+
+        Ok(metadata)
+    }
+
+    /// Load the continue save.
+    pub fn load_continue(&self) -> Result<SaveSlot, String> {
+        let path = self.continue_path();
+        let content = std::fs::read_to_string(&path)
+            .map_err(|e| format!("failed to read continue save file: {}", e))?;
+
+        let save: SaveSlot = serde_json::from_str(&content)
+            .map_err(|e| format!("failed to parse continue save file: {}", e))?;
+
+        Ok(save)
+    }
+
+    /// Check whether a continue save exists.
+    pub fn has_continue_save(&self) -> bool {
+        self.continue_path().exists()
+    }
+
+    /// Delete the continue save (可选择性删除).
+    pub fn delete_continue(&self) -> Result<(), String> {
+        let path = self.continue_path();
+        if path.exists() {
+            std::fs::remove_file(&path)
+                .map_err(|e| format!("failed to delete continue save: {}", e))?;
+        }
+        Ok(())
+    }
 }
 
 /// Format a Unix timestamp as a human-readable string.
