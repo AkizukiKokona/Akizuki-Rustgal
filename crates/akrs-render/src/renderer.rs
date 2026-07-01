@@ -1028,7 +1028,7 @@ async fn draw_characters(scene: &SceneState, assets: &mut AssetManager, sw: f32,
 }
 
 fn draw_dialogue(dialogue: &akrs_runtime::DialogueState, sw: f32, sh: f32, font: &Option<Font>, scale: f32) {
-    let box_h = 420.0 * scale;
+    let box_h = 350.0 * scale;
     let box_y = sh - box_h - 20.0 * scale;
     let box_x = 0.0;
     let box_w = sw;
@@ -1038,8 +1038,8 @@ fn draw_dialogue(dialogue: &akrs_runtime::DialogueState, sw: f32, sh: f32, font:
     // Border
     draw_rectangle_lines(box_x, box_y, box_w, box_h, 2.0 * scale, Color::new(0.4, 0.7, 0.9, 0.8));
 
-    let name_font_size = 56.0 * scale;
-    let text_font_size = 52.0 * scale;
+    let name_font_size = 42.0 * scale;
+    let text_font_size = 39.0 * scale;
     let text_left_padding = 120.0 * scale;
 
     // Speaker name
