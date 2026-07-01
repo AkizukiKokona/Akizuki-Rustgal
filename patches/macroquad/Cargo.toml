@@ -22,6 +22,9 @@ readme = "README.md"
 license = "MIT OR Apache-2.0"
 repository = "https://github.com/not-fl3/macroquad"
 
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(one_screenshot)'] }
+
 [package.metadata.android]
 assets = "examples/"
 

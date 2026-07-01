@@ -450,7 +450,7 @@ impl<'a> WindowContext<'a> {
     }
 
     fn draw_vertical_scroll_bar(&mut self, area: Rect, rect: Rect) {
-        let mut scroll = &mut self.window.cursor.scroll;
+        let scroll = &mut self.window.cursor.scroll;
         let inner_rect = scroll.inner_rect_previous_frame;
         let size = scroll.rect.h / inner_rect.h * rect.h;
         let pos = (scroll.rect.y - inner_rect.y) / inner_rect.h * rect.h;
@@ -723,7 +723,7 @@ impl Ui {
         size: Vec2,
         titlebar: bool,
         movable: bool,
-    ) -> WindowContext {
+    ) -> WindowContext<'_> {
         if parent.is_some() {
             self.child_window_stack
                 .push(self.active_window.unwrap_or(0));
@@ -811,7 +811,7 @@ impl Ui {
         }
     }
 
-    pub(crate) fn begin_modal(&mut self, id: Id, position: Vec2, size: Vec2) -> WindowContext {
+    pub(crate) fn begin_modal(&mut self, id: Id, position: Vec2, size: Vec2) -> WindowContext<'_> {
         self.input.window_active = true;
         self.in_modal = true;
 
@@ -868,7 +868,7 @@ impl Ui {
         self.input.window_active = self.is_input_hovered(self.active_window.unwrap_or(0));
     }
 
-    pub(crate) fn get_active_window_context(&mut self) -> WindowContext {
+    pub(crate) fn get_active_window_context(&mut self) -> WindowContext<'_> {
         let focused;
         let window = if self.in_modal == false {
             match self.active_window {
@@ -971,7 +971,7 @@ impl Ui {
                 return true;
             }
         }
-        for window in &self.modal {
+        if let Some(window) = &self.modal {
             if window.was_active {
                 if window.full_rect().contains(mouse_position) {
                     return true;
@@ -1067,7 +1067,7 @@ impl Ui {
             window.childs.clear();
         }
 
-        for window in &mut self.modal {
+        if let Some(window) = &mut self.modal {
             window.painter.clear();
             window.cursor.reset();
             window.was_active = window.active;
@@ -1144,7 +1144,7 @@ impl Ui {
         context.window.same_line(x);
     }
 
-    pub fn canvas(&mut self) -> DrawCanvas {
+    pub fn canvas(&mut self) -> DrawCanvas<'_> {
         let context = self.get_active_window_context();
 
         DrawCanvas { context }

@@ -12,6 +12,7 @@ pub trait Node {
     fn draw(_node: RefMut<Self>) where Self: Sized  {}
 }
 
+#[allow(dead_code)]
 trait NodeTyped<T> {
     fn self_node(&self) -> &T;
 }
@@ -397,7 +398,7 @@ impl Scene {
         }
     }
 
-    pub fn get_any(&mut self, handle: HandleUntyped) -> Option<RefMutAny> {
+    pub fn get_any(&mut self, handle: HandleUntyped) -> Option<RefMutAny<'_>> {
         let handle = handle.0;
         let cell = self.nodes.get_mut(handle.id)?;
 
@@ -612,6 +613,7 @@ impl Iterator for MagicVecIterator {
 static mut SCENE: Option<Scene> = None;
 
 unsafe fn get_scene() -> &'static mut Scene {
+    #[allow(static_mut_refs)]
     SCENE.get_or_insert(Scene::new())
 }
 

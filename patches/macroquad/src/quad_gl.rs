@@ -171,6 +171,7 @@ mod snapshotter_shader {
 
     #[repr(C)]
     #[derive(Debug)]
+    #[allow(dead_code)]
     pub struct Uniforms {}
 }
 

@@ -28,6 +28,7 @@ static mut STORAGE: Option<HashMap<TypeId, Box<dyn Any>>> = None;
 /// Store data in global storage.
 /// Will silently overwrite an old value if any.
 pub fn store<T: Any>(data: T) {
+    #[allow(static_mut_refs)]
     unsafe {
         if STORAGE.is_none() {
             STORAGE = Some(HashMap::new());
@@ -49,6 +50,7 @@ pub fn get<T: Any>() -> impl Deref<Target = T> {
 /// Get reference to data from global storage.
 /// Will return None if there is no data available with this type.
 pub fn try_get<T: Any>() -> Option<impl Deref<Target = T>> {
+    #[allow(static_mut_refs)]
     unsafe {
         if STORAGE.is_none() {
             STORAGE = Some(HashMap::new());
@@ -65,6 +67,7 @@ pub fn try_get<T: Any>() -> Option<impl Deref<Target = T>> {
 /// Get mutable reference to data from global storage.
 /// Will return None if there is no data available with this type.
 pub fn try_get_mut<T: Any>() -> Option<impl DerefMut<Target = T>> {
+    #[allow(static_mut_refs)]
     unsafe {
         if STORAGE.is_none() {
             STORAGE = Some(HashMap::new());

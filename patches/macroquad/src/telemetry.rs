@@ -4,6 +4,7 @@ use std::collections::HashMap;
 
 static mut PROFILER: Option<Profiler> = None;
 
+#[allow(static_mut_refs)]
 fn get_profiler() -> &'static mut Profiler {
     unsafe {
         PROFILER.get_or_insert_with(|| Profiler {
@@ -230,7 +231,7 @@ impl Profiler {
             .active_query
             .take()
             .expect("End query without begin query");
-        let mut query = self.queries.get_mut(&name).unwrap();
+        let query = self.queries.get_mut(&name).unwrap();
         if query.in_progress {
             query.force_resume = false;
             query.in_progress = false;
@@ -299,7 +300,7 @@ pub struct LogTimeGuard<'a> {
 }
 
 impl<'a> LogTimeGuard<'a> {
-    pub fn new(name: &'a str) -> LogTimeGuard {
+    pub fn new(name: &'a str) -> LogTimeGuard<'a> {
         LogTimeGuard {
             name,
             start_time: get_time(),

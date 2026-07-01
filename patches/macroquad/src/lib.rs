@@ -420,6 +420,7 @@ pub mod test {
     pub static ONCE: std::sync::Once = std::sync::Once::new();
 }
 
+#[allow(static_mut_refs)]
 fn get_context() -> &'static mut Context {
     unsafe { CONTEXT.as_mut().unwrap_or_else(|| panic!()) }
 }
@@ -438,6 +439,7 @@ struct Stage {}
 
 impl Drop for Stage {
     fn drop(&mut self) {
+        #[allow(static_mut_refs)]
         unsafe {
             MAIN_FUTURE.take();
         }
@@ -668,6 +670,7 @@ impl EventHandler for Stage {
             }
 
             let result = maybe_unwind(get_context().unwind, || {
+                #[allow(static_mut_refs)]
                 if let Some(future) = unsafe { MAIN_FUTURE.as_mut() } {
                     let _z = telemetry::ZoneGuard::new("Event::draw user code");
 
