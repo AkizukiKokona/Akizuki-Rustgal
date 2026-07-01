@@ -996,8 +996,64 @@ pub fn run_editor() -> Result<(), eframe::Error> {
     eframe::run_native(
         "Akizuki*Rustgal 剧本编辑器",
         options,
-        Box::new(|_cc| Box::new(EditorApp::default())),
+        Box::new(|cc| {
+            install_cjk_fonts(&cc.egui_ctx);
+            Box::new(EditorApp::default())
+        }),
     )
+}
+
+/// 加载外部中文字体并安装到 egui 上下文（优先加载运行时字体文件，其次系统字体）。
+fn install_cjk_fonts(ctx: &egui::Context) {
+    let mut font_data: Option<Vec<u8>> = None;
+
+    // 1. 运行时外部字体文件（最高优先级）
+    let runtime_font_path = "assets/fonts/SourceHanSansSC-Regular-2.otf";
+    if let Ok(bytes) = std::fs::read(runtime_font_path) {
+        eprintln!("[editor] 中文字体已加载（运行时 OTF）");
+        font_data = Some(bytes);
+    }
+
+    // 2. 系统字体回退
+    if font_data.is_none() {
+        let sys_candidates: &[&str] = &[
+            "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc",
+            "/usr/share/fonts/truetype/noto/NotoSansCJK-Regular.ttc",
+            "/usr/share/fonts/truetype/wqy/wqy-microhei.ttc",
+            "/System/Library/Fonts/PingFang.ttc",
+            "/System/Library/Fonts/STHeiti Light.ttc",
+        ];
+        for path in sys_candidates {
+            if let Ok(bytes) = std::fs::read(path) {
+                eprintln!("[editor] 使用系统中文字体: {}", path);
+                font_data = Some(bytes);
+                break;
+            }
+        }
+    }
+
+    if let Some(bytes) = font_data {
+        let mut fonts = egui::FontDefinitions::default();
+        fonts
+            .font_data
+            .insert("cjk_font".to_owned(), egui::FontData::from_owned(bytes));
+
+        // 将 CJK 字体插入到 proportional 和 monospace 的字体列表头部
+        fonts
+            .families
+            .entry(egui::FontFamily::Proportional)
+            .or_default()
+            .insert(0, "cjk_font".to_owned());
+        fonts
+            .families
+            .entry(egui::FontFamily::Monospace)
+            .or_default()
+            .insert(0, "cjk_font".to_owned());
+
+        ctx.set_fonts(fonts);
+    } else {
+        eprintln!("[editor] 警告：未找到中文字体，中文可能无法正确显示");
+    }
 }
 
 /// 从嵌入的 RGBA 数据加载窗口图标。

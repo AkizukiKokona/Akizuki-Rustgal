@@ -1142,19 +1142,14 @@ fn draw_title_screen(buttons: &mut Vec<ButtonRect>, sw: f32, sh: f32, _assets: &
             Color::new(r, g, b, 1.0));
     }
 
-    // 左侧白色半透明资料层（80% 不透明 = 20% 透明）
-    let panel_x = 60.0 * scale;
-    let panel_w = 420.0 * scale;
-    let panel_top = 60.0 * scale;
-    let panel_bottom = sh - 80.0 * scale;
-    let panel_h = panel_bottom - panel_top;
-    draw_rectangle(panel_x, panel_top, panel_w, panel_h, Color::new(1.0, 1.0, 1.0, 0.8));
+    // 文本与控件离左边的距离（约 1% 屏幕宽度）
+    let left_pad = sw * 0.01;
 
     // 主标题（左上角，居左对齐）
     let title = "Akizuki*Rustgal";
     let title_font_size = 56.0 * scale;
-    let title_x = panel_x + 30.0 * scale;
-    let title_y = panel_top + 40.0 * scale;
+    let title_x = left_pad;
+    let title_y = 40.0 * scale;
     draw_text_f(
         title,
         title_x,
@@ -1178,11 +1173,6 @@ fn draw_title_screen(buttons: &mut Vec<ButtonRect>, sw: f32, sh: f32, _assets: &
         font,
     );
 
-    // 分隔线
-    let line_y = sub_y + sub_size + 30.0 * scale;
-    draw_rectangle(title_x, line_y, panel_w - 60.0 * scale, 2.0 * scale,
-        Color::new(0.4, 0.6, 0.85, 0.6));
-
     // 按钮（左下角，变窄）
     let btn_w = 220.0 * scale;
     let btn_h = 52.0 * scale;
@@ -1202,9 +1192,32 @@ fn draw_title_screen(buttons: &mut Vec<ButtonRect>, sw: f32, sh: f32, _assets: &
         ("退出", ButtonAction::Quit),
     ]);
 
-    // 从下往上排列
+    // 计算最宽的文本宽度（标题、副标题、按钮中取最大）
+    let title_w = measure_text_f(title, font, title_font_size as u16, 1.0).width;
+    let sub_w = measure_text_f(subtitle, font, sub_size as u16, 1.0).width;
+    let btn_text_pad = 40.0 * scale; // 按钮内边距左右各 20
+    let max_text_w = title_w.max(sub_w).max(btn_w - btn_text_pad);
+
+    // 白色半透明资料层（从屏幕最左侧开始，顶上下左三边；右边刚好覆盖最长标题 + 内边距）
+    // 透明度 80% = 不透明度 20%（alpha = 0.2）
+    let panel_x = 0.0;
+    let panel_top = 0.0;
+    let panel_bottom = sh;
+    let panel_pad_right = 40.0 * scale; // 右侧内边距
+    let panel_w = (max_text_w + left_pad + panel_pad_right).max(btn_w + left_pad + panel_pad_right);
+    let panel_h = panel_bottom - panel_top;
+    draw_rectangle(panel_x, panel_top, panel_w, panel_h, Color::new(1.0, 1.0, 1.0, 0.2));
+
+    // 分隔线
+    let line_y = sub_y + sub_size + 30.0 * scale;
+    let line_w = (max_text_w + 10.0 * scale).min(panel_w - left_pad - 20.0 * scale);
+    draw_rectangle(title_x, line_y, line_w, 2.0 * scale,
+        Color::new(0.4, 0.6, 0.85, 0.6));
+
+    // 从下往上排列按钮
     let total_btn_h = labels.len() as f32 * btn_h + (labels.len() - 1) as f32 * 14.0 * scale;
-    let mut btn_y = panel_bottom - total_btn_h;
+    let bottom_pad = 60.0 * scale;
+    let mut btn_y = panel_bottom - bottom_pad - total_btn_h;
 
     for (label, action) in &labels {
         draw_button(btn_x, btn_y, btn_w, btn_h, label, buttons, *action, font, scale);
