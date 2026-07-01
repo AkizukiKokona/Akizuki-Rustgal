@@ -1804,9 +1804,9 @@ fn draw_panel(sw: f32, sh: f32, title: &str, font: &Option<Font>, scale: f32) {
     // 天蓝色边框。
     draw_rectangle_lines(0.0, 0.0, sw, sh, 2.0 * scale, Color::new(0.45, 0.7, 0.95, 0.8));
 
-    let title_size = 52.0 * scale;
+    let title_size = 62.0 * scale;
     let tw = measure_text_f(title, font, title_size as u16, 1.0).width;
-    draw_text_f(title, (sw - tw) / 2.0, sh * 0.08, title_size, WHITE, font);
+    draw_text_f(title, (sw - tw) / 2.0, sh * 0.09, title_size, WHITE, font);
 }
 
 fn draw_save_menu(engine: &Engine, buttons: &mut Vec<ButtonRect>, sw: f32, sh: f32, font: &Option<Font>, scale: f32, page: usize, displayed_slots: usize) {
@@ -1819,11 +1819,11 @@ fn draw_save_menu(engine: &Engine, buttons: &mut Vec<ButtonRect>, sw: f32, sh: f
     draw_slot_grid(sw, sh, font, scale, page, displayed_slots, max_slots, &all_saves, buttons, true);
 
     // Back button (bottom-left).
-    let back_w = 200.0 * scale;
-    let back_h = 52.0 * scale;
+    let back_w = 240.0 * scale;
+    let back_h = 62.0 * scale;
     draw_button(
-        40.0 * scale,
-        sh - back_h - 30.0 * scale,
+        48.0 * scale,
+        sh - back_h - 36.0 * scale,
         back_w,
         back_h,
         "返回",
@@ -1844,11 +1844,11 @@ fn draw_load_menu(engine: &Engine, buttons: &mut Vec<ButtonRect>, sw: f32, sh: f
     draw_slot_grid(sw, sh, font, scale, page, displayed_slots, max_slots, &all_saves, buttons, false);
 
     // Back button (bottom-left).
-    let back_w = 200.0 * scale;
-    let back_h = 52.0 * scale;
+    let back_w = 240.0 * scale;
+    let back_h = 62.0 * scale;
     draw_button(
-        40.0 * scale,
-        sh - back_h - 30.0 * scale,
+        48.0 * scale,
+        sh - back_h - 36.0 * scale,
         back_w,
         back_h,
         "返回",
@@ -1879,14 +1879,14 @@ fn draw_slot_grid(
     is_save: bool,
 ) {
     let cols = 4; // 2 rows × 4 columns = SLOTS_PER_PAGE
-    let cell_w = 340.0 * scale;
-    let cell_h = 200.0 * scale;
-    let gap_x = 24.0 * scale;
-    let gap_y = 24.0 * scale;
+    let cell_w = 408.0 * scale;
+    let cell_h = 240.0 * scale;
+    let gap_x = 29.0 * scale;
+    let gap_y = 29.0 * scale;
 
     let grid_w = cols as f32 * cell_w + (cols - 1) as f32 * gap_x;
     let grid_x = (sw - grid_w) / 2.0;
-    let grid_y = sh * 0.22;
+    let grid_y = sh * 0.24;
 
     // At most one cell can be hovered per frame; remember its tooltip text so
     // it can be rendered last (above the page nav and neighbouring cells).
@@ -1955,13 +1955,13 @@ fn draw_slot_cell(
     draw_rectangle(x, y, w, h, Color::new(0.15, 0.3, 0.55, 0.95));
     draw_rectangle_lines(x, y, w, h, 1.5 * scale, Color::new(0.45, 0.7, 0.95, 0.7));
 
-    let pad = 12.0 * scale;
+    let pad = 14.0 * scale;
     let slot_label = format!("存档位 {}", slot + 1);
     draw_text_f(
         &slot_label,
         x + pad,
-        y + 24.0 * scale,
-        18.0 * scale,
+        y + 29.0 * scale,
+        22.0 * scale,
         Color::new(0.8, 0.9, 1.0, 1.0),
         font,
     );
@@ -1973,24 +1973,24 @@ fn draw_slot_cell(
         draw_text_f(
             &ts,
             x + pad,
-            y + 46.0 * scale,
-            14.0 * scale,
+            y + 55.0 * scale,
+            17.0 * scale,
             Color::new(0.7, 0.7, 0.8, 1.0),
             font,
         );
 
         // Chapter name: 1 line, ellipsized if it overflows.
-        let section_size = 16.0 * scale;
+        let section_size = 19.0 * scale;
         let section = fit_text(&m.section_name, font, section_size, w - 2.0 * pad);
-        draw_text_f(&section, x + pad, y + 68.0 * scale, section_size, WHITE, font);
+        draw_text_f(&section, x + pad, y + 82.0 * scale, section_size, WHITE, font);
 
         // Description: up to 2 lines, character-wrapped, ellipsized on overflow.
-        let desc_size = 14.0 * scale;
+        let desc_size = 17.0 * scale;
         let desc_lines = wrap_text_cn(&m.description, font, desc_size, w - 2.0 * pad, 2);
-        let mut desc_y = y + 90.0 * scale;
+        let mut desc_y = y + 108.0 * scale;
         for line in &desc_lines {
             draw_text_f(line, x + pad, desc_y, desc_size, Color::new(0.75, 0.75, 0.85, 1.0), font);
-            desc_y += desc_size + 4.0 * scale;
+            desc_y += desc_size + 5.0 * scale;
         }
 
         // On hover, surface the full description as a tooltip.
@@ -1999,13 +1999,13 @@ fn draw_slot_cell(
         }
     } else {
         // Empty slot: centered "空" + a dimming overlay (visually disabled).
-        let empty_size = 24.0 * scale;
+        let empty_size = 29.0 * scale;
         let label = "空";
         let lw = measure_text_f(label, font, empty_size as u16, 1.0).width;
         draw_text_f(
             label,
             x + (w - lw) / 2.0,
-            y + h / 2.0 + 8.0 * scale,
+            y + h / 2.0 + 10.0 * scale,
             empty_size,
             Color::new(0.5, 0.5, 0.55, 1.0),
             font,
@@ -2040,14 +2040,14 @@ fn draw_page_nav(
     total_pages: usize,
     can_add_page: bool,
 ) {
-    let btn_w = 60.0 * scale;
-    let btn_h = 44.0 * scale;
-    let gap = 16.0 * scale;
+    let btn_w = 72.0 * scale;
+    let btn_h = 53.0 * scale;
+    let gap = 19.0 * scale;
 
     let label = format!("{}/{}", page + 1, total_pages);
-    let label_size = 20.0 * scale;
+    let label_size = 24.0 * scale;
     let lw = measure_text_f(&label, font, label_size as u16, 1.0).width;
-    let label_w = lw + 24.0 * scale;
+    let label_w = lw + 29.0 * scale;
 
     // The "+" button sits to the left of "←" and only appears on the last page
     // when more slots can still be revealed.
@@ -2056,8 +2056,8 @@ fn draw_page_nav(
     let add_w = if show_add { btn_w + gap } else { 0.0 };
 
     let total_w = add_w + btn_w * 2.0 + gap * 2.0 + label_w;
-    let x0 = sw - total_w - 40.0 * scale;
-    let y = sh - btn_h - 30.0 * scale;
+    let x0 = sw - total_w - 48.0 * scale;
+    let y = sh - btn_h - 36.0 * scale;
 
     if show_add {
         draw_button(x0, y, btn_w, btn_h, "+", buttons, ButtonAction::AddPage, font, scale);
@@ -2270,16 +2270,16 @@ fn compute_settings_layout(sw: f32, sh: f32, scale: f32) -> SettingsLayout {
     let panel_h = sh;
 
     // 标题（顶部居中）
-    let title_size = 44.0 * scale;
-    let title_top = 30.0 * scale;
+    let title_size = 53.0 * scale;
+    let title_top = 36.0 * scale;
 
     // 标签页（浏览器风格，位于标题下方）
     let tab_labels = ["文本", "音频", "画面", "快进"];
-    let tab_h = 52.0 * scale;
-    let tab_top = title_top + title_size + 20.0 * scale;
-    let tab_start_x = 80.0 * scale;
-    let tab_w = 140.0 * scale;
-    let tab_gap = 4.0 * scale;
+    let tab_h = 62.0 * scale;
+    let tab_top = title_top + title_size + 24.0 * scale;
+    let tab_start_x = 96.0 * scale;
+    let tab_w = 168.0 * scale;
+    let tab_gap = 5.0 * scale;
     let mut tab_rects = [Rect4::default(); 4];
     for (i, _) in tab_labels.iter().enumerate() {
         tab_rects[i] = Rect4 {
@@ -2291,19 +2291,19 @@ fn compute_settings_layout(sw: f32, sh: f32, scale: f32) -> SettingsLayout {
     }
 
     // 内容区（标签页下方）
-    let content_top = tab_top + tab_h + 30.0 * scale;
-    let _content_bottom = sh - 120.0 * scale;
+    let content_top = tab_top + tab_h + 36.0 * scale;
+    let _content_bottom = sh - 144.0 * scale;
 
-    let label_x = panel_x + 80.0 * scale;
-    let control_x = panel_x + 320.0 * scale;
-    let track_w = (panel_w - 320.0 * scale - 240.0 * scale).max(160.0 * scale);
-    let value_x = control_x + track_w + 24.0 * scale;
+    let label_x = panel_x + 96.0 * scale;
+    let control_x = panel_x + 384.0 * scale;
+    let track_w = (panel_w - 384.0 * scale - 288.0 * scale).max(192.0 * scale);
+    let value_x = control_x + track_w + 29.0 * scale;
 
     // 通用行高
-    let row_h = 88.0 * scale;
-    let track_h = 16.0 * scale;
-    let toggle_w = 100.0 * scale;
-    let toggle_h = 40.0 * scale;
+    let row_h = 106.0 * scale;
+    let track_h = 19.0 * scale;
+    let toggle_w = 120.0 * scale;
+    let toggle_h = 48.0 * scale;
 
     // 文本标签页（1 行：文本速度）
     let text_row_mid = content_top + row_h * 0.5 + row_h;
@@ -2312,8 +2312,8 @@ fn compute_settings_layout(sw: f32, sh: f32, scale: f32) -> SettingsLayout {
         w: track_w, h: track_h,
     };
     let text_slider_hit = Rect4 {
-        x: control_x - 8.0 * scale, y: text_row_mid - 26.0 * scale,
-        w: track_w + 16.0 * scale, h: 52.0 * scale,
+        x: control_x - 10.0 * scale, y: text_row_mid - 31.0 * scale,
+        w: track_w + 20.0 * scale, h: 62.0 * scale,
     };
 
     // 音频标签页（2 行：BGM、SFX）
@@ -2328,8 +2328,8 @@ fn compute_settings_layout(sw: f32, sh: f32, scale: f32) -> SettingsLayout {
             w: track_w, h: track_h,
         };
         audio_slider_hits[i] = Rect4 {
-            x: control_x - 8.0 * scale, y: mid - 26.0 * scale,
-            w: track_w + 16.0 * scale, h: 52.0 * scale,
+            x: control_x - 10.0 * scale, y: mid - 31.0 * scale,
+            w: track_w + 20.0 * scale, h: 62.0 * scale,
         };
     }
 
@@ -2347,8 +2347,8 @@ fn compute_settings_layout(sw: f32, sh: f32, scale: f32) -> SettingsLayout {
         };
     }
     let display_dropdown = Rect4 {
-        x: control_x, y: display_row_mids[2] - 22.0 * scale,
-        w: 260.0 * scale, h: 44.0 * scale,
+        x: control_x, y: display_row_mids[2] - 26.0 * scale,
+        w: 312.0 * scale, h: 53.0 * scale,
     };
 
     // 快进标签页（2 行：允许跳过未读、快进模式）
@@ -2361,17 +2361,17 @@ fn compute_settings_layout(sw: f32, sh: f32, scale: f32) -> SettingsLayout {
         w: toggle_w, h: toggle_h,
     };
     let skip_dropdown = Rect4 {
-        x: control_x, y: skip_row_mids[1] - 22.0 * scale,
-        w: 260.0 * scale, h: 44.0 * scale,
+        x: control_x, y: skip_row_mids[1] - 26.0 * scale,
+        w: 312.0 * scale, h: 53.0 * scale,
     };
 
     // 两个按钮：应用和取消
-    let btn_w = 200.0 * scale;
-    let btn_h = 56.0 * scale;
-    let btn_gap = 48.0 * scale;
+    let btn_w = 240.0 * scale;
+    let btn_h = 67.0 * scale;
+    let btn_gap = 58.0 * scale;
     let total_btn_w = btn_w * 2.0 + btn_gap;
     let btn_start_x = (sw - total_btn_w) / 2.0;
-    let btn_y = panel_y + panel_h - btn_h - 40.0 * scale;
+    let btn_y = panel_y + panel_h - btn_h - 48.0 * scale;
     let apply_btn = Rect4 {
         x: btn_start_x, y: btn_y, w: btn_w, h: btn_h,
     };
@@ -2411,16 +2411,16 @@ fn draw_settings_menu(engine: &mut Engine, layout: &SettingsLayout, font: &Optio
 
     // 标题（顶部居中）
     let title = "设置";
-    let title_size = 44.0 * scale;
+    let title_size = 53.0 * scale;
     let tw = measure_text_f(title, font, title_size as u16, 1.0).width;
     let title_x = (layout.panel_w - tw) / 2.0;
-    let title_y = 30.0 * scale;
+    let title_y = 36.0 * scale;
     draw_text_f(title, title_x, title_y + title_size, title_size, WHITE, font);
 
     // 标签页（浏览器风格）
     let tab_labels = ["文本", "音频", "画面", "快进"];
     let tab_tabs = [SettingsTab::Text, SettingsTab::Audio, SettingsTab::Display, SettingsTab::Skip];
-    let tab_label_size = 24.0 * scale;
+    let tab_label_size = 29.0 * scale;
     for (i, label) in tab_labels.iter().enumerate() {
         let r = layout.tab_rects[i];
         let active = active_tab == tab_tabs[i];
@@ -2452,8 +2452,8 @@ fn draw_settings_menu(engine: &mut Engine, layout: &SettingsLayout, font: &Optio
         Color::new(0.45, 0.7, 0.95, 0.6));
 
     let settings = engine.settings();
-    let label_size = 28.0 * scale;
-    let value_size = 26.0 * scale;
+    let label_size = 34.0 * scale;
+    let value_size = 31.0 * scale;
 
     match active_tab {
         SettingsTab::Text => {
