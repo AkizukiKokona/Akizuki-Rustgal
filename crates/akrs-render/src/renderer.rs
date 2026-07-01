@@ -214,7 +214,10 @@ fn load_font_with_fallback() -> (Option<Font>, Option<Font>) {
 /// font can render a character it is replaced with a white-square placeholder
 /// (U+25A1) so the player sees a visible box rather than an empty gap.
 fn draw_text_f(text: &str, x: f32, y: f32, font_size: f32, color: Color, font: &Option<Font>) {
-    let size = font_size as u16;
+    // 像素对齐：坐标和字体大小取整，避免子像素模糊
+    let px = x.round();
+    let py = y.round();
+    let size = font_size.round().max(1.0) as u16;
     let fb = get_fallback_font();
 
     let primary_ok = can_render(text, *font, size);
@@ -245,7 +248,7 @@ fn draw_text_f(text: &str, x: f32, y: f32, font_size: f32, color: Color, font: &
     };
 
     if let &Some(fnt) = target {
-        draw_text_ex(&display_text, x, y, TextParams {
+        draw_text_ex(&display_text, px, py, TextParams {
             font: fnt,
             font_size: size,
             font_scale: 1.0,
@@ -253,7 +256,7 @@ fn draw_text_f(text: &str, x: f32, y: f32, font_size: f32, color: Color, font: &
             ..Default::default()
         });
     } else {
-        draw_text(&display_text, x, y, font_size, color);
+        draw_text(&display_text, px, py, size as f32, color);
     }
 }
 
@@ -266,21 +269,25 @@ fn measure_text_f(text: &str, font: &Option<Font>, font_size: u16, font_scale: f
 }
 
 /// Design baseline resolution used to derive the UI scale factor.
-const BASE_WIDTH: f32 = 1920.0;
-const BASE_HEIGHT: f32 = 1080.0;
+const BASE_WIDTH: f32 = 1280.0;
+const BASE_HEIGHT: f32 = 720.0;
 
 /// UI scale factor: the minimum axis ratio of the current window relative to
-/// the 1920×1080 design baseline.  All absolute pixel sizes (font sizes,
+/// the 1280×720 design baseline.  All absolute pixel sizes (font sizes,
 /// button dimensions, margins) are multiplied by this so the layout looks
 /// identical at any window size.
 fn ui_scale(sw: f32, sh: f32) -> f32 {
     (sw / BASE_WIDTH).min(sh / BASE_HEIGHT)
 }
 
-/// Default window width (also the design baseline width).
+/// Default window size (1920×1080).  The design baseline is 1280×720, so at
+/// the default window size the UI scale factor is 1.5 (all elements are
+/// rendered at 1.5× for crisp physical-pixel rendering).
 const WINDOW_WIDTH: i32 = 1920;
-/// Default window height (also the design baseline height).
 const WINDOW_HEIGHT: i32 = 1080;
+
+/// 游戏内对话/旁白/选项文字的放大倍率（仅作用于文字，不影响UI元素尺寸）。
+const DIALOGUE_TEXT_SCALE: f32 = 2.5;
 
 /// UI state for menus and overlays.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -705,11 +712,14 @@ pub async fn run(mut engine: Engine) {
     // Load persistent settings (text speed, volume, etc.) before starting so
     // the player's preferences from the previous session are honored.
     engine.load_settings();
-    // Force reset resolution to 1920x1080 windowed, ignoring saved settings.
-    let mut settings = engine.settings().clone();
-    settings.resolution = (1920, 1080);
-    settings.fullscreen = false;
-    *engine.settings_mut() = settings;
+    // 强制窗口默认大小为 1920×1080 窗口模式，忽略保存的设置。
+    // 窗口实际尺寸由 window_conf() 在启动时决定，此处同步 settings 内的值，
+    // 确保设置菜单显示的是当前实际窗口大小。
+    {
+        let settings = engine.settings_mut();
+        settings.resolution = (WINDOW_WIDTH as u32, WINDOW_HEIGHT as u32);
+        settings.fullscreen = false;
+    }
     // If a crash-recovery autosave exists from a previous run, prompt the
     // player to resume before showing the title screen.
     let mut ui_mode = if engine.has_autosave() {
@@ -1214,13 +1224,15 @@ async fn draw_characters(scene: &SceneState, assets: &mut AssetManager, sw: f32,
 }
 
 fn draw_dialogue(dialogue: &akrs_runtime::DialogueState, sw: f32, sh: f32, font: &Option<Font>, scale: f32) {
-    let box_h = 1120.0 * scale;
-    let box_y = sh - box_h - 80.0 * scale;
+    // 对话框框体尺寸（基于 1280x720 设计基准，不随文字放大而改变）
+    let box_h = 280.0 * scale;
+    let box_y = sh - box_h - 20.0 * scale;
     let box_x = 0.0;
     let box_w = sw;
-    let pad = 80.0 * scale;
-    let name_size = 112.0 * scale;
-    let text_size = 104.0 * scale;
+    let pad = 20.0 * scale;
+    // 文字大小：基准尺寸 × 2.5 倍放大（仅文字，框体不变）
+    let name_size = 28.0 * scale * DIALOGUE_TEXT_SCALE;
+    let text_size = 26.0 * scale * DIALOGUE_TEXT_SCALE;
 
     // 对话框背景：从上到下渐变色（顶部半透明 → 底部完全透明）
     // 用 16 段矩形近似垂直渐变，顶部透明度在现有基础上再低 10%。
@@ -1235,14 +1247,14 @@ fn draw_dialogue(dialogue: &akrs_runtime::DialogueState, sw: f32, sh: f32, font:
         draw_rectangle(box_x, seg_y, box_w, seg_h, Color::new(0.55, 0.78, 0.92, alpha));
     }
     // 顶部边线（天蓝色）
-    draw_rectangle(box_x, box_y, box_w, 3.0 * scale, Color::new(0.3, 0.6, 0.85, 0.9));
+    draw_rectangle(box_x, box_y, box_w, 2.0 * scale, Color::new(0.3, 0.6, 0.85, 0.9));
 
     let text_left = if dialogue.speaker.is_empty() {
         // 旁白：与左边距对齐
         pad
     } else {
         // 对话：正文向右偏移，与角色名形成层次感
-        pad + 160.0 * scale
+        pad + 100.0 * scale
     };
     let text_max_w = box_w - text_left - pad;
 
@@ -1251,7 +1263,7 @@ fn draw_dialogue(dialogue: &akrs_runtime::DialogueState, sw: f32, sh: f32, font:
         draw_text_f(
             &dialogue.speaker,
             pad,
-            box_y + name_size + 20.0 * scale,
+            box_y + 28.0 * scale + name_size,
             name_size,
             Color::new(0.1, 0.35, 0.6, 1.0),
             font,
@@ -1260,11 +1272,11 @@ fn draw_dialogue(dialogue: &akrs_runtime::DialogueState, sw: f32, sh: f32, font:
 
     // 文本起始 y
     let text_y = if dialogue.speaker.is_empty() {
-        // 旁白：顶部空一行（段间距）
-        box_y + pad + text_size + text_size * 0.8
+        // 旁白：顶部增加段间距（空一行）
+        box_y + pad + text_size * 1.8
     } else {
         // 对话：角色名下方
-        box_y + name_size + 80.0 * scale + text_size
+        box_y + 28.0 * scale + name_size + 10.0 * scale + text_size
     };
 
     // Dialogue text (typewriter)
@@ -1281,16 +1293,17 @@ fn draw_dialogue(dialogue: &akrs_runtime::DialogueState, sw: f32, sh: f32, font:
     );
 
     // Click to continue indicator: breathing pulse (1.5s period).
+    // 指示器图标保持原始尺寸，不随文字放大
     if dialogue.complete {
         let t = get_time() as f32;
         let pulse = 0.5 + 0.5 * (t * 2.0 * 3.14159 / 1.5).sin();
         let alpha = 0.3 + pulse * 0.7;
         let size_mult = 0.85 + pulse * 0.25;
-        let indicator_size = 96.0 * scale * size_mult;
+        let indicator_size = 24.0 * scale * size_mult;
         draw_text_f(
             "▼",
-            box_x + box_w - 160.0 * scale,
-            box_y + box_h - 80.0 * scale,
+            box_x + box_w - 40.0 * scale,
+            box_y + box_h - 20.0 * scale,
             indicator_size,
             Color::new(0.8, 0.8, 0.9, alpha),
             font,
@@ -1299,10 +1312,10 @@ fn draw_dialogue(dialogue: &akrs_runtime::DialogueState, sw: f32, sh: f32, font:
 }
 
 fn draw_choices(choices: &akrs_runtime::ChoicesState, sw: f32, sh: f32, font: &Option<Font>, scale: f32) {
-    // Prompt
+    // Prompt（提示文字放大 2.5 倍）
     if let Some(prompt) = &choices.prompt {
-        let prompt_size = 128.0 * scale;
-        let pw = measure_text_f(prompt, font, prompt_size as u16, 1.0).width;
+        let prompt_size = 32.0 * scale * DIALOGUE_TEXT_SCALE;
+        let pw = measure_text_f(prompt, font, prompt_size.round().max(1.0) as u16, 1.0).width;
         draw_text_f(
             prompt,
             (sw - pw) / 2.0,
@@ -1313,11 +1326,11 @@ fn draw_choices(choices: &akrs_runtime::ChoicesState, sw: f32, sh: f32, font: &O
         );
     }
 
-    // Options
-    let opt_w = 500.0 * scale;
-    let opt_h = 60.0 * scale;
+    // Options — 按钮尺寸保持基准值，文字放大 2.5 倍，按钮高度适当增加以容纳
+    let opt_w = 600.0 * scale;
+    let opt_h = 90.0 * scale;
     let opt_x = (sw - opt_w) / 2.0;
-    let _total_h = choices.options.len() as f32 * (opt_h + 60.0 * scale);
+    let _total_h = choices.options.len() as f32 * (opt_h + 15.0 * scale);
     let mut opt_y = sh * 0.3;
 
     for (i, opt) in choices.options.iter().enumerate() {
@@ -1328,22 +1341,22 @@ fn draw_choices(choices: &akrs_runtime::ChoicesState, sw: f32, sh: f32, font: &O
             Color::new(0.05, 0.05, 0.1, 0.85)
         };
         draw_rectangle(opt_x, opt_y, opt_w, opt_h, bg_color);
-        draw_rectangle_lines(opt_x, opt_y, opt_w, opt_h, 8.0 * scale,
+        draw_rectangle_lines(opt_x, opt_y, opt_w, opt_h, 2.0 * scale,
             if is_selected { Color::new(0.29, 0.62, 1.0, 1.0) } else { Color::new(0.3, 0.3, 0.4, 0.6) });
 
-        let opt_font = 96.0 * scale;
+        let opt_font = 24.0 * scale * DIALOGUE_TEXT_SCALE;
         let text_color = if opt.available { WHITE } else { Color::new(0.4, 0.4, 0.4, 0.8) };
-        let tw = measure_text_f(&opt.text, font, opt_font as u16, 1.0).width;
+        let tw = measure_text_f(&opt.text, font, opt_font.round().max(1.0) as u16, 1.0).width;
         draw_text_f(
             &opt.text,
             opt_x + (opt_w - tw) / 2.0,
-            opt_y + 152.0 * scale,
+            opt_y + opt_h / 2.0 + opt_font / 3.0,
             opt_font,
             text_color,
             font,
         );
 
-        opt_y += opt_h + 60.0 * scale;
+        opt_y += opt_h + 15.0 * scale;
     }
 }
 
@@ -2717,29 +2730,45 @@ fn draw_small_button(
 }
 
 fn draw_text_wrapped(text: &str, x: f32, y: f32, max_w: f32, font_size: f32, color: Color, font: &Option<Font>, scale: f32) {
+    let px_size = font_size.round().max(1.0) as u16;
+    let line_gap = 8.0 * scale;
+    let line_height = px_size as f32 + line_gap;
     let mut current_y = y;
-    let mut current_line = String::new();
-    let line_gap = 32.0 * scale;
 
-    for word in text.split_whitespace() {
-        let test_line = if current_line.is_empty() {
-            word.to_string()
-        } else {
-            format!("{} {}", current_line, word)
-        };
-        let w = measure_text_f(&test_line, font, font_size as u16, 1.0).width;
+    // 逐字符换行（对中文更友好，不依赖空格分词）
+    let mut current_width = 0.0;
+    let mut line_start = 0;
+    let chars: Vec<char> = text.chars().collect();
 
-        if w > max_w && !current_line.is_empty() {
-            draw_text_f(&current_line, x, current_y, font_size, color, font);
-            current_y += font_size + line_gap;
-            current_line = word.to_string();
+    for i in 0..chars.len() {
+        let ch = chars[i];
+        let ch_w = measure_text_f(&ch.to_string(), font, px_size, 1.0).width;
+
+        if current_width + ch_w > max_w && line_start < i {
+            // 换行：绘制当前行
+            let line: String = chars[line_start..i].iter().collect();
+            draw_text_f(&line, x, current_y, font_size, color, font);
+            current_y += line_height;
+            current_width = ch_w;
+            line_start = i;
         } else {
-            current_line = test_line;
+            current_width += ch_w;
+        }
+
+        // 遇到换行符强制换行
+        if ch == '\n' {
+            let line: String = chars[line_start..i].iter().collect();
+            draw_text_f(&line, x, current_y, font_size, color, font);
+            current_y += line_height;
+            current_width = 0.0;
+            line_start = i + 1;
         }
     }
 
-    if !current_line.is_empty() {
-        draw_text_f(&current_line, x, current_y, font_size, color, font);
+    // 绘制最后一行
+    if line_start < chars.len() {
+        let line: String = chars[line_start..].iter().collect();
+        draw_text_f(&line, x, current_y, font_size, color, font);
     }
 }
 
