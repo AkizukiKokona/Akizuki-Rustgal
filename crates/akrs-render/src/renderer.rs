@@ -597,6 +597,9 @@ impl HudVisibility {
 /// }
 /// ```
 pub async fn run(mut engine: Engine) {
+    clear_background(BLACK);
+    next_frame().await;
+
     let mut assets = AssetManager::new();
     // Load Chinese font for proper CJK text rendering, with system-font fallback.
     let (font, fallback_font) = load_font_with_fallback();

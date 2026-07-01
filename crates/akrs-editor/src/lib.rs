@@ -439,8 +439,13 @@ impl EditorApp {
             self.show_welcome = false;
         }
 
-        // 重置立绘预览的扫描目录
+        // 重置立绘预览状态（切换项目后旧的立绘缓存和选中都无效）
         self.sprite_preview.scanned_dir = None;
+        self.sprite_preview.selected = String::new();
+        self.sprite_preview.character_name = String::new();
+        self.sprite_preview.textures.clear();
+        self.sprite_preview.available.clear();
+        self.sprite_preview.load_error = None;
 
         self.status = format!("已打开项目：{}", project_name);
     }
