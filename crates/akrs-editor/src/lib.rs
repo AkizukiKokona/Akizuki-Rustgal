@@ -11,7 +11,7 @@
 //! 所有文件操作使用 `Result` 风格的错误处理，不会 panic；失败信息显示在底部状态栏。
 
 use std::collections::HashMap;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use eframe::egui;
 use egui::{ColorImage, TextureHandle};
@@ -176,6 +176,30 @@ pub struct EditorApp {
     preview_tab: PreviewTab,
     /// 立绘预览状态。
     sprite_preview: SpritePreview,
+    /// 文件选择对话框状态（None 表示未打开）。
+    file_picker: Option<FilePickerState>,
+}
+
+/// 文件选择对话框模式。
+#[derive(Debug, Clone, Copy, PartialEq)]
+#[allow(dead_code)]
+enum FilePickerMode {
+    Open,
+}
+
+/// 文件选择对话框状态。
+struct FilePickerState {
+    mode: FilePickerMode,
+    current_dir: PathBuf,
+    entries: Vec<PickerEntry>,
+    selected: Option<String>,
+    filter: String,
+}
+
+#[derive(Clone)]
+struct PickerEntry {
+    name: String,
+    is_dir: bool,
 }
 
 impl Default for EditorApp {
@@ -196,6 +220,7 @@ impl Default for EditorApp {
             show_about: false,
             preview_tab: PreviewTab::Script,
             sprite_preview: SpritePreview::default(),
+            file_picker: None,
         };
         app.refresh_file_list();
         app
@@ -236,23 +261,84 @@ impl EditorApp {
         self.status = "新文件（未保存）".to_string();
     }
 
-    /// 从 `work_dir` 打开 `name` 到编辑器。
-    fn open_file(&mut self, name: &str) {
-        let path = self.work_dir.join(name);
-        match std::fs::read_to_string(&path) {
+    /// 打开文件选择对话框。
+    fn open_file_picker(&mut self, mode: FilePickerMode) {
+        let entries = Self::read_picker_entries(&self.work_dir, "");
+        self.file_picker = Some(FilePickerState {
+            mode,
+            current_dir: self.work_dir.clone(),
+            entries,
+            selected: None,
+            filter: String::new(),
+        });
+    }
+
+    /// 读取目录中的文件选择项。
+    fn read_picker_entries(dir: &Path, filter: &str) -> Vec<PickerEntry> {
+        let mut entries: Vec<PickerEntry> = Vec::new();
+        if let Ok(read_dir) = std::fs::read_dir(dir) {
+            for entry in read_dir.flatten() {
+                let path = entry.path();
+                let name = path
+                    .file_name()
+                    .map(|n| n.to_string_lossy().into_owned())
+                    .unwrap_or_default();
+                if name.is_empty() {
+                    continue;
+                }
+                let is_dir = path.is_dir();
+                let filter_lower = filter.to_lowercase();
+                let name_lower = name.to_lowercase();
+                if !filter_lower.is_empty() && !name_lower.contains(&filter_lower) {
+                    continue;
+                }
+                entries.push(PickerEntry { name, is_dir });
+            }
+        }
+        // 目录在前，文件在后，各按名称排序
+        entries.sort_by(|a, b| {
+            if a.is_dir && !b.is_dir {
+                std::cmp::Ordering::Less
+            } else if !a.is_dir && b.is_dir {
+                std::cmp::Ordering::Greater
+            } else {
+                a.name.to_lowercase().cmp(&b.name.to_lowercase())
+            }
+        });
+        entries
+    }
+
+    /// 从完整路径打开文件。
+    fn open_file_path(&mut self, path: &std::path::Path) {
+        match std::fs::read_to_string(path) {
             Ok(content) => {
+                let name = path
+                    .file_name()
+                    .map(|n| n.to_string_lossy().into_owned())
+                    .unwrap_or_else(|| "unknown.akrs".to_string());
                 self.editor_content = content;
-                self.current_file = Some(path);
-                self.file_name_input = name.to_string();
+                self.current_file = Some(path.to_path_buf());
+                self.file_name_input = name.clone();
+                // 如果文件在 work_dir 下，刷新文件列表并切换工作目录到文件所在目录
+                if let Some(parent) = path.parent() {
+                    self.work_dir = parent.to_path_buf();
+                    self.refresh_file_list();
+                }
                 self.engine = None;
                 self.diagnostics.clear();
                 self.show_welcome = false;
                 self.status = format!("已打开 {}", name);
             }
             Err(e) => {
-                self.status = format!("打开失败：{} - {}", name, e);
+                self.status = format!("打开失败：{}", e);
             }
         }
+    }
+
+    /// 从 `work_dir` 打开 `name` 到编辑器。
+    fn open_file(&mut self, name: &str) {
+        let path = self.work_dir.join(name);
+        self.open_file_path(&path);
     }
 
     /// 打开 `file_name_input` 中当前输入的文件名。
@@ -355,8 +441,7 @@ impl EditorApp {
                 let btn = egui::Button::new(egui::RichText::new("打开已有剧本").size(15.0))
                     .min_size(egui::Vec2::new(130.0, 38.0));
                 if ui.add(btn).clicked() {
-                    self.show_welcome = false;
-                    self.status = "请从左侧文件列表选择文件".to_string();
+                    self.open_file_picker(FilePickerMode::Open);
                 }
                 let btn = egui::Button::new(egui::RichText::new("打开示例剧本").size(15.0))
                     .min_size(egui::Vec2::new(130.0, 38.0));
@@ -801,12 +886,7 @@ impl eframe::App for EditorApp {
                     self.new_file();
                 }
                 if ui.button("打开 (Ctrl+O)").clicked() {
-                    if self.show_welcome {
-                        self.show_welcome = false;
-                        self.status = "请从左侧文件列表选择文件".to_string();
-                    } else {
-                        self.open_current_name();
-                    }
+                    self.open_file_picker(FilePickerMode::Open);
                 }
                 if ui.button("保存 (Ctrl+S)").clicked() {
                     self.save_file();
@@ -977,6 +1057,124 @@ impl eframe::App for EditorApp {
                         ui.hyperlink_to("AkizukiKokona/Akizuki-Rustgal", GITHUB_URL);
                     });
                 });
+        }
+
+        // ---- 文件选择对话框 ----------------------------------------------
+        if self.file_picker.is_some() {
+            let mut close = false;
+            let mut confirm: Option<PathBuf> = None;
+            let mut open = true;
+
+            egui::Window::new("打开文件")
+                .open(&mut open)
+                .collapsible(false)
+                .resizable(true)
+                .default_size(egui::Vec2::new(560.0, 420.0))
+                .anchor(egui::Align2::CENTER_CENTER, egui::Vec2::ZERO)
+                .show(ctx, |ui| {
+                    // 顶部：当前路径 + 上一级
+                    ui.horizontal(|ui| {
+                        ui.label("路径：");
+                        ui.label(egui::RichText::new(self.file_picker.as_ref().unwrap().current_dir.display().to_string()).monospace());
+                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                            if ui.button("↑ 上一级").clicked() {
+                                if let Some(parent) = self.file_picker.as_ref().unwrap().current_dir.parent() {
+                                    let p = parent.to_path_buf();
+                                    let entries = Self::read_picker_entries(&p, "");
+                                    let fp = self.file_picker.as_mut().unwrap();
+                                    fp.current_dir = p;
+                                    fp.entries = entries;
+                                    fp.selected = None;
+                                    fp.filter.clear();
+                                }
+                            }
+                        });
+                    });
+                    ui.add_space(6.0);
+
+                    // 过滤输入
+                    ui.horizontal(|ui| {
+                        ui.label("过滤：");
+                        let resp = ui.add_sized(
+                            [ui.available_width(), 24.0],
+                            egui::TextEdit::singleline(&mut self.file_picker.as_mut().unwrap().filter),
+                        );
+                        if resp.changed() {
+                            let fp = self.file_picker.as_ref().unwrap();
+                            let entries = Self::read_picker_entries(&fp.current_dir, &fp.filter);
+                            self.file_picker.as_mut().unwrap().entries = entries;
+                        }
+                    });
+                    ui.add_space(6.0);
+
+                    // 文件列表
+                    egui::ScrollArea::vertical()
+                        .max_height(260.0)
+                        .show(ui, |ui| {
+                            let fp = self.file_picker.as_ref().unwrap();
+                            let current_dir = fp.current_dir.clone();
+                            let entries = fp.entries.clone();
+                            let selected = fp.selected.clone();
+
+                            for entry in &entries {
+                                let is_selected = selected.as_ref().is_some_and(|s| s == &entry.name);
+                                let label = if entry.is_dir {
+                                    format!("📁  {}", entry.name)
+                                } else {
+                                    format!("📄  {}", entry.name)
+                                };
+                                let resp = ui.selectable_label(is_selected, label);
+                                if resp.clicked() {
+                                    let fp = self.file_picker.as_mut().unwrap();
+                                    if entry.is_dir {
+                                        // 单击进入目录
+                                        let new_dir = current_dir.join(&entry.name);
+                                        let new_entries = Self::read_picker_entries(&new_dir, &fp.filter);
+                                        fp.current_dir = new_dir;
+                                        fp.entries = new_entries;
+                                        fp.selected = None;
+                                    } else {
+                                        fp.selected = Some(entry.name.clone());
+                                    }
+                                }
+                                if resp.double_clicked() && !entry.is_dir {
+                                    confirm = Some(current_dir.join(&entry.name));
+                                }
+                            }
+                        });
+
+                    ui.add_space(8.0);
+                    ui.separator();
+                    ui.add_space(8.0);
+
+                    // 底部按钮
+                    ui.horizontal(|ui| {
+                        let has_selection = self.file_picker.as_ref().unwrap().selected.is_some();
+                        if ui.add_enabled(has_selection, egui::Button::new("打开")).clicked() {
+                            if let Some(name) = &self.file_picker.as_ref().unwrap().selected.clone() {
+                                let path = self.file_picker.as_ref().unwrap().current_dir.join(name);
+                                confirm = Some(path);
+                            }
+                        }
+                        if ui.button("取消").clicked() {
+                            close = true;
+                        }
+                    });
+                });
+
+            // 处理结果
+            if !open {
+                close = true;
+            }
+            if let Some(path) = confirm {
+                if path.is_file() {
+                    self.open_file_path(&path);
+                }
+                self.file_picker = None;
+            }
+            if close {
+                self.file_picker = None;
+            }
         }
     }
 }
