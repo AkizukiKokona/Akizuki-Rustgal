@@ -241,22 +241,43 @@ fn measure_text_f(text: &str, font: &Option<Font>, font_size: u16, font_scale: f
     measure_text(text, target, font_size, font_scale)
 }
 
-/// Design baseline resolution used to derive the UI scale factor.
+/// 设计基准分辨率，用于计算 UI 缩放因子。
 const BASE_WIDTH: f32 = 1920.0;
 const BASE_HEIGHT: f32 = 1080.0;
 
-/// UI scale factor: the minimum axis ratio of the current window relative to
-/// the 1920×1080 design baseline.  All absolute pixel sizes (font sizes,
-/// button dimensions, margins) are multiplied by this so the layout looks
-/// identical at any window size.
+/// UI 缩放因子：当前窗口相对于 1920×1080 设计基准的最小轴比例。
+/// 所有绝对像素尺寸（字号、按钮尺寸、边距）都乘以此因子，
+/// 使布局在任何窗口尺寸下看起来一致。
 fn ui_scale(sw: f32, sh: f32) -> f32 {
     (sw / BASE_WIDTH).min(sh / BASE_HEIGHT)
 }
 
-/// Default window width (also the design baseline width).
-const WINDOW_WIDTH: i32 = 1920;
-/// Default window height (also the design baseline height).
-const WINDOW_HEIGHT: i32 = 1080;
+/// 计算合适的窗口尺寸：约占屏幕面积的 1/2。
+/// 窗口尺寸 = 屏幕尺寸 × sqrt(0.5) ≈ 0.707
+fn calculate_window_size(screen_w: i32, screen_h: i32) -> (i32, i32) {
+    let scale = 0.707;
+    let w = (screen_w as f32 * scale) as i32;
+    let h = (screen_h as f32 * scale) as i32;
+    (w, h)
+}
+
+/// 获取屏幕尺寸（尽力而为的跨平台方案）。
+fn get_screen_size() -> (i32, i32) {
+    // 尝试使用 miniquad 的平台 API
+    #[cfg(target_os = "windows")]
+    {
+        // Windows: 尝试获取主显示器尺寸
+        if let Ok(width) = std::env::var("SCREEN_WIDTH") {
+            if let Ok(height) = std::env::var("SCREEN_HEIGHT") {
+                if let (Ok(w), Ok(h)) = (width.parse::<i32>(), height.parse::<i32>()) {
+                    return (w, h);
+                }
+            }
+        }
+    }
+    // 默认假设为 1920×1080 屏幕
+    (1920, 1080)
+}
 
 /// UI state for menus and overlays.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -400,13 +421,20 @@ enum ButtonAction {
     AddPage,
 }
 
-/// Window configuration for macroquad.
+/// 窗口配置 for macroquad。
+/// 启用高 DPI 渲染以避免"假高清"模糊问题。
+/// 窗口尺寸约为屏幕面积的 1/2，系统自动居中。
 pub fn window_conf() -> macroquad::miniquad::conf::Conf {
+    let (screen_w, screen_h) = get_screen_size();
+    let (win_w, win_h) = calculate_window_size(screen_w, screen_h);
+
     macroquad::miniquad::conf::Conf {
         window_title: "Akizuki*Rustgal".to_string(),
-        window_width: WINDOW_WIDTH,
-        window_height: WINDOW_HEIGHT,
+        window_width: win_w,
+        window_height: win_h,
         fullscreen: false,
+        // 启用高 DPI 支持，确保渲染分辨率与显示分辨率匹配
+        high_dpi: true,
         icon: Some(load_kokona_icon_or_fallback()),
         ..Default::default()
     }
@@ -1033,16 +1061,28 @@ fn draw_dialogue(dialogue: &akrs_runtime::DialogueState, sw: f32, sh: f32, font:
     let box_x = 0.0;
     let box_w = sw;
 
-    // Dialogue box background: light-blue translucent panel.
-    draw_rectangle(box_x, box_y, box_w, box_h, Color::new(0.68, 0.85, 0.90, 0.6));
-    // Border
+    // 对话框背景：渐变效果
+    // 顶部透明度 ≈ 0.54（现有 0.6 调低 10%），底部透明度 → 0
+    // 使用 32 段绘制实现平滑渐变
+    let gradient_segments = 32;
+    let segment_h = box_h / gradient_segments as f32;
+    for i in 0..gradient_segments {
+        let seg_y = box_y + i as f32 * segment_h;
+        // 透明度从顶部 0.54 线性过渡到底部 0.0
+        let alpha_top = 0.54;
+        let alpha_bottom = 0.0;
+        let t = i as f32 / (gradient_segments - 1) as f32;
+        let alpha = alpha_top * (1.0 - t) + alpha_bottom * t;
+        draw_rectangle(box_x, seg_y, box_w, segment_h, Color::new(0.68, 0.85, 0.90, alpha));
+    }
+    // 边框
     draw_rectangle_lines(box_x, box_y, box_w, box_h, 2.0 * scale, Color::new(0.4, 0.7, 0.9, 0.8));
 
     let name_font_size = 42.0 * scale;
     let text_font_size = 39.0 * scale;
     let text_left_padding = 120.0 * scale;
 
-    // Speaker name
+    // 角色名
     if !dialogue.speaker.is_empty() {
         draw_text_f(
             &dialogue.speaker,
@@ -1054,7 +1094,7 @@ fn draw_dialogue(dialogue: &akrs_runtime::DialogueState, sw: f32, sh: f32, font:
         );
     }
 
-    // Dialogue text (typewriter)
+    // 对白文本（打字机效果）
     let displayed: String = dialogue.full_text.chars().take(dialogue.displayed_chars).collect();
     let text_y = if dialogue.speaker.is_empty() {
         box_y + 80.0 * scale
@@ -1072,19 +1112,22 @@ fn draw_dialogue(dialogue: &akrs_runtime::DialogueState, sw: f32, sh: f32, font:
         scale,
     );
 
-    // Click to continue indicator: breathing pulse (1.5s period).
+    // 点击继续指示器：小三角上下跳动动画
+    // 不使用透明度变化，只有垂直位移
     if dialogue.complete {
         let t = get_time() as f32;
-        let pulse = 0.5 + 0.5 * (t * 2.0 * 3.14159 / 1.5).sin();
-        let alpha = 0.3 + pulse * 0.7;
-        let size_mult = 0.85 + pulse * 0.25;
-        let indicator_size = 24.0 * scale * size_mult;
+        // 周期 0.8 秒，跳动幅度 6 像素（设计基准）
+        let bounce_period = 0.8;
+        let bounce_amplitude = 6.0 * scale;
+        let bounce_offset = bounce_amplitude * (t * 2.0 * 3.14159 / bounce_period).sin();
+        let indicator_size = 24.0 * scale;
+        let base_y = box_y + box_h - 20.0 * scale;
         draw_text_f(
             "▼",
             box_x + box_w - 40.0 * scale,
-            box_y + box_h - 20.0 * scale,
+            base_y + bounce_offset,
             indicator_size,
-            Color::new(0.8, 0.8, 0.9, alpha),
+            Color::new(0.8, 0.8, 0.9, 0.85),
             font,
         );
     }
