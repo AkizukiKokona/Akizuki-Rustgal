@@ -64,6 +64,7 @@ impl AssetManager {
 
     /// Load a texture by resource name. Returns None if the file doesn't exist.
     /// Logs a warning to stderr on missing resources.
+    /// Automatically tries appending .png if the file isn't found as-is.
     pub async fn get_texture(&mut self, kind: AssetKind, name: &str) -> Option<Texture2D> {
         let key = format!("{:?}/{}", kind, name);
         if let Some(cached) = self.cache.get(&key) {
@@ -73,20 +74,27 @@ impl AssetManager {
         let path = self.resolve_path(kind, name);
         let path_str = path.to_string_lossy().to_string();
 
-        if !path.exists() {
-            eprintln!("[Warning] Missing resource: {} (expected at {})", name, path_str);
-            self.cache.insert(key, None);
-            return None;
-        }
+        let final_path = if path.exists() {
+            path_str
+        } else {
+            let with_png = format!("{}.png", path_str);
+            if std::path::Path::new(&with_png).exists() {
+                with_png
+            } else {
+                eprintln!("[Warning] Missing resource: {} (expected at {} or {}.png)", name, path_str, path_str);
+                self.cache.insert(key, None);
+                return None;
+            }
+        };
 
-        match load_texture(&path_str).await {
+        match load_texture(&final_path).await {
             Ok(texture) => {
                 texture.set_filter(FilterMode::Linear);
                 self.cache.insert(key, Some(texture));
                 Some(texture)
             }
             Err(e) => {
-                eprintln!("[Warning] Failed to load texture '{}': {}", path_str, e);
+                eprintln!("[Warning] Failed to load texture '{}': {}", final_path, e);
                 self.cache.insert(key, None);
                 None
             }

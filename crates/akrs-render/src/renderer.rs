@@ -980,9 +980,9 @@ async fn draw_characters(scene: &SceneState, assets: &mut AssetManager, sw: f32,
     for char_state in &scene.characters {
         let x_frac = char_state.position.x_fraction();
         let sprite_name = if let Some(pose) = &char_state.pose {
-            format!("{}_{}.png", char_state.name, pose)
+            pose.clone()
         } else {
-            format!("{}.png", char_state.name)
+            char_state.name.clone()
         };
 
         if let Some(tex) = assets.get_texture(AssetKind::Character, &sprite_name).await {
@@ -1028,7 +1028,7 @@ async fn draw_characters(scene: &SceneState, assets: &mut AssetManager, sw: f32,
 }
 
 fn draw_dialogue(dialogue: &akrs_runtime::DialogueState, sw: f32, sh: f32, font: &Option<Font>, scale: f32) {
-    let box_h = 280.0 * scale;
+    let box_h = 420.0 * scale;
     let box_y = sh - box_h - 20.0 * scale;
     let box_x = 0.0;
     let box_w = sw;
@@ -1038,13 +1038,17 @@ fn draw_dialogue(dialogue: &akrs_runtime::DialogueState, sw: f32, sh: f32, font:
     // Border
     draw_rectangle_lines(box_x, box_y, box_w, box_h, 2.0 * scale, Color::new(0.4, 0.7, 0.9, 0.8));
 
+    let name_font_size = 56.0 * scale;
+    let text_font_size = 52.0 * scale;
+    let text_left_padding = 120.0 * scale;
+
     // Speaker name
     if !dialogue.speaker.is_empty() {
         draw_text_f(
             &dialogue.speaker,
             box_x + 20.0 * scale,
-            box_y + 28.0 * scale,
-            28.0 * scale,
+            box_y + 36.0 * scale,
+            name_font_size,
             Color::new(0.15, 0.3, 0.5, 1.0),
             font,
         );
@@ -1052,12 +1056,17 @@ fn draw_dialogue(dialogue: &akrs_runtime::DialogueState, sw: f32, sh: f32, font:
 
     // Dialogue text (typewriter)
     let displayed: String = dialogue.full_text.chars().take(dialogue.displayed_chars).collect();
+    let text_y = if dialogue.speaker.is_empty() {
+        box_y + 80.0 * scale
+    } else {
+        box_y + 100.0 * scale
+    };
     draw_text_wrapped(
         &displayed,
-        box_x + 20.0 * scale,
-        box_y + (if dialogue.speaker.is_empty() { 30.0 } else { 60.0 }) * scale,
-        box_w - 40.0 * scale,
-        26.0 * scale,
+        box_x + text_left_padding,
+        text_y,
+        box_w - text_left_padding - 60.0 * scale,
+        text_font_size,
         Color::new(0.1, 0.15, 0.2, 1.0),
         font,
         scale,
