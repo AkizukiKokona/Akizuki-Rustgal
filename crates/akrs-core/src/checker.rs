@@ -82,21 +82,22 @@ impl Checker {
                 });
         }
 
-        // Pass 2: check each section
+        // Pass 2: check each section (含同场角色数检查)
         for section in &program.sections {
-            self.check_nodes(&section.nodes);
+            let mut on_stage: Vec<String> = Vec::new();
+            self.check_nodes(&section.nodes, &mut on_stage);
         }
 
         self.errors
     }
 
-    fn check_nodes(&mut self, nodes: &[Node]) {
+    fn check_nodes(&mut self, nodes: &[Node], on_stage: &mut Vec<String>) {
         for node in nodes {
-            self.check_node(node);
+            self.check_node(node, on_stage);
         }
     }
 
-    fn check_node(&mut self, node: &Node) {
+    fn check_node(&mut self, node: &Node, on_stage: &mut Vec<String>) {
         match node {
             Node::Dialogue { .. } | Node::Narration { .. } => {}
             Node::Command { cmd, args, .. } => {
@@ -114,7 +115,30 @@ impl Checker {
                     });
                 }
             }
-            Node::Direction { .. } => {}
+            Node::Direction { action, span } => {
+                match action.kind {
+                    DirectionKind::Enter => {
+                        // 重入同名角色不新增
+                        if !on_stage.iter().any(|n| n == &action.character) {
+                            on_stage.push(action.character.clone());
+                            if on_stage.len() > 2 {
+                                self.errors.push(CheckError {
+                                    message: format!(
+                                        "too many characters on stage: '{}' would be the 3rd (limit is 2)",
+                                        action.character
+                                    ),
+                                    span: *span,
+                                    hint: Some("exit a character with `- Name` before entering a new one".to_string()),
+                                    severity: Severity::Error,
+                                });
+                            }
+                        }
+                    }
+                    DirectionKind::Exit => {
+                        on_stage.retain(|n| n != &action.character);
+                    }
+                }
+            }
             Node::VarOp { name, op, expr, span } => {
                 let expr_ty = self.infer_expr(expr);
                 match op {
@@ -155,7 +179,9 @@ impl Checker {
                             });
                         }
                     }
-                    self.check_nodes(&opt.body);
+                    // 每个选项分支独立模拟同场角色（互斥分支不累加）
+                    let mut branch_stage = on_stage.clone();
+                    self.check_nodes(&opt.body, &mut branch_stage);
                 }
             }
             Node::Conditional { branches, else_branch, .. } => {
@@ -169,9 +195,14 @@ impl Checker {
                             severity: Severity::Error,
                         });
                     }
-                    self.check_nodes(body);
+                    // 每个条件分支独立模拟同场角色
+                    let mut branch_stage = on_stage.clone();
+                    self.check_nodes(body, &mut branch_stage);
                 }
-                if let Some(body) = else_branch { self.check_nodes(body); }
+                if let Some(body) = else_branch {
+                    let mut branch_stage = on_stage.clone();
+                    self.check_nodes(body, &mut branch_stage);
+                }
             }
             Node::Flow { target, span } => {
                 if !self.sections.contains_key(target) {

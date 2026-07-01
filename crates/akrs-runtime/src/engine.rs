@@ -775,17 +775,36 @@ impl Engine {
 
         match action.kind {
             DirectionKind::Enter => {
+                // 限制同场最多 2 个角色（重入同名角色不算新增）
+                if !self.scene.has_character(&action.character)
+                    && self.scene.characters.len() >= 2
+                {
+                    events.push(EngineEvent::Error {
+                        message: format!(
+                            "stage full: cannot add '{}' — at most 2 characters may be on stage at once",
+                            action.character
+                        ),
+                    });
+                    return;
+                }
+
+                let pose = action.pose.clone();
+                let position = action.position;
                 if self.transition.is_active() {
-                    self.scene.character_enter(
-                        action.character.clone(),
-                        None,
-                    );
+                    match position {
+                        Some(pos) => self.scene.character_enter_at(
+                            action.character.clone(),
+                            pose,
+                            pos,
+                        ),
+                        None => self.scene.character_enter(action.character.clone(), pose),
+                    }
                 } else {
                     self.transition.start(
                         kind,
                         &mut self.scene,
                         None,
-                        vec![(action.character.clone(), None)],
+                        vec![(action.character.clone(), pose, position)],
                         vec![],
                         None,
                     );
@@ -1005,5 +1024,51 @@ Aki: "Oh. I see."
         assert_eq!(engine.scene().characters.len(), 1);
         assert_eq!(engine.scene().characters[0].name, "Yuki");
         assert_eq!(engine.scene().characters[0].position, akrs_core::Position::Center);
+    }
+
+    #[test]
+    fn test_stage_full_three_characters_error() {
+        // 同场第三个角色在编译期即被 checker 拒绝（限 2 角色）
+        let src = r#"
+# Stage
++ Aki
++ Yuki
++ Zeno
+"end"
+~~
+"#;
+        let result = Engine::start_running(src);
+        assert!(result.is_err(), "expected compile to reject 3 simultaneous characters");
+        let errs = result.err().unwrap();
+        assert!(
+            errs.iter().any(|e| e.message.contains("too many characters") && e.message.contains("Zeno")),
+            "expected a 'too many characters' error mentioning Zeno, got: {:?}", errs
+        );
+    }
+
+    #[test]
+    fn test_pose_and_position_passed_to_scene() {
+        let src = r#"
+# Stage
++ 心夏 (kokonabody1) 居左
+"hi"
+~~
+"#;
+        let mut engine = Engine::start_running(src).unwrap();
+        loop {
+            engine.update(0.05);
+            let _ = engine.advance();
+            if engine.scene().characters.iter().any(|c| c.name == "心夏") {
+                break;
+            }
+            if engine.phase == EnginePhase::StoryEnded {
+                break;
+            }
+        }
+        let c = engine.scene().characters.iter().find(|c| c.name == "心夏");
+        assert!(c.is_some(), "心夏 should be on stage");
+        let c = c.unwrap();
+        assert_eq!(c.pose.as_deref(), Some("kokonabody1"));
+        assert_eq!(c.position, akrs_core::Position::Left);
     }
 }

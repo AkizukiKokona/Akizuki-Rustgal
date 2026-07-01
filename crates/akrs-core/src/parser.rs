@@ -197,40 +197,45 @@ impl Parser {
         self.advance(); // +
         self.skip_newlines();
 
-        // Parse: Character enters/exits [from/to position] [with transition]
+        // Parse: Character [(pose)] [enters|exits] [position] [with transition]
+        // - `+ 心夏 (kokonabody1) 居中`           (新语法：立绘 + 中文位置)
+        // - `+ 心夏 居左`                         (新语法：仅位置)
+        // - `+ 心夏`                              (新语法：默认居中)
+        // - `+ Aki enters from left with fade`   (旧语法：向后兼容)
         let character = self.expect_ident("character name")?;
-        let action_word = self.expect_ident("enter/exit")?;
 
-        let kind = match action_word.as_str() {
-            "enters" | "enter" => DirectionKind::Enter,
-            "exits" | "exit" | "leaves" | "leave" => DirectionKind::Exit,
-            _ => return Err(ParseError {
-                message: format!("expected 'enters' or 'exits', found '{}'", action_word),
-                span: self.current_span(),
-                hint: Some("use '+ Character enters' or '+ Character exits'".to_string()),
-            }),
-        };
+        // 可选立绘名：` (kokonabody1)`
+        let mut pose = None;
+        if self.check(&TokenKind::LParen) {
+            self.advance();
+            pose = Some(self.expect_ident("pose/sprite name")?);
+            self.expect(&TokenKind::RParen, ")")?;
+        }
 
+        // `+` 默认表示入场；若显式写出 exits/leave 则为出场
+        let mut kind = DirectionKind::Enter;
         let mut position = None;
         let mut transition = None;
 
-        // Parse optional position and transition
         while !self.is_at_end() && !matches!(self.peek().kind, TokenKind::Newline | TokenKind::Eof) {
             if let TokenKind::Ident(s) = &self.peek().kind {
                 match s.as_str() {
+                    "enters" | "enter" => { self.advance(); }
+                    "exits" | "exit" | "leaves" | "leave" => {
+                        kind = DirectionKind::Exit;
+                        self.advance();
+                    }
                     "from" | "to" | "at" => {
                         self.advance();
                         if let TokenKind::Ident(pos_name) = &self.peek().kind.clone() {
                             position = Position::from_name(pos_name)
-                                .or_else(|| {
-                                    pos_name.parse::<f32>().ok().map(Position::Custom)
-                                });
+                                .or_else(|| pos_name.parse::<f32>().ok().map(Position::Custom));
                             self.advance();
                             if position.is_none() {
                                 return Err(ParseError {
                                     message: format!("unknown position: '{}'", pos_name),
                                     span: self.current_span(),
-                                    hint: Some("use 'left', 'center', 'right', or a number".to_string()),
+                                    hint: Some("use 'left'/'居左', 'center'/'居中', 'right'/'居右', or a number".to_string()),
                                 });
                             }
                         }
@@ -247,7 +252,18 @@ impl Parser {
                             }),
                         };
                     }
-                    _ => { self.advance(); } // skip unknown words
+                    _ => {
+                        // 直接位置词：居左/居中/居右/left/center/right，或自定义数字
+                        if let Some(p) = Position::from_name(s) {
+                            position = Some(p);
+                            self.advance();
+                        } else if let Ok(p) = s.parse::<f32>() {
+                            position = Some(Position::Custom(p));
+                            self.advance();
+                        } else {
+                            self.advance(); // 跳过无法识别的词
+                        }
+                    }
                 }
             } else {
                 break;
@@ -256,7 +272,7 @@ impl Parser {
 
         self.consume_newline();
         Ok(Node::Direction {
-            action: DirectionAction { kind, character, position, transition },
+            action: DirectionAction { kind, character, pose, position, transition },
             span,
         })
     }
@@ -304,6 +320,7 @@ impl Parser {
             action: DirectionAction {
                 kind: DirectionKind::Exit,
                 character,
+                pose: None,
                 position: None,
                 transition,
             },
@@ -797,5 +814,60 @@ mod tests {
         let p = parse("# S\n$affection = 10\n$score += 5\n");
         assert!(matches!(p.sections[0].nodes[0], Node::VarOp { op: VarOpKind::Assign, .. }));
         assert!(matches!(p.sections[0].nodes[1], Node::VarOp { op: VarOpKind::PlusEq, .. }));
+    }
+
+    #[test]
+    fn test_direction_pose_and_chinese_position() {
+        let p = parse("# S\n+ 心夏 (kokonabody1) 居中\n");
+        match &p.sections[0].nodes[0] {
+            Node::Direction { action, .. } => {
+                assert_eq!(action.character, "心夏");
+                assert_eq!(action.kind, DirectionKind::Enter);
+                assert_eq!(action.pose.as_deref(), Some("kokonabody1"));
+                assert_eq!(action.position, Some(Position::Center));
+                assert_eq!(action.transition, None);
+            }
+            _ => panic!("expected Direction"),
+        }
+    }
+
+    #[test]
+    fn test_direction_chinese_position_only() {
+        let p = parse("# S\n+ 心夏 居左\n");
+        match &p.sections[0].nodes[0] {
+            Node::Direction { action, .. } => {
+                assert_eq!(action.character, "心夏");
+                assert_eq!(action.pose, None);
+                assert_eq!(action.position, Some(Position::Left));
+            }
+            _ => panic!("expected Direction"),
+        }
+    }
+
+    #[test]
+    fn test_direction_default_center_no_position() {
+        let p = parse("# S\n+ 心夏\n");
+        match &p.sections[0].nodes[0] {
+            Node::Direction { action, .. } => {
+                assert_eq!(action.character, "心夏");
+                assert_eq!(action.position, None);
+                assert_eq!(action.transition, None);
+            }
+            _ => panic!("expected Direction"),
+        }
+    }
+
+    #[test]
+    fn test_direction_pose_english_position_with_transition() {
+        let p = parse("# S\n+ Aki (happy) left with fade\n");
+        match &p.sections[0].nodes[0] {
+            Node::Direction { action, .. } => {
+                assert_eq!(action.character, "Aki");
+                assert_eq!(action.pose.as_deref(), Some("happy"));
+                assert_eq!(action.position, Some(Position::Left));
+                assert_eq!(action.transition, Some(Transition::Fade));
+            }
+            _ => panic!("expected Direction"),
+        }
     }
 }

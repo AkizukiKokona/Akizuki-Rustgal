@@ -98,6 +98,8 @@ pub enum Node {
 pub struct DirectionAction {
     pub kind: DirectionKind,
     pub character: String,
+    /// 立绘资源名（如 `kokonabody1`），由 `+ 角色 (立绘)` 语法指定。
+    pub pose: Option<String>,
     pub position: Option<Position>,
     pub transition: Option<Transition>,
 }
@@ -120,9 +122,9 @@ pub enum Position {
 impl Position {
     pub fn from_name(name: &str) -> Option<Self> {
         match name {
-            "left" => Some(Self::Left),
-            "center" | "centre" => Some(Self::Center),
-            "right" => Some(Self::Right),
+            "left" | "居左" | "左" => Some(Self::Left),
+            "center" | "centre" | "居中" | "中" => Some(Self::Center),
+            "right" | "居右" | "右" => Some(Self::Right),
             _ => None,
         }
     }

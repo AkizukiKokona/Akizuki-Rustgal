@@ -199,6 +199,21 @@ impl SceneState {
         self.auto_layout();
     }
 
+    /// Add or update a character at an explicit position.
+    /// Unlike `character_enter`, this does NOT run auto_layout — the given
+    /// position is respected. Caller is responsible for the 2-character limit.
+    pub fn character_enter_at(&mut self, name: String, pose: Option<String>, position: Position) {
+        self.characters.retain(|c| c.name != name);
+        self.characters.push(CharacterState {
+            name,
+            pose,
+            position,
+            alpha: 1.0,
+            offset_x: 0.0,
+            scale: 1.0,
+        });
+    }
+
     /// Remove a character from stage and recalculate remaining positions.
     pub fn character_exit(&mut self, name: &str) {
         self.characters.retain(|c| c.name != name);
@@ -284,6 +299,19 @@ mod tests {
         assert_eq!(scene.characters[0].name, "Yuki");
         assert_eq!(scene.characters[0].position, Position::Left);
         assert_eq!(scene.characters[1].name, "Aki");
+        assert_eq!(scene.characters[1].position, Position::Right);
+    }
+
+    #[test]
+    fn test_enter_at_explicit_position() {
+        let mut scene = SceneState::new();
+        scene.character_enter_at("Aki".to_string(), None, Position::Left);
+        assert_eq!(scene.characters.len(), 1);
+        assert_eq!(scene.characters[0].position, Position::Left);
+        // 手动位置不会被 auto_layout 覆盖
+        scene.character_enter_at("Yuki".to_string(), None, Position::Right);
+        assert_eq!(scene.characters.len(), 2);
+        assert_eq!(scene.characters[0].position, Position::Left);
         assert_eq!(scene.characters[1].position, Position::Right);
     }
 }

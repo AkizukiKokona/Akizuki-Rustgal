@@ -17,12 +17,12 @@
 //! except for instant cuts), targeting 60fps with zero per-frame allocations.
 
 use crate::game_state::{SceneState, TransitionOverlay, TransitionPhase};
-use akrs_core::Transition;
+use akrs_core::{Position, Transition};
 
 /// Pending scene change to apply mid-transition.
 struct PendingChange {
     new_background: Option<Option<String>>, // Outer: change bg; Inner: None = clear
-    characters_enter: Vec<(String, Option<String>)>,
+    characters_enter: Vec<(String, Option<String>, Option<Position>)>,
     characters_exit: Vec<String>,
     music: Option<Option<String>>,
 }
@@ -67,7 +67,7 @@ impl TransitionManager {
         kind: Transition,
         scene: &mut SceneState,
         new_bg: Option<Option<String>>,
-        chars_enter: Vec<(String, Option<String>)>,
+        chars_enter: Vec<(String, Option<String>, Option<Position>)>,
         chars_exit: Vec<String>,
         new_music: Option<Option<String>>,
     ) {
@@ -160,7 +160,7 @@ impl TransitionManager {
     fn apply_changes(
         scene: &mut SceneState,
         new_bg: Option<Option<String>>,
-        chars_enter: &[(String, Option<String>)],
+        chars_enter: &[(String, Option<String>, Option<Position>)],
         chars_exit: &[String],
         new_music: Option<Option<String>>,
     ) {
@@ -175,8 +175,11 @@ impl TransitionManager {
             scene.character_exit(name);
         }
 
-        for (name, pose) in chars_enter {
-            scene.character_enter(name.clone(), pose.clone());
+        for (name, pose, position) in chars_enter {
+            match position {
+                Some(pos) => scene.character_enter_at(name.clone(), pose.clone(), *pos),
+                None => scene.character_enter(name.clone(), pose.clone()),
+            }
         }
 
         if let Some(music) = new_music {
