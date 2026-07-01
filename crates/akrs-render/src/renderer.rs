@@ -867,7 +867,7 @@ pub async fn run(mut engine: Engine) {
                 }
                 UiMode::Normal => {
                     if engine.phase() == EnginePhase::Title {
-                        draw_title_screen(&mut buttons, sw, sh, &mut assets, &font, scale, has_continue_save).await;
+                        draw_title_screen(&engine, &mut buttons, sw, sh, &mut assets, &font, scale, has_continue_save).await;
                     } else if engine.phase() == EnginePhase::StoryEnded {
                         draw_scene(&engine, &mut assets, sw, sh, true, &font, scale).await;
                     } else {
@@ -893,7 +893,7 @@ pub async fn run(mut engine: Engine) {
                 _ => {}
             }
         } else if engine.phase() == EnginePhase::Title {
-            draw_title_screen(&mut buttons, sw, sh, &mut assets, &font, scale, has_continue_save).await;
+            draw_title_screen(&engine, &mut buttons, sw, sh, &mut assets, &font, scale, has_continue_save).await;
         } else if engine.phase() == EnginePhase::StoryEnded {
             draw_scene(&engine, &mut assets, sw, sh, true, &font, scale).await;
         } else {
@@ -1163,14 +1163,16 @@ async fn draw_title_background(sw: f32, sh: f32, assets: &mut AssetManager) {
     }
 }
 
-async fn draw_title_screen(buttons: &mut Vec<ButtonRect>, sw: f32, sh: f32, assets: &mut AssetManager, font: &Option<Font>, scale: f32, has_continue_save: bool) {
+async fn draw_title_screen(engine: &Engine, buttons: &mut Vec<ButtonRect>, sw: f32, sh: f32, assets: &mut AssetManager, font: &Option<Font>, scale: f32, has_continue_save: bool) {
     draw_title_background(sw, sh, assets).await;
+
+    let scene = engine.scene();
 
     // 文本与控件离左边的距离（约 1% 屏幕宽度）
     let left_pad = sw * 0.01;
 
     // 主标题（左上角，居左对齐）
-    let title = "Akizuki*Rustgal";
+    let title = scene.title.as_str();
     let title_font_size = 56.0 * scale;
     let title_x = left_pad;
     let title_y = 40.0 * scale;
@@ -1184,7 +1186,7 @@ async fn draw_title_screen(buttons: &mut Vec<ButtonRect>, sw: f32, sh: f32, asse
     );
 
     // 副标题（主标题下方，居左对齐）
-    let subtitle = "夏夜观心Extra";
+    let subtitle = scene.subtitle.as_str();
     let sub_size = 28.0 * scale;
     let sub_x = title_x;
     let sub_y = title_y + title_font_size + 20.0 * scale;

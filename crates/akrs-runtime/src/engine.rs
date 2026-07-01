@@ -239,6 +239,11 @@ impl Engine {
         &self.scene
     }
 
+    /// 设置标题页的主标题和副标题。
+    pub fn set_title(&mut self, title: String, subtitle: String) {
+        self.scene.set_title(title, subtitle);
+    }
+
     /// Get the current engine phase.
     pub fn phase(&self) -> EnginePhase {
         self.phase

@@ -16,7 +16,7 @@ use std::path::{Path, PathBuf};
 use eframe::egui;
 use egui::{ColorImage, TextureHandle};
 
-use akrs_core::{compile, format_location, CompileError, ErrSeverity, Position};
+use akrs_core::{compile, format_location, CompileError, ErrSeverity, Position, ProjectConfig, RecentProjects};
 use akrs_runtime::{Engine, EnginePhase};
 
 // ---------------------------------------------------------------------------
@@ -178,6 +178,34 @@ pub struct EditorApp {
     sprite_preview: SpritePreview,
     /// 文件选择对话框状态（None 表示未打开）。
     file_picker: Option<FilePickerState>,
+    /// 当前项目配置（project.json）。
+    project_config: ProjectConfig,
+    /// 是否已经加载了项目配置。
+    project_loaded: bool,
+    /// 最近打开的项目列表。
+    recent_projects: RecentProjects,
+    /// 是否显示项目设置对话框。
+    show_project_settings: bool,
+    /// 标题过长警告对话框状态。
+    title_warning: Option<TitleWarningState>,
+    /// 目录选择对话框状态（选择项目文件夹）。
+    dir_picker: Option<DirPickerState>,
+}
+
+/// 标题过长警告对话框状态。
+#[derive(Clone)]
+struct TitleWarningState {
+    /// 待确认的新标题。
+    new_title: String,
+    /// 待确认的新副标题。
+    new_subtitle: String,
+}
+
+/// 目录选择对话框状态。
+struct DirPickerState {
+    current_dir: PathBuf,
+    entries: Vec<PickerEntry>,
+    filter: String,
 }
 
 /// 文件选择对话框模式。
@@ -188,6 +216,7 @@ enum FilePickerMode {
 }
 
 /// 文件选择对话框状态。
+#[allow(dead_code)]
 struct FilePickerState {
     mode: FilePickerMode,
     current_dir: PathBuf,
@@ -205,6 +234,7 @@ struct PickerEntry {
 impl Default for EditorApp {
     fn default() -> Self {
         let work_dir = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+        let recent_projects = RecentProjects::load();
         let mut app = Self {
             editor_content: String::new(),
             current_file: None,
@@ -221,6 +251,12 @@ impl Default for EditorApp {
             preview_tab: PreviewTab::Script,
             sprite_preview: SpritePreview::default(),
             file_picker: None,
+            project_config: ProjectConfig::default(),
+            project_loaded: false,
+            recent_projects,
+            show_project_settings: false,
+            title_warning: None,
+            dir_picker: None,
         };
         app.refresh_file_list();
         app
@@ -375,6 +411,110 @@ impl EditorApp {
         }
     }
 
+    // -- 项目管理 ---------------------------------------------------------
+
+    /// 打开项目文件夹。
+    fn open_project(&mut self, project_dir: &Path) {
+        // 加载项目配置
+        self.project_config = ProjectConfig::load(project_dir);
+        self.project_loaded = true;
+        self.work_dir = project_dir.to_path_buf();
+        self.refresh_file_list();
+
+        // 添加到最近项目列表
+        let project_name = project_dir
+            .file_name()
+            .map(|n| n.to_string_lossy().into_owned())
+            .unwrap_or_else(|| "未命名项目".to_string());
+        self.recent_projects.add_project(project_dir, &project_name);
+
+        // 尝试打开主剧本文件
+        let main_script = self.project_config.main_script.clone();
+        let script_path = project_dir.join(&main_script);
+        if script_path.exists() {
+            self.open_file_path(&script_path);
+        } else {
+            // 如果主剧本不存在，尝试找目录下第一个 .akrs 文件
+            self.engine = None;
+            self.show_welcome = false;
+        }
+
+        // 重置立绘预览的扫描目录
+        self.sprite_preview.scanned_dir = None;
+
+        self.status = format!("已打开项目：{}", project_name);
+    }
+
+    /// 保存项目配置（project.json）。
+    fn save_project_config(&mut self) {
+        if let Err(e) = self.project_config.save(&self.work_dir) {
+            self.status = format!("保存项目配置失败：{}", e);
+        } else {
+            self.status = "项目配置已保存".to_string();
+        }
+    }
+
+    /// 打开目录选择对话框（用于选择项目文件夹）。
+    fn open_dir_picker(&mut self) {
+        let entries = Self::read_picker_entries(&self.work_dir, "");
+        self.dir_picker = Some(DirPickerState {
+            current_dir: self.work_dir.clone(),
+            entries,
+            filter: String::new(),
+        });
+    }
+
+    /// 尝试设置标题，如果标题过长则显示警告对话框。
+    fn try_set_title(&mut self, new_title: String) {
+        let temp_config = ProjectConfig {
+            title: new_title.clone(),
+            subtitle: self.project_config.subtitle.clone(),
+            ..self.project_config.clone()
+        };
+        if temp_config.is_title_too_long() {
+            self.title_warning = Some(TitleWarningState {
+                new_title,
+                new_subtitle: self.project_config.subtitle.clone(),
+            });
+        } else {
+            self.project_config.title = new_title;
+            self.save_project_config();
+        }
+    }
+
+    /// 尝试设置副标题，如果副标题过长则显示警告对话框。
+    fn try_set_subtitle(&mut self, new_subtitle: String) {
+        let temp_config = ProjectConfig {
+            title: self.project_config.title.clone(),
+            subtitle: new_subtitle.clone(),
+            ..self.project_config.clone()
+        };
+        if temp_config.is_subtitle_too_long() {
+            self.title_warning = Some(TitleWarningState {
+                new_title: self.project_config.title.clone(),
+                new_subtitle,
+            });
+        } else {
+            self.project_config.subtitle = new_subtitle;
+            self.save_project_config();
+        }
+    }
+
+    /// 确认标题过长警告，强制应用。
+    fn confirm_title_warning(&mut self) {
+        if let Some(warning) = self.title_warning.take() {
+            self.project_config.title = warning.new_title;
+            self.project_config.subtitle = warning.new_subtitle;
+            self.save_project_config();
+            self.status = "已应用标题更改（标题较长，可能影响显示效果）".to_string();
+        }
+    }
+
+    /// 取消标题过长警告。
+    fn cancel_title_warning(&mut self) {
+        self.title_warning = None;
+    }
+
     // -- 编译 + 预览 -------------------------------------------------------
 
     /// 编译当前编辑器内容并（成功时）启动预览引擎。诊断信息始终反映在状态栏。
@@ -387,6 +527,11 @@ impl EditorApp {
                 Ok(mut engine) => {
                     // 预览中即时显示文字，便于阅读对话。
                     engine.settings_mut().text_speed = 999.0;
+                    // 设置项目标题
+                    engine.set_title(
+                        self.project_config.title.clone(),
+                        self.project_config.subtitle.clone(),
+                    );
                     self.engine = Some(engine);
                     let n = self.diagnostics.len();
                     if n == 0 {
@@ -433,6 +578,11 @@ impl EditorApp {
 
             ui.horizontal(|ui| {
                 ui.add_space(80.0);
+                let btn = egui::Button::new(egui::RichText::new("打开项目").size(15.0))
+                    .min_size(egui::Vec2::new(130.0, 38.0));
+                if ui.add(btn).clicked() {
+                    self.open_dir_picker();
+                }
                 let btn = egui::Button::new(egui::RichText::new("新建剧本").size(15.0))
                     .min_size(egui::Vec2::new(130.0, 38.0));
                 if ui.add(btn).clicked() {
@@ -450,7 +600,36 @@ impl EditorApp {
                 }
             });
 
-            ui.add_space(36.0);
+            ui.add_space(24.0);
+
+            // 最近项目列表
+            if !self.recent_projects.projects.is_empty() {
+                ui.label(egui::RichText::new("最近项目").size(18.0));
+                ui.add_space(8.0);
+
+                egui::Frame::group(ui.style())
+                    .inner_margin(12.0)
+                    .show(ui, |ui| {
+                        ui.set_max_width(560.0);
+                        let projects = self.recent_projects.projects.clone();
+                        for project in &projects {
+                            ui.horizontal(|ui| {
+                                if ui.link(&project.name).clicked() {
+                                    self.open_project(&project.path);
+                                }
+                                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                                    ui.label(
+                                        egui::RichText::new(project.path.display().to_string())
+                                            .small()
+                                            .color(egui::Color32::from_rgb(140, 150, 170)),
+                                    );
+                                });
+                            });
+                        }
+                    });
+            }
+
+            ui.add_space(24.0);
 
             // 语法示例
             ui.label(egui::RichText::new("语法示例").size(18.0));
@@ -882,6 +1061,13 @@ impl eframe::App for EditorApp {
         // ---- 顶部工具栏 --------------------------------------------------
         egui::TopBottomPanel::top("toolbar").show(ctx, |ui| {
             ui.horizontal_wrapped(|ui| {
+                if ui.button("打开项目").clicked() {
+                    self.open_dir_picker();
+                }
+                if ui.button("项目设置").clicked() {
+                    self.show_project_settings = true;
+                }
+                ui.separator();
                 if ui.button("新建 (Ctrl+N)").clicked() {
                     self.new_file();
                 }
@@ -1174,6 +1360,279 @@ impl eframe::App for EditorApp {
             }
             if close {
                 self.file_picker = None;
+            }
+        }
+
+        // ---- 目录选择对话框（打开项目） -----------------------------------
+        if self.dir_picker.is_some() {
+            let mut close = false;
+            let mut confirm: Option<PathBuf> = None;
+            let mut open = true;
+
+            egui::Window::new("选择项目文件夹")
+                .open(&mut open)
+                .collapsible(false)
+                .resizable(true)
+                .default_size(egui::Vec2::new(560.0, 420.0))
+                .anchor(egui::Align2::CENTER_CENTER, egui::Vec2::ZERO)
+                .show(ctx, |ui| {
+                    // 顶部：当前路径 + 上一级
+                    ui.horizontal(|ui| {
+                        ui.label("路径：");
+                        ui.label(egui::RichText::new(self.dir_picker.as_ref().unwrap().current_dir.display().to_string()).monospace());
+                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                            if ui.button("↑ 上一级").clicked() {
+                                if let Some(parent) = self.dir_picker.as_ref().unwrap().current_dir.parent() {
+                                    let p = parent.to_path_buf();
+                                    let entries = Self::read_picker_entries(&p, "");
+                                    let dp = self.dir_picker.as_mut().unwrap();
+                                    dp.current_dir = p;
+                                    dp.entries = entries;
+                                    dp.filter.clear();
+                                }
+                            }
+                        });
+                    });
+                    ui.add_space(6.0);
+
+                    // 过滤输入
+                    ui.horizontal(|ui| {
+                        ui.label("过滤：");
+                        let resp = ui.add_sized(
+                            [ui.available_width(), 24.0],
+                            egui::TextEdit::singleline(&mut self.dir_picker.as_mut().unwrap().filter),
+                        );
+                        if resp.changed() {
+                            let dp = self.dir_picker.as_ref().unwrap();
+                            let entries = Self::read_picker_entries(&dp.current_dir, &dp.filter);
+                            self.dir_picker.as_mut().unwrap().entries = entries;
+                        }
+                    });
+                    ui.add_space(6.0);
+
+                    // 目录列表（只显示目录）
+                    egui::ScrollArea::vertical()
+                        .max_height(260.0)
+                        .show(ui, |ui| {
+                            let dp = self.dir_picker.as_ref().unwrap();
+                            let current_dir = dp.current_dir.clone();
+                            let entries = dp.entries.clone();
+                            let filter = dp.filter.clone();
+
+                            for entry in &entries {
+                                if !entry.is_dir {
+                                    continue;
+                                }
+                                let label = format!("📁  {}", entry.name);
+                                let resp = ui.selectable_label(false, label);
+                                if resp.clicked() {
+                                    let new_dir = current_dir.join(&entry.name);
+                                    let new_entries = Self::read_picker_entries(&new_dir, &filter);
+                                    let dp = self.dir_picker.as_mut().unwrap();
+                                    dp.current_dir = new_dir;
+                                    dp.entries = new_entries;
+                                    dp.filter.clear();
+                                }
+                                if resp.double_clicked() {
+                                    confirm = Some(current_dir.join(&entry.name));
+                                }
+                            }
+                        });
+
+                    ui.add_space(8.0);
+                    ui.separator();
+                    ui.add_space(8.0);
+
+                    // 底部按钮
+                    ui.horizontal(|ui| {
+                        if ui.button("选择此目录").clicked() {
+                            let dp = self.dir_picker.as_ref().unwrap();
+                            confirm = Some(dp.current_dir.clone());
+                        }
+                        if ui.button("取消").clicked() {
+                            close = true;
+                        }
+                    });
+                });
+
+            // 处理结果
+            if !open {
+                close = true;
+            }
+            if let Some(path) = confirm {
+                if path.is_dir() {
+                    self.open_project(&path);
+                }
+                self.dir_picker = None;
+            }
+            if close {
+                self.dir_picker = None;
+            }
+        }
+
+        // ---- 项目设置对话框 ----------------------------------------------
+        if self.show_project_settings {
+            let mut close = false;
+            let mut open = self.show_project_settings;
+            let mut title_changed = false;
+            let mut new_title_val = self.project_config.title.clone();
+            let mut subtitle_changed = false;
+            let mut new_subtitle_val = self.project_config.subtitle.clone();
+
+            egui::Window::new("项目设置")
+                .open(&mut open)
+                .collapsible(false)
+                .resizable(false)
+                .default_width(480.0)
+                .anchor(egui::Align2::CENTER_CENTER, egui::Vec2::ZERO)
+                .show(ctx, |ui| {
+                    ui.add_space(8.0);
+
+                    ui.heading("标题设置");
+                    ui.add_space(8.0);
+
+                    // 主标题输入
+                    ui.horizontal(|ui| {
+                        ui.label("主标题：");
+                        let resp = ui.add_sized(
+                            [ui.available_width(), 28.0],
+                            egui::TextEdit::singleline(&mut new_title_val),
+                        );
+                        if resp.lost_focus() && resp.changed() {
+                            title_changed = true;
+                        }
+                    });
+                    ui.add_space(4.0);
+
+                    // 副标题输入
+                    ui.horizontal(|ui| {
+                        ui.label("副标题：");
+                        let resp = ui.add_sized(
+                            [ui.available_width(), 28.0],
+                            egui::TextEdit::singleline(&mut new_subtitle_val),
+                        );
+                        if resp.lost_focus() && resp.changed() {
+                            subtitle_changed = true;
+                        }
+                    });
+                    ui.add_space(4.0);
+
+                    ui.label(
+                        egui::RichText::new("提示：标题过长（超过屏幕宽度约 1/4）时会显示警告。")
+                            .small()
+                            .color(egui::Color32::from_rgb(140, 150, 170)),
+                    );
+
+                    ui.add_space(12.0);
+                    ui.separator();
+                    ui.add_space(12.0);
+
+                    ui.heading("项目信息");
+                    ui.add_space(8.0);
+
+                    ui.horizontal(|ui| {
+                        ui.label("项目描述：");
+                    });
+                    ui.add_space(4.0);
+                    ui.add_sized(
+                        [ui.available_width(), 60.0],
+                        egui::TextEdit::multiline(&mut self.project_config.description),
+                    );
+                    ui.add_space(8.0);
+
+                    ui.horizontal(|ui| {
+                        ui.label("作者：");
+                        ui.add_sized(
+                            [ui.available_width(), 28.0],
+                            egui::TextEdit::singleline(&mut self.project_config.author),
+                        );
+                    });
+                    ui.add_space(8.0);
+
+                    ui.horizontal(|ui| {
+                        ui.label("主剧本文件：");
+                        ui.add_sized(
+                            [ui.available_width(), 28.0],
+                            egui::TextEdit::singleline(&mut self.project_config.main_script),
+                        );
+                    });
+
+                    ui.add_space(16.0);
+                    ui.separator();
+                    ui.add_space(8.0);
+
+                    ui.horizontal(|ui| {
+                        if ui.button("保存并关闭").clicked() {
+                            close = true;
+                        }
+                        if ui.button("取消").clicked() {
+                            close = true;
+                        }
+                    });
+                });
+
+            // 处理标题更改
+            if title_changed {
+                self.try_set_title(new_title_val.clone());
+            }
+            if subtitle_changed {
+                self.try_set_subtitle(new_subtitle_val.clone());
+            }
+
+            if !open {
+                close = true;
+            }
+            if close {
+                self.save_project_config();
+                self.show_project_settings = false;
+            }
+        }
+
+        // ---- 标题过长警告对话框 -------------------------------------------
+        if self.title_warning.is_some() {
+            let mut confirm = false;
+            let mut cancel = false;
+
+            egui::Window::new("标题过长警告")
+                .collapsible(false)
+                .resizable(false)
+                .default_width(420.0)
+                .anchor(egui::Align2::CENTER_CENTER, egui::Vec2::ZERO)
+                .show(ctx, |ui| {
+                    ui.add_space(8.0);
+
+                    ui.label(
+                        egui::RichText::new("⚠️ 警告")
+                            .size(20.0)
+                            .color(egui::Color32::from_rgb(255, 200, 100)),
+                    );
+                    ui.add_space(8.0);
+
+                    ui.label(
+                        "标题长度超过了屏幕宽度的约 1/4，可能会影响显示效果。",
+                    );
+                    ui.add_space(4.0);
+                    ui.label("是否仍然要使用这个标题？");
+
+                    ui.add_space(12.0);
+                    ui.separator();
+                    ui.add_space(8.0);
+
+                    ui.horizontal(|ui| {
+                        if ui.button("确认使用").clicked() {
+                            confirm = true;
+                        }
+                        if ui.button("取消").clicked() {
+                            cancel = true;
+                        }
+                    });
+                });
+
+            if confirm {
+                self.confirm_title_warning();
+            }
+            if cancel {
+                self.cancel_title_warning();
             }
         }
     }

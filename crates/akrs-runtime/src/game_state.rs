@@ -28,6 +28,10 @@ pub struct SceneState {
     pub story_ended: bool,
     /// Current music track.
     pub music: Option<String>,
+    /// 标题页主标题。
+    pub title: String,
+    /// 标题页副标题。
+    pub subtitle: String,
 }
 
 /// Background image state.
@@ -136,8 +140,16 @@ impl SceneState {
     pub fn new() -> Self {
         Self {
             show_title: true,
+            title: "Akizuki*Rustgal".to_string(),
+            subtitle: "夏夜观心Extra".to_string(),
             ..Default::default()
         }
+    }
+
+    /// 设置标题和副标题。
+    pub fn set_title(&mut self, title: String, subtitle: String) {
+        self.title = title;
+        self.subtitle = subtitle;
     }
 
     /// Clear dialogue and choices.

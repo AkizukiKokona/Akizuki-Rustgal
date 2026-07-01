@@ -10,6 +10,7 @@ pub mod checker;
 pub mod diagnostic;
 pub mod lexer;
 pub mod parser;
+pub mod project;
 pub mod token;
 pub mod value;
 pub mod vm;
@@ -23,6 +24,7 @@ pub use parser::{Parser, ParseError};
 pub use token::{Token, TokenKind, LocSpan, LineCol, Span};
 pub use value::{Value, Type};
 pub use vm::{Vm, VmEvent, VmState, VmError, ChoiceInfo};
+pub use project::{ProjectConfig, RecentProjects, RecentProject};
 
 /// Full compile pipeline: source text → checked program.
 /// Returns the program and any errors (errors may include warnings).
