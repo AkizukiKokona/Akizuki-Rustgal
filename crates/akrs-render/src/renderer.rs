@@ -352,6 +352,91 @@ impl UiTransition {
     }
 }
 
+/// Which transition animation to use for a UI mode switch.
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum TransitionKind {
+    /// 场景切换转场（现有）：cross-fade bell curve，约 0.5s。
+    /// 用于进入/离开游戏世界：标题↔游戏、读档进入游戏、回标题等。
+    Scene,
+    /// 覆盖转场（新增）：纯色层线性透明度变化，淡入/淡出各 0.4s。
+    /// 用于叠层界面开关：打开/关闭设置、存档、读档界面。
+    /// 背景保持渲染不暂停，纯色层叠加在画面上方。
+    Cover,
+}
+
+/// 覆盖转场状态机：纯色（黑）层从透明线性渐变到不透明（FadeIn），
+/// 在中点 swap UI 模式，再从不透明线性渐变到透明（FadeOut）。
+/// 与 `UiTransition` 并行存在，互不干扰；同一时刻仅允许一种转场播放。
+struct CoverTransition {
+    active: bool,
+    phase: UiTransPhase,
+    progress: f32, // 0.0 to 1.0 within the current half (FadeIn 或 FadeOut)
+    target_mode: UiMode,
+    pending: PendingUiAction,
+}
+
+impl CoverTransition {
+    /// 单程时长（秒）：淡入 0.4s，淡出 0.4s，总 0.8s。
+    const HALF_DUR: f32 = 0.4;
+
+    fn new() -> Self {
+        Self { active: false, phase: UiTransPhase::Out, progress: 0.0, target_mode: UiMode::Normal, pending: PendingUiAction::None }
+    }
+
+    fn start(&mut self, target: UiMode, pending: PendingUiAction) {
+        self.active = true;
+        self.phase = UiTransPhase::Out; // Out = 淡入（覆盖层渐显）
+        self.progress = 0.0;
+        self.target_mode = target;
+        self.pending = pending;
+    }
+
+    /// 推进动画。返回 Some((mode, pending)) 在中点 swap 时。
+    fn update(&mut self, dt: f32) -> Option<(UiMode, PendingUiAction)> {
+        if !self.active { return None; }
+        self.progress += dt / Self::HALF_DUR;
+        if self.phase == UiTransPhase::Out && self.progress >= 1.0 {
+            // 覆盖层已完全不透明 → swap UI 模式 → 进入淡出
+            self.phase = UiTransPhase::In;
+            self.progress = 0.0;
+            return Some((self.target_mode, std::mem::replace(&mut self.pending, PendingUiAction::None)));
+        }
+        if self.phase == UiTransPhase::In && self.progress >= 1.0 {
+            self.progress = 0.0;
+            self.phase = UiTransPhase::Out;
+            self.active = false;
+        }
+        None
+    }
+
+    /// 覆盖层透明度。Out（淡入）阶段：0→1 线性；In（淡出）阶段：1→0 线性。
+    fn overlay_alpha(&self) -> f32 {
+        if !self.active { return 0.0; }
+        match self.phase {
+            UiTransPhase::Out => self.progress,
+            UiTransPhase::In => 1.0 - self.progress,
+        }
+    }
+}
+
+/// 互斥地启动一种转场。若已有任一转场在播放，新请求被忽略
+/// （转场很短，忽略可接受；避免两种转场叠加冲突）。
+fn start_transition(
+    scene: &mut UiTransition,
+    cover: &mut CoverTransition,
+    kind: TransitionKind,
+    target: UiMode,
+    pending: PendingUiAction,
+) {
+    if scene.active || cover.active {
+        return;
+    }
+    match kind {
+        TransitionKind::Scene => scene.start(target, pending),
+        TransitionKind::Cover => cover.start(target, pending),
+    }
+}
+
 /// Button layout for clickable regions.
 struct ButtonRect {
     x: f32,
@@ -588,6 +673,9 @@ pub async fn run(mut engine: Engine) {
     let mut load_displayed_slots: usize = 24;
     // UI transition state machine for smooth page switches.
     let mut ui_transition = UiTransition::new();
+    // 覆盖转场：用于叠层界面（设置/存档/读档）开关，纯色层线性淡入淡出。
+    // 与 ui_transition 互斥：同一时刻仅一种转场播放（见 start_transition）。
+    let mut cover_transition = CoverTransition::new();
 
     // Check title music
     if !assets.check_music("title_bgm.mp3") {
@@ -654,8 +742,11 @@ pub async fn run(mut engine: Engine) {
         // Draw based on phase and UI mode
         clear_background(BLACK);
 
-        // Update UI transition. Returns Some((mode, action)) at the swap point.
-        if let Some((target_mode, pending)) = ui_transition.update(dt) {
+        // Update UI transitions. 两种转场都推进动画；任一到达中点 swap 时
+        // 返回 Some((mode, pending))，由下方统一处理（逻辑与单转场时一致）。
+        // 互斥保证两者不会同时 active，因此至多一个返回 swap。
+        let swap = ui_transition.update(dt).or_else(|| cover_transition.update(dt));
+        if let Some((target_mode, pending)) = swap {
             ui_mode = target_mode;
             match pending {
                 PendingUiAction::None => {}
@@ -753,16 +844,17 @@ pub async fn run(mut engine: Engine) {
         }
 
         // Handle mouse input.
-        // All input is blocked while a UI transition is in progress.
+        // All input is blocked while any UI transition is in progress
+        // （场景转场或覆盖转场，与现有行为一致）。
         // The settings menu handles its own interaction (it needs per-frame
         // drag updates, not just click events), so it runs every frame; all
         // other modes use the generic button/click handler on press only.
-        if !ui_transition.active {
+        if !ui_transition.active && !cover_transition.active {
             if ui_mode == UiMode::SettingsMenu {
-                if let Some((target, pending)) = handle_settings_interaction(
+                if let Some((target, pending, kind)) = handle_settings_interaction(
                     &mut engine, &settings_layout, &mut dragging_slider, &mut dropdown_open, scale,
                 ) {
-                    ui_transition.start(target, pending);
+                    start_transition(&mut ui_transition, &mut cover_transition, kind, target, pending);
                 }
             } else if is_mouse_button_pressed(MouseButton::Left) {
                 let (mx, my) = mouse_position();
@@ -813,8 +905,8 @@ pub async fn run(mut engine: Engine) {
                         }
                         _ => {
                             // Transition action.
-                            if let Some((target, pending)) = handle_button_action(action) {
-                                ui_transition.start(target, pending);
+                            if let Some((target, pending, kind)) = handle_button_action(action) {
+                                start_transition(&mut ui_transition, &mut cover_transition, kind, target, pending);
                             }
                         }
                     }
@@ -824,34 +916,42 @@ pub async fn run(mut engine: Engine) {
 
         // Handle keyboard input
         if is_key_pressed(KeyCode::Escape) {
-            if ui_transition.active {
-                // Ignore Esc during a UI transition.
+            if ui_transition.active || cover_transition.active {
+                // Ignore Esc during any UI transition.
             } else if ui_mode == UiMode::AutoSavePrompt {
                 // The recovery prompt requires an explicit choice; ignore Esc.
             } else if ui_mode == UiMode::SettingsMenu {
                 // Leaving the settings menu persists the current settings.
+                // 关闭设置是叠层关闭 → 覆盖转场。
                 let _ = engine.save_settings();
                 dragging_slider = None;
-                ui_transition.start(UiMode::Normal, PendingUiAction::None);
+                start_transition(&mut ui_transition, &mut cover_transition, TransitionKind::Cover, UiMode::Normal, PendingUiAction::None);
             } else if ui_mode != UiMode::Normal {
-                ui_transition.start(UiMode::Normal, PendingUiAction::None);
+                // 从存档/读档菜单返回游戏是叠层关闭 → 覆盖转场。
+                start_transition(&mut ui_transition, &mut cover_transition, TransitionKind::Cover, UiMode::Normal, PendingUiAction::None);
             } else if engine.phase() != EnginePhase::Title {
-                ui_transition.start(UiMode::SettingsMenu, PendingUiAction::None);
+                // 游戏内按 Esc 打开设置 → 覆盖转场。
+                start_transition(&mut ui_transition, &mut cover_transition, TransitionKind::Cover, UiMode::SettingsMenu, PendingUiAction::None);
             }
         }
 
         // Handle advance (space or enter). Disabled while the HUD is hidden so
         // the player does not skip dialogue they cannot see, and blocked during
         // UI transitions.
-        if !ui_transition.active && ui_mode == UiMode::Normal && !hud_hidden && engine.phase() != EnginePhase::Title {
+        if !ui_transition.active && !cover_transition.active && ui_mode == UiMode::Normal && !hud_hidden && engine.phase() != EnginePhase::Title {
             if is_key_pressed(KeyCode::Space) || is_key_pressed(KeyCode::Enter) {
                 engine.advance();
             }
         }
 
-        // Draw UI transition overlay (black fade) on top of everything.
+        // Draw transition overlay (black fade) on top of everything.
+        // 两种转场互斥，至多一个 active；覆盖转场期间游戏画面仍在下方渲染
+        // （见上方 draw 分支，覆盖转场不改变渲染流程），纯色层叠加在上方。
         if ui_transition.active {
             let alpha = ui_transition.overlay_alpha();
+            draw_rectangle(0.0, 0.0, sw, sh, Color::new(0.0, 0.0, 0.0, alpha));
+        } else if cover_transition.active {
+            let alpha = cover_transition.overlay_alpha();
             draw_rectangle(0.0, 0.0, sw, sh, Color::new(0.0, 0.0, 0.0, alpha));
         }
 
@@ -2009,7 +2109,7 @@ fn handle_settings_interaction(
     dragging_slider: &mut Option<usize>,
     dropdown_open: &mut bool,
     scale: f32,
-) -> Option<(UiMode, PendingUiAction)> {
+) -> Option<(UiMode, PendingUiAction, TransitionKind)> {
     let (mx, my) = mouse_position();
     let down = is_mouse_button_down(MouseButton::Left);
     let pressed = is_mouse_button_pressed(MouseButton::Left);
@@ -2081,7 +2181,7 @@ fn handle_settings_interaction(
         if point_in_rect(mx, my, layout.back_btn) {
             let _ = engine.save_settings();
             *dragging_slider = None;
-            return Some((UiMode::Normal, PendingUiAction::None));
+            return Some((UiMode::Normal, PendingUiAction::None, TransitionKind::Cover));
         }
     }
     None
@@ -2187,21 +2287,27 @@ fn handle_choice_click(mx: f32, my: f32, engine: &mut Engine, sw: f32, sh: f32, 
 /// Map a button action to a UI transition request.
 /// Returns `None` for actions that don't change UI mode (QuickSave, QuickLoad,
 /// ToggleHide, paging) — those are handled by the caller.
-fn handle_button_action(action: ButtonAction) -> Option<(UiMode, PendingUiAction)> {
+///
+/// 转场类型分配规则：按是否改变游戏世界状态。
+/// - `Scene`：进入/离开游戏世界（开始游戏、读档进游戏、回标题、恢复/丢弃自动存档、退出）
+/// - `Cover`：仅开关叠层界面（设置、存档/读档菜单的打开与关闭），不改变游戏世界
+fn handle_button_action(action: ButtonAction) -> Option<(UiMode, PendingUiAction, TransitionKind)> {
     match action {
-        ButtonAction::StartGame => Some((UiMode::Normal, PendingUiAction::StartGame)),
-        ButtonAction::LoadGame => Some((UiMode::LoadMenu, PendingUiAction::None)),
-        ButtonAction::Settings => Some((UiMode::SettingsMenu, PendingUiAction::None)),
-        ButtonAction::Quit => Some((UiMode::Normal, PendingUiAction::Quit)),
-        ButtonAction::SaveSlot(slot) => Some((UiMode::Normal, PendingUiAction::SaveSlot(slot))),
-        ButtonAction::LoadSlot(slot) => Some((UiMode::Normal, PendingUiAction::LoadSlot(slot))),
-        ButtonAction::BackToTitle => Some((UiMode::Normal, PendingUiAction::BackToTitle)),
-        ButtonAction::BackToGame | ButtonAction::CloseMenu => Some((UiMode::Normal, PendingUiAction::None)),
-        ButtonAction::ContinueAutosave => Some((UiMode::Normal, PendingUiAction::ContinueAutosave)),
-        ButtonAction::DiscardAutosave => Some((UiMode::Normal, PendingUiAction::DiscardAutosave)),
-        ButtonAction::OpenSaveMenu => Some((UiMode::SaveMenu, PendingUiAction::None)),
-        ButtonAction::OpenLoadMenu => Some((UiMode::LoadMenu, PendingUiAction::None)),
-        ButtonAction::OpenSettings => Some((UiMode::SettingsMenu, PendingUiAction::None)),
+        ButtonAction::StartGame => Some((UiMode::Normal, PendingUiAction::StartGame, TransitionKind::Scene)),
+        ButtonAction::LoadGame => Some((UiMode::LoadMenu, PendingUiAction::None, TransitionKind::Cover)),
+        ButtonAction::Settings => Some((UiMode::SettingsMenu, PendingUiAction::None, TransitionKind::Cover)),
+        ButtonAction::Quit => Some((UiMode::Normal, PendingUiAction::Quit, TransitionKind::Scene)),
+        // 存档不改变游戏世界状态，仅关闭菜单返回 → 覆盖转场
+        ButtonAction::SaveSlot(slot) => Some((UiMode::Normal, PendingUiAction::SaveSlot(slot), TransitionKind::Cover)),
+        // 读档进入游戏 → 场景转场
+        ButtonAction::LoadSlot(slot) => Some((UiMode::Normal, PendingUiAction::LoadSlot(slot), TransitionKind::Scene)),
+        ButtonAction::BackToTitle => Some((UiMode::Normal, PendingUiAction::BackToTitle, TransitionKind::Scene)),
+        ButtonAction::BackToGame | ButtonAction::CloseMenu => Some((UiMode::Normal, PendingUiAction::None, TransitionKind::Cover)),
+        ButtonAction::ContinueAutosave => Some((UiMode::Normal, PendingUiAction::ContinueAutosave, TransitionKind::Scene)),
+        ButtonAction::DiscardAutosave => Some((UiMode::Normal, PendingUiAction::DiscardAutosave, TransitionKind::Scene)),
+        ButtonAction::OpenSaveMenu => Some((UiMode::SaveMenu, PendingUiAction::None, TransitionKind::Cover)),
+        ButtonAction::OpenLoadMenu => Some((UiMode::LoadMenu, PendingUiAction::None, TransitionKind::Cover)),
+        ButtonAction::OpenSettings => Some((UiMode::SettingsMenu, PendingUiAction::None, TransitionKind::Cover)),
         ButtonAction::QuickSave | ButtonAction::QuickLoad
         | ButtonAction::ToggleHide | ButtonAction::PrevPage | ButtonAction::NextPage
         | ButtonAction::AddPage => None,
