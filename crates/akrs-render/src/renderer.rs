@@ -511,12 +511,12 @@ struct HudVisibility {
 
 impl HudVisibility {
     /// 下沉距离（按钮自身高度 + 一点边距），单位：像素（设计基准）。
-    const SINK_PX: f32 = 56.0;
+    const SINK_PX: f32 = 74.0;
     /// 平滑系数：每帧进度向目标靠近的比例。值越大越快。
     /// 取 0.18 ≈ 约 8 帧（@60fps）走完 90% 距离，体感顺滑不拖沓。
     const SMOOTH: f32 = 0.18;
     /// 触发区域：在按钮组正上方额外延伸的高度，方便鼠标移入。
-    const HOVER_BAND_PX: f32 = 24.0;
+    const HOVER_BAND_PX: f32 = 36.0;
 
     fn new() -> Self {
         // 进入游戏时默认完全隐藏，无动画。
@@ -1046,15 +1046,15 @@ fn draw_dialogue(dialogue: &akrs_runtime::DialogueState, sw: f32, sh: f32, font:
     let box_x = 0.0;
     let box_w = sw;
 
-    // 对话框背景：渐变效果
-    // 顶部透明度 ≈ 0.54（现有 0.6 调低 10%），底部透明度 → 0
+    // 对话框背景：平滑渐变效果
+    // 顶部透明度：10%（几乎不透明），底部透明度：0%（完全透明）
     // 使用 32 段绘制实现平滑渐变
     let gradient_segments = 32;
     let segment_h = box_h / gradient_segments as f32;
     for i in 0..gradient_segments {
         let seg_y = box_y + i as f32 * segment_h;
-        // 透明度从顶部 0.54 线性过渡到底部 0.0
-        let alpha_top = 0.54;
+        // 透明度从顶部 0.10 线性过渡到底部 0.0
+        let alpha_top = 0.10;
         let alpha_bottom = 0.0;
         let t = i as f32 / (gradient_segments - 1) as f32;
         let alpha = alpha_top * (1.0 - t) + alpha_bottom * t;
@@ -1067,7 +1067,7 @@ fn draw_dialogue(dialogue: &akrs_runtime::DialogueState, sw: f32, sh: f32, font:
     let text_font_size = 39.0 * scale;
     let text_left_padding = 120.0 * scale;
 
-    // 角色名
+    // 角色名（仅在非旁白时显示）
     if !dialogue.speaker.is_empty() {
         draw_text_f(
             &dialogue.speaker,
@@ -1080,12 +1080,9 @@ fn draw_dialogue(dialogue: &akrs_runtime::DialogueState, sw: f32, sh: f32, font:
     }
 
     // 对白文本（打字机效果）
+    // 旁白与对话位置完全一致，唯一区别是旁白不显示角色名
     let displayed: String = dialogue.full_text.chars().take(dialogue.displayed_chars).collect();
-    let text_y = if dialogue.speaker.is_empty() {
-        box_y + 80.0 * scale
-    } else {
-        box_y + 100.0 * scale
-    };
+    let text_y = box_y + 100.0 * scale; // 统一的起始 y 位置
     draw_text_wrapped(
         &displayed,
         box_x + text_left_padding,
@@ -1098,10 +1095,8 @@ fn draw_dialogue(dialogue: &akrs_runtime::DialogueState, sw: f32, sh: f32, font:
     );
 
     // 点击继续指示器：小三角上下跳动动画
-    // 不使用透明度变化，只有垂直位移
     if dialogue.complete {
         let t = get_time() as f32;
-        // 周期 0.8 秒，跳动幅度 6 像素（设计基准）
         let bounce_period = 0.8;
         let bounce_amplitude = 6.0 * scale;
         let bounce_offset = bounce_amplitude * (t * 2.0 * 3.14159 / bounce_period).sin();
@@ -1169,12 +1164,81 @@ fn draw_choices(choices: &akrs_runtime::ChoicesState, sw: f32, sh: f32, font: &O
 
 fn draw_transition(scene: &SceneState, sw: f32, sh: f32) {
     if let Some(overlay) = &scene.transition {
-        let alpha = match overlay.phase {
+        use akrs_core::Transition;
+
+        // 计算基础透明度（Out 阶段增加，In 阶段减少）
+        let base_alpha = match overlay.phase {
             TransitionPhase::Out => overlay.progress,
             TransitionPhase::In => 1.0 - overlay.progress,
         };
-        // Fade overlay: black with varying alpha
-        draw_rectangle(0.0, 0.0, sw, sh, Color::new(0.0, 0.0, 0.0, alpha));
+
+        // 根据过渡类型绘制不同的效果
+        match overlay.kind {
+            // 淡入淡出到黑色（默认）
+            Transition::Fade | Transition::FadeBlack => {
+                draw_rectangle(0.0, 0.0, sw, sh, Color::new(0.0, 0.0, 0.0, base_alpha));
+            }
+            // 淡入淡出到白色
+            Transition::FadeWhite => {
+                draw_rectangle(0.0, 0.0, sw, sh, Color::new(1.0, 1.0, 1.0, base_alpha));
+            }
+            // 滑动效果（简化为淡入淡出 + 方向性暗示）
+            // 由于 macroquad 不支持多 pass 渲染，无法实现真正的场景滑动，
+            // 这里用带有方向性偏移的遮罩模拟滑动感
+            Transition::SlideLeft => {
+                let offset = sw * base_alpha * 0.2;
+                draw_rectangle(0.0 + offset, 0.0, sw - offset, sh, Color::new(0.0, 0.0, 0.0, base_alpha));
+            }
+            Transition::SlideRight => {
+                let offset = sw * base_alpha * 0.2;
+                draw_rectangle(0.0, 0.0, sw - offset, sh, Color::new(0.0, 0.0, 0.0, base_alpha));
+            }
+            Transition::SlideUp => {
+                let offset = sh * base_alpha * 0.2;
+                draw_rectangle(0.0, 0.0 + offset, sw, sh - offset, Color::new(0.0, 0.0, 0.0, base_alpha));
+            }
+            Transition::SlideDown => {
+                let offset = sh * base_alpha * 0.2;
+                draw_rectangle(0.0, 0.0, sw, sh - offset, Color::new(0.0, 0.0, 0.0, base_alpha));
+            }
+            // 溶解效果（简化为淡入淡出，因为无法实现真正的交叉淡入）
+            Transition::Dissolve => {
+                // Dissolve 交叉淡入需要同时渲染新旧场景，
+                // macroquad 单 pass 架构无法实现，退化为 Fade
+                draw_rectangle(0.0, 0.0, sw, sh, Color::new(0.0, 0.0, 0.0, base_alpha));
+            }
+            // 擦除效果（从左/右边缘擦除）
+            Transition::WipeLeft => {
+                // Out 阶段：黑色遮罩从右向左扩展
+                // In 阶段：黑色遮罩从左向右收缩
+                let wipe_x = match overlay.phase {
+                    TransitionPhase::Out => sw * (1.0 - base_alpha),
+                    TransitionPhase::In => 0.0,
+                };
+                let wipe_w = match overlay.phase {
+                    TransitionPhase::Out => sw * base_alpha,
+                    TransitionPhase::In => sw * base_alpha,
+                };
+                draw_rectangle(wipe_x, 0.0, wipe_w, sh, Color::new(0.0, 0.0, 0.0, 1.0));
+            }
+            Transition::WipeRight => {
+                let wipe_x = match overlay.phase {
+                    TransitionPhase::Out => 0.0,
+                    TransitionPhase::In => sw * (1.0 - base_alpha),
+                };
+                let wipe_w = match overlay.phase {
+                    TransitionPhase::Out => sw * base_alpha,
+                    TransitionPhase::In => sw * base_alpha,
+                };
+                draw_rectangle(wipe_x, 0.0, wipe_w, sh, Color::new(0.0, 0.0, 0.0, 1.0));
+            }
+            // 模糊效果（简化为淡入淡出，因为 macroquad 不支持模糊 shader）
+            Transition::Blur => {
+                draw_rectangle(0.0, 0.0, sw, sh, Color::new(0.0, 0.0, 0.0, base_alpha));
+            }
+            // Instant 不需要绘制任何过渡效果
+            Transition::Instant => {}
+        }
     }
 }
 
@@ -2287,12 +2351,13 @@ fn draw_button(
 }
 
 // ─── HUD 按钮组布局常量（设计基准像素）───
-const HUD_BTN_W: f32 = 84.0;
-const HUD_BTN_H: f32 = 36.0;
-const HUD_BTN_GAP: f32 = 8.0;
+// 按钮已放大 1.5 倍，尺寸适中便于点击
+const HUD_BTN_W: f32 = 126.0;
+const HUD_BTN_H: f32 = 54.0;
+const HUD_BTN_GAP: f32 = 12.0;
 const HUD_BTN_COUNT: usize = 7;
 const HUD_RIGHT_MARGIN: f32 = 20.0;
-const HUD_BOTTOM_MARGIN: f32 = 50.0;
+const HUD_BOTTOM_MARGIN: f32 = 70.0;
 
 /// 计算 HUD 按钮组的触发区域（含上方缓冲带），用于鼠标悬停检测。
 /// 返回 (x, y, w, h)，已按 scale 缩放。
