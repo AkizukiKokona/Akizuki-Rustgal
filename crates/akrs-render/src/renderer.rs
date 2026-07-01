@@ -482,6 +482,61 @@ fn pixel_color(fx: f32, fy: f32) -> (u8, u8, u8) {
 /// Number of save/load slots shown per page (2 rows × 4 columns).
 const SLOTS_PER_PAGE: usize = 8;
 
+// ─── HUD 自动隐藏/上浮下沉状态 ───
+//
+// 控制按钮组默认隐藏（下沉到屏幕底部之外），当鼠标移入触发区域时
+// 平滑上浮显示，移出后平滑下沉恢复隐藏。reveal_progress 是 0..1 的
+// 归一化进度：0 = 完全隐藏，1 = 完全显示。用指数平滑插值更新，
+// 每帧只做一次浮点运算，不阻塞主循环。
+
+/// HUD 按钮组的显隐动画状态。
+struct HudVisibility {
+    /// 0.0 = 完全隐藏（下沉），1.0 = 完全显示（上浮）。
+    progress: f32,
+}
+
+impl HudVisibility {
+    /// 下沉距离（按钮自身高度 + 一点边距），单位：像素（设计基准）。
+    const SINK_PX: f32 = 56.0;
+    /// 平滑系数：每帧进度向目标靠近的比例。值越大越快。
+    /// 取 0.18 ≈ 约 8 帧（@60fps）走完 90% 距离，体感顺滑不拖沓。
+    const SMOOTH: f32 = 0.18;
+    /// 触发区域：在按钮组正上方额外延伸的高度，方便鼠标移入。
+    const HOVER_BAND_PX: f32 = 24.0;
+
+    fn new() -> Self {
+        // 进入游戏时默认完全隐藏，无动画。
+        Self { progress: 0.0 }
+    }
+
+    /// 每帧更新进度。`hovered` 表示鼠标是否在触发区域内。
+    fn update(&mut self, hovered: bool, dt: f32) {
+        let target = if hovered { 1.0 } else { 0.0 };
+        // 帧率无关的指数平滑：alpha ∈ (0,1]，dt 越大 alpha 越接近 1。
+        let alpha = 1.0 - (1.0 - Self::SMOOTH).powf(dt * 60.0);
+        self.progress += (target - self.progress) * alpha;
+        // 钳制，避免浮点漂移
+        if self.progress < 0.001 { self.progress = 0.0; }
+        if self.progress > 0.999 { self.progress = 1.0; }
+    }
+
+    /// 当前下沉偏移（像素，设计基准）。0 = 完全显示，SINK_PX = 完全下沉。
+    fn sink_offset(&self) -> f32 {
+        (1.0 - self.progress) * Self::SINK_PX
+    }
+
+    /// 当前整体透明度（0..1）。隐藏时趋近 0，显示时为 1。
+    fn alpha(&self) -> f32 {
+        self.progress
+    }
+
+    /// 按钮是否实质可见（用于点击命中判定）。低于 0.5 视为不可交互，
+    /// 避免在半隐藏状态下误触。
+    fn is_interactable(&self) -> bool {
+        self.progress > 0.5
+    }
+}
+
 /// Entry point: launch the game with a macroquad window.
 ///
 /// This is an async function that must be called from a `#[macroquad::main]` async main:
@@ -516,6 +571,8 @@ pub async fn run(mut engine: Engine) {
     // Whether the in-game dialogue box and HUD button group are hidden via
     // the "隐藏" button. The scene (background + characters) is still drawn.
     let mut hud_hidden = false;
+    // HUD 控制按钮组的自动显隐状态：默认隐藏（下沉），鼠标悬停触发区域时上浮。
+    let mut hud_visibility = HudVisibility::new();
     // Which slider (if any) is currently being dragged in the settings menu.
     // The value is the slider index (0 = text_speed, 1 = bgm, 2 = sfx).
     let mut dragging_slider: Option<usize> = None;
@@ -675,7 +732,23 @@ pub async fn run(mut engine: Engine) {
             // or HUD), letting the player admire the scene unobstructed.
             draw_scene(&engine, &mut assets, sw, sh, !hud_hidden, &font, scale).await;
             if !hud_hidden {
-                draw_hud_buttons(&mut buttons, sw, sh, &font, scale);
+                // 检测鼠标是否在 HUD 触发区域内，更新显隐进度。
+                let (tx, ty, tw, th) = hud_trigger_rect(sw, sh, scale);
+                let (mx, my) = mouse_position();
+                let hovered = mx >= tx && mx <= tx + tw && my >= ty && my <= ty + th;
+                hud_visibility.update(hovered, dt);
+                // 完全隐藏时不绘制也不注册按钮，避免误触；
+                // 半显示/全显示时绘制并注册（下沉过程可见，但低于 0.5 不可点击）。
+                if hud_visibility.is_interactable() {
+                    draw_hud_buttons(&mut buttons, sw, sh, &font, scale, &hud_visibility);
+                } else {
+                    // 仍以最终位置注册按钮，使上浮过程中已可见即可点击；
+                    // 但完全隐藏时不注册（is_interactable 已过滤）。
+                    // 这里不绘制，保证下沉到底时画面干净。
+                }
+            } else {
+                // hud_hidden 期间强制重置为隐藏，避免恢复时残留高亮态。
+                hud_visibility = HudVisibility::new();
             }
         }
 
@@ -2176,20 +2249,57 @@ fn draw_button(
     });
 }
 
+// ─── HUD 按钮组布局常量（设计基准像素）───
+const HUD_BTN_W: f32 = 84.0;
+const HUD_BTN_H: f32 = 36.0;
+const HUD_BTN_GAP: f32 = 8.0;
+const HUD_BTN_COUNT: usize = 7;
+const HUD_RIGHT_MARGIN: f32 = 20.0;
+const HUD_BOTTOM_MARGIN: f32 = 50.0;
+
+/// 计算 HUD 按钮组的触发区域（含上方缓冲带），用于鼠标悬停检测。
+/// 返回 (x, y, w, h)，已按 scale 缩放。
+fn hud_trigger_rect(sw: f32, sh: f32, scale: f32) -> (f32, f32, f32, f32) {
+    let btn_w = HUD_BTN_W * scale;
+    let btn_h = HUD_BTN_H * scale;
+    let gap = HUD_BTN_GAP * scale;
+    let total_w = HUD_BTN_COUNT as f32 * btn_w + (HUD_BTN_COUNT - 1) as f32 * gap;
+    let start_x = sw - total_w - HUD_RIGHT_MARGIN * scale;
+    let start_y = sh - HUD_BOTTOM_MARGIN * scale;
+    // 触发区域：按钮组本身 + 上方缓冲带，方便鼠标移入。
+    let band = HudVisibility::HOVER_BAND_PX * scale;
+    (
+        start_x,
+        start_y - band,
+        total_w,
+        btn_h + band,
+    )
+}
+
 /// Draw the in-game HUD button group anchored to the bottom-right corner.
 ///
 /// The group is only shown during normal gameplay (not on the title screen,
 /// menus, or while the HUD is hidden). Each button registers itself in the
 /// `buttons` vector so the generic click handler can dispatch its action.
-fn draw_hud_buttons(buttons: &mut Vec<ButtonRect>, sw: f32, sh: f32, font: &Option<Font>, scale: f32) {
-    let btn_w = 84.0 * scale;
-    let btn_h = 36.0 * scale;
-    let gap = 8.0 * scale;
-    let count = 7usize;
-    let total_w = count as f32 * btn_w + (count - 1) as f32 * gap;
-    // Right-aligned: leave a 20px margin from the right edge.
-    let start_x = sw - total_w - 20.0 * scale;
-    let start_y = sh - 50.0 * scale;
+///
+/// `visibility` 控制整体的上浮/下沉偏移与透明度。
+fn draw_hud_buttons(
+    buttons: &mut Vec<ButtonRect>,
+    sw: f32,
+    sh: f32,
+    font: &Option<Font>,
+    scale: f32,
+    visibility: &HudVisibility,
+) {
+    let btn_w = HUD_BTN_W * scale;
+    let btn_h = HUD_BTN_H * scale;
+    let gap = HUD_BTN_GAP * scale;
+    let total_w = HUD_BTN_COUNT as f32 * btn_w + (HUD_BTN_COUNT - 1) as f32 * gap;
+    let start_x = sw - total_w - HUD_RIGHT_MARGIN * scale;
+    // 基准 y（完全显示时的位置）+ 下沉偏移
+    let base_y = sh - HUD_BOTTOM_MARGIN * scale;
+    let start_y = base_y + visibility.sink_offset() * scale;
+    let alpha = visibility.alpha();
 
     let hud_buttons: [(&str, ButtonAction); 7] = [
         ("快存", ButtonAction::QuickSave),
@@ -2203,13 +2313,20 @@ fn draw_hud_buttons(buttons: &mut Vec<ButtonRect>, sw: f32, sh: f32, font: &Opti
 
     let mut x = start_x;
     for (label, action) in &hud_buttons {
-        draw_small_button(x, start_y, btn_w, btn_h, label, buttons, *action, font, scale);
+        draw_small_button(x, start_y, btn_w, btn_h, label, buttons, *action, font, scale, alpha);
         x += btn_w + gap;
     }
 }
 
 /// Draw a small semi-transparent button with an 18px font, used by the HUD
 /// button group. Registers the button region for click handling.
+///
+/// 三态交互：
+/// - 默认（未悬停未按下）：半透明低亮度，贴合隐藏氛围
+/// - 悬停（鼠标在按钮内未按下）：高亮、轻微放大、边框提亮
+/// - 按下（鼠标按下瞬间）：按压反馈（缩小、颜色加深、下移 1px）
+///
+/// `alpha` 为整体透明度（来自 HUD 显隐进度），各颜色通道按此缩放。
 fn draw_small_button(
     x: f32,
     y: f32,
@@ -2220,33 +2337,53 @@ fn draw_small_button(
     action: ButtonAction,
     font: &Option<Font>,
     scale: f32,
+    alpha: f32,
 ) {
     let (mx, my) = mouse_position();
     let hover = mx >= x && mx <= x + w && my >= y && my <= y + h;
+    let pressed = hover && is_mouse_button_down(MouseButton::Left);
 
-    let bg_color = if hover {
-        Color::new(0.15, 0.1, 0.25, 0.9)
+    // 三态颜色（RGB 为设计值，A 由 alpha 缩放）
+    let (bg_r, bg_g, bg_b, bg_a_base, border_r, border_g, border_b, border_a_base, scale_factor, dy) = if pressed {
+        // 按下：颜色加深、按压下移 1px、轻微缩小
+        (0.08, 0.05, 0.18, 0.95, 0.35, 0.55, 0.85, 1.0, 0.96, 1.0 * scale)
+    } else if hover {
+        // 悬停：高亮、放大
+        (0.18, 0.12, 0.30, 0.92, 0.55, 0.80, 1.00, 1.0, 1.06, 0.0)
     } else {
-        Color::new(0.05, 0.05, 0.12, 0.7)
+        // 默认：低亮度半透明
+        (0.05, 0.05, 0.12, 0.70, 0.30, 0.30, 0.50, 0.55, 1.00, 0.0)
     };
-    draw_rectangle(x, y, w, h, bg_color);
-    draw_rectangle_lines(x, y, w, h, 1.5 * scale, if hover {
-        Color::new(0.5, 0.75, 1.0, 0.9)
-    } else {
-        Color::new(0.3, 0.3, 0.5, 0.5)
-    });
+
+    // 按缩放因子调整绘制尺寸（以中心为基准）
+    let draw_w = w * scale_factor;
+    let draw_h = h * scale_factor;
+    let draw_x = x + (w - draw_w) / 2.0;
+    let draw_y = y + (h - draw_h) / 2.0 + dy;
+
+    let bg_color = Color::new(bg_r, bg_g, bg_b, bg_a_base * alpha);
+    draw_rectangle(draw_x, draw_y, draw_w, draw_h, bg_color);
+    draw_rectangle_lines(
+        draw_x, draw_y, draw_w, draw_h,
+        1.5 * scale,
+        Color::new(border_r, border_g, border_b, border_a_base * alpha),
+    );
 
     let font_size = 18.0 * scale;
     let tw = measure_text_f(label, font, font_size as u16, 1.0).width;
+    // 文字透明度随 alpha 走；悬停/按下时略提亮
+    let text_alpha = if pressed { 0.95 } else if hover { 1.0 } else { 0.85 } * alpha;
+    let text_color = Color::new(1.0, 1.0, 1.0, text_alpha);
     draw_text_f(
         label,
-        x + (w - tw) / 2.0,
-        y + h / 2.0 + font_size / 3.0,
+        draw_x + (draw_w - tw) / 2.0,
+        draw_y + draw_h / 2.0 + font_size / 3.0,
         font_size,
-        WHITE,
+        text_color,
         font,
     );
 
+    // 命中判定仍用原始矩形（不随缩放变化），保证点击稳定。
     buttons.push(ButtonRect {
         x, y, w, h,
         label: label.to_string(),
