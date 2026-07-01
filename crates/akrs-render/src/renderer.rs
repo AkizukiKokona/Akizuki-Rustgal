@@ -114,39 +114,23 @@ fn load_font_with_fallback() -> (Option<Font>, Option<Font>) {
     let mut primary: Option<Font> = None;
     let mut fallback: Option<Font> = None;
 
-    // 1. Runtime full-CJK font file (top priority — covers every glyph).
-    let runtime_cjk_path = "assets/fonts/NotoSansCJK-Regular.ttc";
-    if let Ok(bytes) = std::fs::read(runtime_cjk_path) {
+    // 1. 运行时 OTF 字体文件（最高优先级，覆盖所有 CJK 字形）。
+    let runtime_font_path = "assets/fonts/SourceHanSansSC-Regular-2.otf";
+    if let Ok(bytes) = std::fs::read(runtime_font_path) {
         match load_ttf_font_from_bytes(&bytes) {
             Ok(f) => {
                 if let Some(f) = verify_font(f) {
-                    eprintln!("[akrs-render] Chinese font loaded (runtime full CJK)");
+                    eprintln!("[akrs-render] 中文字体已加载（运行时 OTF）");
                     primary = Some(f);
                 }
             }
             Err(e) => {
-                eprintln!("[akrs-render] Runtime full CJK font load failed: {:?}", e);
+                eprintln!("[akrs-render] 运行时 OTF 字体加载失败: {:?}", e);
             }
         }
     }
 
-    // 2. Embedded subset font (compiled into the binary) — fallback for primary.
-    if primary.is_none() {
-        let embedded: &[u8] = include_bytes!("../../../assets/fonts/NotoSansSC-Regular-subset.ttf");
-        match load_ttf_font_from_bytes(embedded) {
-            Ok(f) => {
-                if let Some(f) = verify_font(f) {
-                    eprintln!("[akrs-render] Chinese font loaded (embedded subset)");
-                    primary = Some(f);
-                }
-            }
-            Err(e) => {
-                eprintln!("[akrs-render] Embedded font load failed: {:?}", e);
-            }
-        }
-    }
-
-    // 3. System fonts — fill primary (if still None) and/or the fallback font.
+    // 2. 系统字体——填充 primary（如果仍为 None）和/或 fallback。
     for (name, path) in system_font_candidates() {
         if !path.exists() {
             continue;
@@ -156,10 +140,10 @@ fn load_font_with_fallback() -> (Option<Font>, Option<Font>) {
                 Ok(f) => {
                     if let Some(f) = verify_font(f) {
                         if primary.is_none() {
-                            eprintln!("[akrs-render] No custom font, using system font as primary: {}", name);
+                            eprintln!("[akrs-render] 无自定义字体，使用系统字体作为主字体: {}", name);
                             primary = Some(f);
                         } else if fallback.is_none() {
-                            eprintln!("[akrs-render] Fallback font loaded: {}", name);
+                            eprintln!("[akrs-render] 回退字体已加载: {}", name);
                             fallback = Some(f);
                         }
                         if primary.is_some() && fallback.is_some() {
@@ -168,17 +152,17 @@ fn load_font_with_fallback() -> (Option<Font>, Option<Font>) {
                     }
                 }
                 Err(e) => {
-                    eprintln!("[akrs-render] System font {} load failed: {:?}, trying next...", name, e);
+                    eprintln!("[akrs-render] 系统字体 {} 加载失败: {:?}，尝试下一个...", name, e);
                 }
             },
             Err(e) => {
-                eprintln!("[akrs-render] Cannot read system font {}: {:?}", name, e);
+                eprintln!("[akrs-render] 无法读取系统字体 {}: {:?}", name, e);
             }
         }
     }
 
     if primary.is_none() && fallback.is_none() {
-        eprintln!("[akrs-render] No custom font and all system fallbacks failed, using default font");
+        eprintln!("[akrs-render] 无自定义字体且所有系统回退均失败，使用默认字体");
     }
     (primary, fallback)
 }
