@@ -20,6 +20,7 @@ pub enum AssetKind {
     Character,
     Music,
     Sound,
+    #[allow(dead_code)]
     Title,
 }
 

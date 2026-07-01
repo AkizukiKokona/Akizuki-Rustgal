@@ -199,11 +199,13 @@ fn ease_in_out(t: f32) -> f32 {
 }
 
 /// Easing for fade-out (ease-in: slow start).
+#[allow(dead_code)]
 fn ease_in(t: f32) -> f32 {
     t * t
 }
 
 /// Easing for fade-in (ease-out: fast start, slow end).
+#[allow(dead_code)]
 fn ease_out(t: f32) -> f32 {
     1.0 - (1.0 - t) * (1.0 - t)
 }

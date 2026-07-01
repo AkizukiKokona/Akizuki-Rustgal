@@ -425,7 +425,7 @@ impl Parser {
             self.skip_newlines();
         }
 
-        let mut branches = vec![(cond, body)];
+        let branches = vec![(cond, body)];
         let mut else_branch = None;
 
         // else branch

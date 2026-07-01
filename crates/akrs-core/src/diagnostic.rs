@@ -63,7 +63,7 @@ impl Reporter {
     }
 
     /// Format errors as strings (for proc macro embedding and CLI output).
-    pub fn format_errors(&self, file_id: usize, source: &str, errors: &[String]) -> String {
+    pub fn format_errors(&self, _file_id: usize, _source: &str, errors: &[String]) -> String {
         let mut output = String::new();
         for (i, err) in errors.iter().enumerate() {
             if i > 0 { output.push('\n'); }

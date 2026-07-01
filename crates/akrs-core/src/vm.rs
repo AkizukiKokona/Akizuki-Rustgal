@@ -80,6 +80,7 @@ struct CompiledSection {
 /// The virtual machine.
 pub struct Vm {
     sections: Vec<CompiledSection>,
+    #[allow(dead_code)]
     section_map: HashMap<String, usize>,
     current_section: usize,
     ip: usize,

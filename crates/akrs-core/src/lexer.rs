@@ -23,6 +23,7 @@ pub struct LexError {
 }
 
 pub struct Lexer<'a> {
+    #[allow(dead_code)]
     source: &'a str,
     chars: Vec<char>,
     pos: usize,

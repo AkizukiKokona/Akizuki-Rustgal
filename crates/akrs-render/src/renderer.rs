@@ -3,7 +3,7 @@
 use crate::assets::{AssetKind, AssetManager};
 use akrs_runtime::{
     Engine, EngineEvent, EnginePhase, SceneState, Settings,
-    TransitionPhase, TransitionOverlay,
+    TransitionPhase,
     format_play_time, format_timestamp,
     SaveMetadata,
 };
@@ -68,7 +68,7 @@ fn dirs_or_home() -> Option<PathBuf> {
         .map(PathBuf::from)
 }
 
-/// Thread-local fallback font for CJK glyph substitution.
+// 线程本地回退字体，用于 CJK 字形替换。
 thread_local! {
     static FALLBACK_FONT: std::cell::RefCell<Option<Font>> = std::cell::RefCell::new(None);
 }
@@ -379,6 +379,7 @@ struct ButtonRect {
     y: f32,
     w: f32,
     h: f32,
+    #[allow(dead_code)]
     label: String,
     action: ButtonAction,
 }
@@ -392,6 +393,7 @@ enum ButtonAction {
     SaveSlot(usize),
     LoadSlot(usize),
     BackToTitle,
+    #[allow(dead_code)]
     BackToGame,
     CloseMenu,
     /// Load the crash-recovery autosave and resume the game.
@@ -594,7 +596,7 @@ pub async fn run(mut engine: Engine) {
         UiMode::Normal
     };
     let mut buttons: Vec<ButtonRect> = Vec::new();
-    let mut prev_music: Option<String> = None;
+    let mut _prev_music: Option<String> = None;
     let mut title_music_played = false;
     // Whether the in-game dialogue box and HUD button group are hidden via
     // the "隐藏" button. The scene (background + characters) is still drawn.
@@ -648,10 +650,9 @@ pub async fn run(mut engine: Engine) {
             match event {
                 EngineEvent::MusicChanged { name } => {
                     if name.is_empty() {
-                        // Stop music (macroquad 0.3 audio is limited; log only)
-                        prev_music = None;
+                        _prev_music = None;
                     } else {
-                        prev_music = Some(name.clone());
+                        _prev_music = Some(name.clone());
                         assets.check_music(name);
                     }
                 }
