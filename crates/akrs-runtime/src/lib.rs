@@ -59,7 +59,7 @@ pub use game_state::{
     ChoicesState, ChoiceOptionState, TransitionOverlay, TransitionPhase,
 };
 pub use save_load::{SaveManager, SaveSlot, SaveMetadata, format_timestamp, format_play_time};
-pub use settings::Settings;
+pub use settings::{Settings, SkipMode, SettingsTab};
 pub use transition::TransitionManager;
 
 #[cfg(feature = "hot-reload")]

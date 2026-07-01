@@ -5,6 +5,62 @@
 use serde::{Deserialize, Serialize};
 use std::path::Path;
 
+/// 快进模式：控制快进时的行为。
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq)]
+pub enum SkipMode {
+    /// 仅显示文本：以最快速度逐句跳过（不受语音等限制）。
+    TextOnly,
+    /// 包含语音：播放完语音后立刻进入下一句（语音播放期间等待）。
+    WithVoice,
+}
+
+impl Default for SkipMode {
+    fn default() -> Self {
+        Self::TextOnly
+    }
+}
+
+impl SkipMode {
+    pub fn label(&self) -> &'static str {
+        match self {
+            Self::TextOnly => "仅显示文本",
+            Self::WithVoice => "包含语音",
+        }
+    }
+
+    pub fn all() -> &'static [Self] {
+        &[Self::TextOnly, Self::WithVoice]
+    }
+}
+
+/// 设置标签页分类。
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum SettingsTab {
+    /// 文本设置。
+    Text,
+    /// 音频设置。
+    Audio,
+    /// 画面与显示设置。
+    Display,
+    /// 快进设置。
+    Skip,
+}
+
+impl SettingsTab {
+    pub fn label(&self) -> &'static str {
+        match self {
+            Self::Text => "文本",
+            Self::Audio => "音频",
+            Self::Display => "画面",
+            Self::Skip => "快进",
+        }
+    }
+
+    pub fn all() -> &'static [Self] {
+        &[Self::Text, Self::Audio, Self::Display, Self::Skip]
+    }
+}
+
 /// User-configurable game settings.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Settings {
@@ -16,8 +72,13 @@ pub struct Settings {
     pub sfx_volume: f32,
     /// Voice volume (0.0 - 1.0).
     pub voice_volume: f32,
-    /// Whether to skip already-read text.
-    pub skip_read_text: bool,
+    /// 是否允许跳过未读文本。
+    /// 关闭时，快进遇到未读文本会自动停下。
+    #[serde(default)]
+    pub skip_unread: bool,
+    /// 快进模式。
+    #[serde(default)]
+    pub skip_mode: SkipMode,
     /// Fullscreen mode.
     pub fullscreen: bool,
     /// Window resolution.
@@ -40,7 +101,8 @@ impl Default for Settings {
             bgm_volume: 0.8,
             sfx_volume: 1.0,
             voice_volume: 1.0,
-            skip_read_text: false,
+            skip_unread: false,
+            skip_mode: SkipMode::TextOnly,
             fullscreen: false,
             resolution: (1920, 1080),
             auto_recovery: true,

@@ -31,13 +31,15 @@
 
 use crate::game_state::{SceneState, ChoiceOptionState};
 use crate::save_load::SaveManager;
-use crate::settings::Settings;
+use crate::settings::{Settings, SkipMode};
 use crate::transition::TransitionManager;
 
 use akrs_core::{
     compile_and_create_vm, CompileError, DirectionAction, DirectionKind,
     Transition, Vm, VmEvent,
 };
+
+use std::collections::HashSet;
 
 /// Events emitted by the engine for the UI layer to react to.
 #[derive(Debug, Clone)]
@@ -168,6 +170,15 @@ pub struct Engine {
     /// Hot reloader (if enabled).
     #[cfg(feature = "hot-reload")]
     hot_reloader: Option<crate::hot_reload::HotReloader>,
+    /// 已读过的文本哈希集合（用于"跳过已读"功能）。
+    /// key 为 "speaker|text" 格式，旁白使用 "|text"。
+    read_history: HashSet<String>,
+    /// 快进模式是否激活（玩家点击快进按钮后启用）。
+    skip_active: bool,
+    /// 语音播放进度（用于 WithVoice 模式下的快进等待）。
+    /// 由于目前没有语音系统，预留为 0 表示"已播完"。
+    #[allow(dead_code)]
+    voice_progress: f32,
 }
 
 impl Engine {
@@ -191,6 +202,9 @@ impl Engine {
             current_section_name: String::new(),
             #[cfg(feature = "hot-reload")]
             hot_reloader: None,
+            read_history: HashSet::new(),
+            skip_active: false,
+            voice_progress: 0.0,
         })
     }
 
@@ -250,11 +264,52 @@ impl Engine {
         &mut self.settings
     }
 
+    /// 快进是否激活。
+    pub fn is_skip_active(&self) -> bool {
+        self.skip_active
+    }
+
+    /// 切换快进状态。
+    pub fn toggle_skip(&mut self) {
+        self.skip_active = !self.skip_active;
+    }
+
+    /// 设置快进状态。
+    pub fn set_skip_active(&mut self, active: bool) {
+        self.skip_active = active;
+    }
+
+    /// 已读历史（不可变访问，供调试用）。
+    pub fn read_history(&self) -> &HashSet<String> {
+        &self.read_history
+    }
+
     /// Load persistent settings from `saves/settings.json`.
     /// If the file does not exist or cannot be parsed, defaults are used.
     pub fn load_settings(&mut self) {
         let path = Settings::default_path();
         self.settings = Settings::load(&path);
+        // 同时加载已读历史
+        self.load_read_history();
+    }
+
+    /// 加载已读历史（saves/read_history.json）。
+    fn load_read_history(&mut self) {
+        let path = std::path::PathBuf::from("saves").join("read_history.json");
+        if let Ok(content) = std::fs::read_to_string(&path) {
+            if let Ok(history) = serde_json::from_str::<HashSet<String>>(&content) {
+                self.read_history = history;
+            }
+        }
+    }
+
+    /// 保存已读历史。
+    pub fn save_read_history(&self) {
+        let path = std::path::PathBuf::from("saves").join("read_history.json");
+        if let Ok(content) = serde_json::to_string(&self.read_history) {
+            let _ = std::fs::create_dir_all("saves");
+            let _ = std::fs::write(&path, content);
+        }
     }
 
     /// Persist the current settings to `saves/settings.json`.
@@ -321,6 +376,44 @@ impl Engine {
                 } else {
                     dialogue.displayed_chars = displayed;
                 }
+            }
+        }
+
+        // 快进模式：文本完成后自动推进到下一句。
+        // - 若关闭"允许跳过未读文本"，遇到未读文本时自动停止快进。
+        // - 若快进模式为"包含语音"，需等待语音播放完毕（当前无语音系统，预留）。
+        if self.skip_active && self.phase == EnginePhase::Running {
+            let can_skip = if let Some(dialogue) = &self.scene.dialogue {
+                if !dialogue.complete {
+                    false // 文本还没显示完，等显示完再跳
+                } else if self.settings.skip_unread {
+                    true // 允许跳过未读，直接跳
+                } else {
+                    // 只跳过已读：检查当前文本是否在已读历史中
+                    let key = format!("{}|{}", dialogue.speaker, dialogue.full_text);
+                    self.read_history.contains(&key)
+                }
+            } else {
+                false // 没有对话，不跳
+            };
+
+            if can_skip {
+                // 检查快进模式
+                match self.settings.skip_mode {
+                    SkipMode::TextOnly => {
+                        // 仅文本：直接推进
+                        self.vm.advance();
+                        self.process_events_into(&mut events);
+                    }
+                    SkipMode::WithVoice => {
+                        // 包含语音：等待语音播完（目前无语音系统，直接推进）
+                        self.vm.advance();
+                        self.process_events_into(&mut events);
+                    }
+                }
+            } else if !self.settings.skip_unread {
+                // 遇到未读文本，自动停止快进
+                self.skip_active = false;
             }
         }
 
@@ -780,6 +873,9 @@ impl Engine {
             self.settings.text_speed,
         );
         self.phase = EnginePhase::Running;
+        // 记录已读历史
+        let key = format!("{}|{}", speaker, text);
+        self.read_history.insert(key);
         events.push(EngineEvent::DialogueShown { speaker, text });
     }
 
@@ -790,6 +886,9 @@ impl Engine {
             self.settings.text_speed,
         );
         self.phase = EnginePhase::Running;
+        // 记录已读历史（旁白 speaker 为空）
+        let key = format!("|{}", text);
+        self.read_history.insert(key);
         events.push(EngineEvent::NarrationShown { text });
     }
 
