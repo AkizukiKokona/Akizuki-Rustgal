@@ -286,8 +286,8 @@ fn ui_scale(sw: f32, sh: f32) -> f32 {
 const WINDOW_WIDTH: i32 = 1920;
 const WINDOW_HEIGHT: i32 = 1080;
 
-/// 游戏内对话/旁白/选项文字的放大倍率（仅作用于文字，不影响UI元素尺寸）。
-const DIALOGUE_TEXT_SCALE: f32 = 2.5;
+/// 游戏内对话/旁白文字的放大倍率（仅作用于角色名和对话文本，不影响UI元素尺寸）。
+const DIALOGUE_TEXT_SCALE: f32 = 2.0;
 
 /// UI state for menus and overlays.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -1135,7 +1135,13 @@ async fn draw_scene(engine: &Engine, assets: &mut AssetManager, sw: f32, sh: f32
 
 async fn draw_background(scene: &SceneState, assets: &mut AssetManager, sw: f32, sh: f32) {
     if let Some(bg) = &scene.background {
-        if let Some(tex) = assets.get_texture(AssetKind::Bg, &bg.name).await {
+        // 自动补 .png 后缀（与立绘加载逻辑一致，脚本中写 @bg bg1 对应 assets/bg/bg1.png）
+        let bg_filename = if bg.name.ends_with(".png") {
+            bg.name.clone()
+        } else {
+            format!("{}.png", bg.name)
+        };
+        if let Some(tex) = assets.get_texture(AssetKind::Bg, &bg_filename).await {
             // Draw texture scaled to screen
             let tex_w = tex.width();
             let tex_h = tex.height();
@@ -1312,9 +1318,9 @@ fn draw_dialogue(dialogue: &akrs_runtime::DialogueState, sw: f32, sh: f32, font:
 }
 
 fn draw_choices(choices: &akrs_runtime::ChoicesState, sw: f32, sh: f32, font: &Option<Font>, scale: f32) {
-    // Prompt（提示文字放大 2.5 倍）
+    // Prompt
     if let Some(prompt) = &choices.prompt {
-        let prompt_size = 32.0 * scale * DIALOGUE_TEXT_SCALE;
+        let prompt_size = 32.0 * scale;
         let pw = measure_text_f(prompt, font, prompt_size.round().max(1.0) as u16, 1.0).width;
         draw_text_f(
             prompt,
@@ -1326,9 +1332,9 @@ fn draw_choices(choices: &akrs_runtime::ChoicesState, sw: f32, sh: f32, font: &O
         );
     }
 
-    // Options — 按钮尺寸保持基准值，文字放大 2.5 倍，按钮高度适当增加以容纳
-    let opt_w = 600.0 * scale;
-    let opt_h = 90.0 * scale;
+    // Options
+    let opt_w = 500.0 * scale;
+    let opt_h = 60.0 * scale;
     let opt_x = (sw - opt_w) / 2.0;
     let _total_h = choices.options.len() as f32 * (opt_h + 15.0 * scale);
     let mut opt_y = sh * 0.3;
@@ -1344,7 +1350,7 @@ fn draw_choices(choices: &akrs_runtime::ChoicesState, sw: f32, sh: f32, font: &O
         draw_rectangle_lines(opt_x, opt_y, opt_w, opt_h, 2.0 * scale,
             if is_selected { Color::new(0.29, 0.62, 1.0, 1.0) } else { Color::new(0.3, 0.3, 0.4, 0.6) });
 
-        let opt_font = 24.0 * scale * DIALOGUE_TEXT_SCALE;
+        let opt_font = 24.0 * scale;
         let text_color = if opt.available { WHITE } else { Color::new(0.4, 0.4, 0.4, 0.8) };
         let tw = measure_text_f(&opt.text, font, opt_font.round().max(1.0) as u16, 1.0).width;
         draw_text_f(
