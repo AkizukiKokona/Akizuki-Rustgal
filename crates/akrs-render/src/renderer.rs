@@ -843,9 +843,9 @@ pub async fn run(mut engine: Engine) {
         let settings_layout = compute_settings_layout(sw, sh, scale);
 
         if ui_mode == UiMode::AutoSavePrompt {
-            // Crash-recovery prompt: dark backdrop + centered dialog.
-            draw_rectangle(0.0, 0.0, sw, sh, Color::new(0.05, 0.05, 0.1, 1.0));
-            draw_dim_overlay(sw, sh, 0.6);
+            // 异常中断恢复提示：以 title.png 为背景 + 10% 黑布遮罩 + 居中对话框
+            draw_title_background(sw, sh, &mut assets).await;
+            draw_rectangle(0.0, 0.0, sw, sh, Color::new(0.0, 0.0, 0.0, 0.10));
             draw_autosave_prompt(&engine, &mut buttons, sw, sh, &font, scale);
         } else if ui_mode == UiMode::SettingsMenu {
             // 进入设置菜单时保存当前设置的快照（仅一次），并重置标签页
@@ -880,8 +880,8 @@ pub async fn run(mut engine: Engine) {
                     draw_rectangle(0.0, 0.0, sw, sh, Color::new(0.05, 0.05, 0.1, 1.0));
                 }
             }
-            // 8% 黑色叠层（透明度 0.08），让底层界面仍可见但变暗。
-            draw_rectangle(0.0, 0.0, sw, sh, Color::new(0.0, 0.0, 0.0, 0.08));
+            // 10% 黑色叠层（透明度 0.10），让底层界面仍可见但变暗。
+            draw_rectangle(0.0, 0.0, sw, sh, Color::new(0.0, 0.0, 0.0, 0.10));
             // 居中确认对话框
             draw_confirm_dialog(&mut buttons, sw, sh, &font, scale, confirm_type);
         } else if ui_mode != UiMode::Normal {
@@ -1128,9 +1128,8 @@ pub async fn run(mut engine: Engine) {
 
 // ─── Drawing functions ───
 
-async fn draw_title_screen(buttons: &mut Vec<ButtonRect>, sw: f32, sh: f32, assets: &mut AssetManager, font: &Option<Font>, scale: f32, has_continue_save: bool) {
-    // 标题页背景图（cover 模式，16:9 裁切适应）
-    // 从 assets/title.png 加载（用户放在资源目录根下
+/// 绘制标题页背景图（cover 模式，16:9 裁切适应），回退为天蓝色渐变。
+async fn draw_title_background(sw: f32, sh: f32, assets: &mut AssetManager) {
     let title_bg = assets.get_texture(AssetKind::Title, "./title.png").await;
     if let Some(tex) = title_bg {
         let tex_w = tex.width();
@@ -1151,7 +1150,6 @@ async fn draw_title_screen(buttons: &mut Vec<ButtonRect>, sw: f32, sh: f32, asse
             },
         );
     } else {
-        // 回退：天蓝色渐变背景
         let bg_segments = 64;
         let seg_h = sh / bg_segments as f32;
         for i in 0..bg_segments {
@@ -1163,6 +1161,10 @@ async fn draw_title_screen(buttons: &mut Vec<ButtonRect>, sw: f32, sh: f32, asse
                 Color::new(r, g, b, 1.0));
         }
     }
+}
+
+async fn draw_title_screen(buttons: &mut Vec<ButtonRect>, sw: f32, sh: f32, assets: &mut AssetManager, font: &Option<Font>, scale: f32, has_continue_save: bool) {
+    draw_title_background(sw, sh, assets).await;
 
     // 文本与控件离左边的距离（约 1% 屏幕宽度）
     let left_pad = sw * 0.01;
@@ -1595,6 +1597,7 @@ fn draw_transition(scene: &SceneState, sw: f32, sh: f32) {
     }
 }
 
+#[allow(dead_code)]
 fn draw_dim_overlay(sw: f32, sh: f32, alpha: f32) {
     draw_rectangle(0.0, 0.0, sw, sh, Color::new(0.0, 0.0, 0.0, alpha));
 }
@@ -1604,10 +1607,7 @@ fn draw_dim_overlay(sw: f32, sh: f32, alpha: f32) {
 /// Draws a centered modal dialog with a semi-transparent backdrop and two
 /// choices: resume the autosave, or discard it and start fresh.
 fn draw_autosave_prompt(engine: &Engine, buttons: &mut Vec<ButtonRect>, sw: f32, sh: f32, font: &Option<Font>, scale: f32) {
-    // Full-screen semi-transparent backdrop (drawn over the dim overlay).
-    draw_rectangle(0.0, 0.0, sw, sh, Color::new(0.0, 0.0, 0.0, 0.55));
-
-    // Centered dialog panel.
+    // 居中对话框面板
     let dialog_w = (720.0 * scale).min(sw - 80.0 * scale);
     let dialog_h = (360.0 * scale).min(sh - 80.0 * scale);
     let dialog_x = (sw - dialog_w) / 2.0;
@@ -1709,7 +1709,7 @@ fn draw_autosave_prompt(engine: &Engine, buttons: &mut Vec<ButtonRect>, sw: f32,
 }
 
 /// Draw a confirmation dialog for returning to title or discarding settings.
-/// 注意：全屏 8% 黑色叠层已由调用方绘制，此函数只绘制居中的对话框面板。
+/// 注意：全屏 10% 黑色叠层已由调用方绘制，此函数只绘制居中的对话框面板。
 fn draw_confirm_dialog(buttons: &mut Vec<ButtonRect>, sw: f32, sh: f32, font: &Option<Font>, scale: f32, confirm_type: Option<ConfirmType>) {
     // Centered dialog panel.
     let dialog_w = (600.0 * scale).min(sw - 80.0 * scale);
