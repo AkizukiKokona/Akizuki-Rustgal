@@ -1,0 +1,17 @@
+[package]
+name = "akrs-cli"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "akrs"
+path = "src/main.rs"
+
+[dependencies]
+akrs-core = { workspace = true }
+akrs-runtime = { workspace = true }
+akrs-pack = { workspace = true }
+
+[dev-dependencies]
+akrs-macros = { workspace = true }

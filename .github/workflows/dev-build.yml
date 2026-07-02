@@ -1,0 +1,190 @@
+name: Dev Build
+
+# 主程序开发构建流水线（三平台矩阵）。
+#
+# 触发策略：
+#   - push 到 main：全平台并行构建
+#   - workflow_dispatch：默认仅 Windows，下拉可选 linux / macos / all
+#
+# 产物作为 Actions artifact 上传，不创建 Release，保持 Releases 页面整洁。
+#
+# 本地适配说明：
+#   - Windows：需安装 MSYS2 并 `pacman -S mingw-w64-ucrt-x86_64-gcc`，
+#     在 UCRT64 shell 中执行 `cargo build --workspace --release --target x86_64-pc-windows-gnu`
+#   - Linux：需 `sudo apt-get install -y libxcb-render-util-dev libxcb-shape0-dev
+#     libxcb-xfixes0-dev libxcb-xkb-dev libasound2-dev`
+#   - macOS：仅需 Xcode 命令行工具。macos-latest 为 arm64，构建 x86_64-apple-darwin
+#     属交叉编译；若失败可改用 macos-13（原生 x86_64 runner）。
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      platform:
+        description: "目标平台（默认仅 Windows）"
+        type: choice
+        options: [windows, linux, macos, all]
+        default: windows
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  matrix:
+    name: Resolve matrix
+    runs-on: ubuntu-latest
+    outputs:
+      matrix: ${{ steps.gen.outputs.matrix }}
+    steps:
+      - id: gen
+        shell: bash
+        env:
+          EVENT: ${{ github.event_name }}
+          PLAT: ${{ inputs.platform }}
+        run: |
+          python3 - <<'PY' > /tmp/matrix.json
+          import json, os
+          all_entries = [
+            {"platform":"windows","os":"windows-latest","target":"x86_64-pc-windows-gnu"},
+            {"platform":"linux","os":"ubuntu-latest","target":"x86_64-unknown-linux-gnu"},
+            {"platform":"macos","os":"macos-latest","target":"x86_64-apple-darwin"},
+          ]
+          event = os.environ.get("EVENT", "")
+          plat = os.environ.get("PLAT", "")
+          if event == "push" or plat == "all" or plat == "":
+              sel = all_entries
+          else:
+              sel = [e for e in all_entries if e["platform"] == plat]
+          print(json.dumps({"include": sel}))
+          PY
+          echo "matrix=$(cat /tmp/matrix.json)" >> "$GITHUB_OUTPUT"
+
+  build:
+    name: Build (${{ matrix.platform }})
+    needs: matrix
+    if: needs.matrix.outputs.matrix != ''
+    runs-on: ${{ matrix.os }}
+    defaults:
+      run:
+        shell: bash
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.matrix.outputs.matrix) }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: "1.92.0"
+          targets: ${{ matrix.target }}
+
+      - name: Cache cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: cargo-game-${{ matrix.platform }}-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            cargo-game-${{ matrix.platform }}-
+
+      - name: Setup MSYS2 (Windows)
+        if: matrix.platform == 'windows'
+        uses: msys2/setup-msys2@v2
+        with:
+          msystem: UCRT64
+          update: false
+          install: mingw-w64-ucrt-x86_64-gcc
+          path-type: inherit
+
+      - name: Install system deps (Linux)
+        if: matrix.platform == 'linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libxcb-render-util0-dev libxcb-shape0-dev libxcb-xfixes0-dev libxcb-xkb-dev libasound2-dev
+
+      - name: Compute dev version
+        id: ver
+        shell: bash
+        run: |
+          COUNT=$(git rev-list --count HEAD)
+          DATE=$(date -u +'%Y%m%d-%H%M')
+          VERSION="0.0.0-dev.${COUNT}+${DATE}"
+          echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
+
+      - name: Patch version into Cargo.toml
+        shell: bash
+        run: |
+          sed -i -E "s/^version = \".*\"/version = \"${{ steps.ver.outputs.version }}\"/" Cargo.toml
+          grep -E "^version" Cargo.toml | head -1
+
+      - name: Build workspace (Windows)
+        if: matrix.platform == 'windows'
+        shell: msys2 {0}
+        env:
+          CARGO_TARGET_X86_64_PC_WINDOWS_GNU_LINKER: gcc
+        run: cargo build --workspace --release --target ${{ matrix.target }}
+
+      - name: Build workspace (Linux/macOS)
+        if: matrix.platform != 'windows'
+        shell: bash
+        run: cargo build --workspace --release --target ${{ matrix.target }}
+
+      - name: Stage package
+        shell: bash
+        run: |
+          STAGE="akrs-game"
+          mkdir -p "$STAGE/scripts" "$STAGE/assets/fonts"
+          mkdir -p "$STAGE/assets/bg" "$STAGE/assets/characters"
+          mkdir -p "$STAGE/assets/music" "$STAGE/assets/sound" "$STAGE/assets/title"
+          BIN_DIR="target/${{ matrix.target }}/release"
+          if [ "${{ matrix.platform }}" = "windows" ]; then
+            cp "$BIN_DIR/akrs.exe" "$STAGE/"
+            cp "$BIN_DIR/akrs-game.exe" "$STAGE/"
+            find "$BIN_DIR/deps" -name "lewton.dll" -exec cp {} "$STAGE/" \; 2>/dev/null || true
+            rm -f "$STAGE"/lewton-*.dll
+            printf 'cd /d "%%~dp0"\r\nstart akrs-game.exe\r\n' > "$STAGE/启动游戏.bat"
+          else
+            cp "$BIN_DIR/akrs" "$STAGE/"
+            cp "$BIN_DIR/akrs-game" "$STAGE/"
+            printf '#!/bin/bash\ncd "$(dirname "$0")"\n./akrs-game\n' > "$STAGE/启动游戏.sh"
+            chmod +x "$STAGE/启动游戏.sh"
+          fi
+          cp scripts/demo.akrs "$STAGE/scripts/" 2>/dev/null || true
+          cp assets/fonts/NotoSansCJK-Regular.ttc "$STAGE/assets/fonts/" 2>/dev/null || true
+          cp assets/fonts/NotoSansSC-Regular-subset.ttf "$STAGE/assets/fonts/" 2>/dev/null || true
+          printf 'Akizuki*Rustgal — 开发测试版 (%s)\n版本: %s\n\nWindows: 双击 启动游戏.bat\nLinux/macOS: ./启动游戏.sh\n命令行工具: akrs check scripts/demo.akrs\n' "${{ matrix.platform }}" "${{ steps.ver.outputs.version }}" > "$STAGE/README.txt"
+
+      - name: Archive
+        id: archive
+        shell: bash
+        run: |
+          VERSION="${{ steps.ver.outputs.version }}"
+          PLATFORM="${{ matrix.platform }}"
+          if [ "$PLATFORM" = "windows" ]; then
+            ARTIFACT="akrs-game-${VERSION}-${PLATFORM}.zip"
+            7z a -tzip "$ARTIFACT" akrs-game/
+          else
+            ARTIFACT="akrs-game-${VERSION}-${PLATFORM}.tar.gz"
+            tar -czf "$ARTIFACT" akrs-game/
+          fi
+          echo "artifact=${ARTIFACT}" >> "$GITHUB_OUTPUT"
+          ls -lh "$ARTIFACT"
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: akrs-game-${{ steps.ver.outputs.version }}-${{ matrix.platform }}
+          path: ${{ steps.archive.outputs.artifact }}
+          retention-days: 30
+          if-no-files-found: error
