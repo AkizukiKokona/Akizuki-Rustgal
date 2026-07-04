@@ -4,6 +4,7 @@
 //!   akrs check <file.akrs>       Validate a script file
 //!   akrs run <file.akrs>         Run a script in text mode
 //!   akrs pack <dir>              Pack a game directory (coming soon)
+//!   akrs translate init <file.akrs> <lang>  Generate translation skeleton
 //!   akrs help                    Show this help
 
 mod migrate;
@@ -59,6 +60,31 @@ fn main() {
             let output = args.get(3).map(|s| s.as_str());
             migrate::cmd_migrate(input, output);
         }
+        "translate" => {
+            if args.len() < 3 {
+                eprintln!("Usage: akrs translate <subcommand> [args]");
+                eprintln!("Subcommands:");
+                eprintln!("  init <file.akrs> <lang>  Generate translation skeleton JSON");
+                std::process::exit(1);
+            }
+            match args[2].as_str() {
+                "init" => {
+                    if args.len() < 5 {
+                        eprintln!("Usage: akrs translate init <file.akrs> <lang_code>");
+                        eprintln!("  Generate a translation skeleton JSON file.");
+                        eprintln!("  Example: akrs translate init demo.akrs en-US");
+                        std::process::exit(1);
+                    }
+                    let file = &args[3];
+                    let lang = &args[4];
+                    cmd_translate_init(file, lang);
+                }
+                other => {
+                    eprintln!("Unknown translate subcommand: {}", other);
+                    std::process::exit(1);
+                }
+            }
+        }
         "help" | "--help" | "-h" => {
             print_help();
         }
@@ -82,6 +108,8 @@ fn print_help() {
     println!("                                  (use 'akrs pack --help' for details)");
     println!("  migrate <input.rpy> [output.akrs]");
     println!("                                   Convert Ren'Py script to .akrs");
+    println!("  translate init <file.akrs> <lang>");
+    println!("                                   Generate translation skeleton JSON");
     println!("  help                            Show this help");
     println!();
     println!("Examples:");
@@ -279,6 +307,113 @@ fn print_events(_engine: &Engine, events: &[EngineEvent]) {
             _ => {}
         }
     }
+}
+
+/// 从剧本生成翻译骨架 JSON。
+fn cmd_translate_init(file: &str, lang: &str) {
+    let source = match std::fs::read_to_string(file) {
+        Ok(s) => s,
+        Err(e) => {
+            eprintln!("error: failed to read '{}': {}", file, e);
+            std::process::exit(1);
+        }
+    };
+
+    use akrs_runtime::Translator;
+
+    let mut translator = Translator::new();
+    let display_name = match lang {
+        "zh-CN" => "简体中文",
+        "zh-TW" => "繁體中文",
+        "en-US" => "English",
+        "ja-JP" => "日本語",
+        _ => lang,
+    };
+    translator.set_language(lang, display_name);
+
+    let mut char_count = 0usize;
+    let mut section_count = 0usize;
+    let mut dialogue_count = 0usize;
+    let mut narration_count = 0usize;
+    let mut choice_count = 0usize;
+    let mut prompt_count = 0usize;
+    let mut chars_seen = std::collections::HashSet::new();
+
+    for line in source.lines() {
+        let trimmed = line.trim();
+        // 章节标题
+        if let Some(rest) = trimmed.strip_prefix('#') {
+            let title = rest.trim().to_string();
+            if !title.is_empty() {
+                translator.set_section(&title, "");
+                section_count += 1;
+            }
+        }
+        // 角色对话
+        else if let Some(colon_pos) = trimmed.find(':') {
+            let (speaker_part, rest) = trimmed.split_at(colon_pos);
+            let after_colon = rest[1..].trim();
+            let speaker = if let Some(paren_pos) = speaker_part.find('(') {
+                speaker_part[..paren_pos].trim().to_string()
+            } else {
+                speaker_part.trim().to_string()
+            };
+            if after_colon.starts_with('"') && after_colon.ends_with('"') && after_colon.len() >= 2 {
+                let text = after_colon[1..after_colon.len() - 1].to_string();
+                if !speaker.is_empty() && chars_seen.insert(speaker.clone()) {
+                    translator.set_character(&speaker, "");
+                    char_count += 1;
+                }
+                translator.set_dialogue(&text, "");
+                dialogue_count += 1;
+            }
+        }
+        // 旁白
+        else if trimmed.starts_with('"') && trimmed.ends_with('"') && trimmed.len() >= 2 {
+            let text = trimmed[1..trimmed.len() - 1].to_string();
+            translator.set_narration(&text, "");
+            narration_count += 1;
+        }
+        // 选项提示
+        else if trimmed.starts_with('?') {
+            let rest = trimmed[1..].trim();
+            if rest.starts_with('"') && rest.ends_with('"') && rest.len() >= 2 {
+                let prompt = rest[1..rest.len() - 1].to_string();
+                translator.set_choice_prompt(&prompt, "");
+                prompt_count += 1;
+            }
+        }
+        // 选项
+        else if trimmed.starts_with('|') {
+            let rest = trimmed[1..].trim();
+            if rest.starts_with('"') {
+                if let Some(end_quote) = rest[1..].find('"') {
+                    let text = rest[1..end_quote + 1].to_string();
+                    translator.set_choice(&text, "");
+                    choice_count += 1;
+                }
+            }
+        }
+    }
+
+    match translator.to_json() {
+        Ok(json) => println!("{}", json),
+        Err(e) => {
+            eprintln!("error: {}", e);
+            std::process::exit(1);
+        }
+    }
+
+    eprintln!();
+    eprintln!("✓ Generated translation skeleton for '{}'", lang);
+    eprintln!("  Sections: {}", section_count);
+    eprintln!("  Dialogue: {}", dialogue_count);
+    eprintln!("  Narration: {}", narration_count);
+    eprintln!("  Choices: {}", choice_count);
+    eprintln!("  Choice prompts: {}", prompt_count);
+    eprintln!("  Characters: {}", char_count);
+    eprintln!();
+    eprintln!("  Save to file: akrs translate init {} {} > {}.json", file, lang, lang);
 }
 
 /// Scan a directory for resource files.

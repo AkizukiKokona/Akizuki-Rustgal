@@ -154,37 +154,37 @@ impl Translator {
         &self.display_name
     }
 
-    /// 翻译章节标题。找不到则返回原文。
+    /// 翻译章节标题。找不到或译文为空则返回原文。
     pub fn t_section<'a>(&'a self, original: &'a str) -> &'a str {
-        self.sections.get(original).map(|s| s.as_str()).unwrap_or(original)
+        self.sections.get(original).filter(|s| !s.is_empty()).map(|s| s.as_str()).unwrap_or(original)
     }
 
-    /// 翻译对话文本。找不到则返回原文。
+    /// 翻译对话文本。找不到或译文为空则返回原文。
     pub fn t_dialogue<'a>(&'a self, original: &'a str) -> &'a str {
-        self.dialogue.get(original).map(|s| s.as_str()).unwrap_or(original)
+        self.dialogue.get(original).filter(|s| !s.is_empty()).map(|s| s.as_str()).unwrap_or(original)
     }
 
-    /// 翻译旁白文本。找不到则返回原文。
+    /// 翻译旁白文本。找不到或译文为空则返回原文。
     pub fn t_narration<'a>(&'a self, original: &'a str) -> &'a str {
-        self.narration.get(original).map(|s| s.as_str()).unwrap_or(original)
+        self.narration.get(original).filter(|s| !s.is_empty()).map(|s| s.as_str()).unwrap_or(original)
     }
 
-    /// 翻译选项文本。找不到则返回原文。
+    /// 翻译选项文本。找不到或译文为空则返回原文。
     pub fn t_choice<'a>(&'a self, original: &'a str) -> &'a str {
-        self.choices.get(original).map(|s| s.as_str()).unwrap_or(original)
+        self.choices.get(original).filter(|s| !s.is_empty()).map(|s| s.as_str()).unwrap_or(original)
     }
 
-    /// 翻译选项提示语。找不到则返回原文。
+    /// 翻译选项提示语。找不到或译文为空则返回原文。
     pub fn t_choice_prompt<'a>(&'a self, original: &'a str) -> &'a str {
-        self.choice_prompts.get(original).map(|s| s.as_str()).unwrap_or(original)
+        self.choice_prompts.get(original).filter(|s| !s.is_empty()).map(|s| s.as_str()).unwrap_or(original)
     }
 
-    /// 翻译角色名（显示用）。找不到则返回原文。
+    /// 翻译角色名（显示用）。找不到或译文为空则返回原文。
     ///
     /// 注意：逻辑层（角色上场/下场/存档/跳转）必须用原文，
     /// 仅在绘制到屏幕前调用此方法替换显示名。
     pub fn t_character<'a>(&'a self, original: &'a str) -> &'a str {
-        self.characters.get(original).map(|s| s.as_str()).unwrap_or(original)
+        self.characters.get(original).filter(|s| !s.is_empty()).map(|s| s.as_str()).unwrap_or(original)
     }
 
     /// 是否为原文模式（无任何翻译条目）。
@@ -195,58 +195,34 @@ impl Translator {
             && self.choice_prompts.is_empty()
     }
 
-    /// 设置章节标题翻译。
+    /// 设置章节标题翻译（空字符串表示未翻译，仍保留 key 便于骨架生成）。
     pub fn set_section(&mut self, original: &str, translated: &str) {
-        if translated.is_empty() {
-            self.sections.remove(original);
-        } else {
-            self.sections.insert(original.to_string(), translated.to_string());
-        }
+        self.sections.insert(original.to_string(), translated.to_string());
     }
 
     /// 设置对话翻译。
     pub fn set_dialogue(&mut self, original: &str, translated: &str) {
-        if translated.is_empty() {
-            self.dialogue.remove(original);
-        } else {
-            self.dialogue.insert(original.to_string(), translated.to_string());
-        }
+        self.dialogue.insert(original.to_string(), translated.to_string());
     }
 
     /// 设置旁白翻译。
     pub fn set_narration(&mut self, original: &str, translated: &str) {
-        if translated.is_empty() {
-            self.narration.remove(original);
-        } else {
-            self.narration.insert(original.to_string(), translated.to_string());
-        }
+        self.narration.insert(original.to_string(), translated.to_string());
     }
 
     /// 设置选项翻译。
     pub fn set_choice(&mut self, original: &str, translated: &str) {
-        if translated.is_empty() {
-            self.choices.remove(original);
-        } else {
-            self.choices.insert(original.to_string(), translated.to_string());
-        }
+        self.choices.insert(original.to_string(), translated.to_string());
     }
 
     /// 设置选项提示语翻译。
     pub fn set_choice_prompt(&mut self, original: &str, translated: &str) {
-        if translated.is_empty() {
-            self.choice_prompts.remove(original);
-        } else {
-            self.choice_prompts.insert(original.to_string(), translated.to_string());
-        }
+        self.choice_prompts.insert(original.to_string(), translated.to_string());
     }
 
     /// 设置角色名翻译。
     pub fn set_character(&mut self, original: &str, translated: &str) {
-        if translated.is_empty() {
-            self.characters.remove(original);
-        } else {
-            self.characters.insert(original.to_string(), translated.to_string());
-        }
+        self.characters.insert(original.to_string(), translated.to_string());
     }
 
     /// 序列化为 JSON 字符串。
