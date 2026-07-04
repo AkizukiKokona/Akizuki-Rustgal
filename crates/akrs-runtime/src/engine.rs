@@ -179,6 +179,11 @@ pub struct Engine {
     /// 由于目前没有语音系统，预留为 0 表示"已播完"。
     #[allow(dead_code)]
     voice_progress: f32,
+    /// 自动播放倒计时剩余秒数。
+    /// 当 settings.auto_play 为 true 且当前对话文本已显示完毕时，
+    /// 每帧递减；归零后自动 vm.advance()。
+    /// 玩家手动点击 advance() 时重置为 0（取消等待，立即推进）。
+    auto_play_remaining: f32,
 }
 
 impl Engine {
@@ -205,6 +210,7 @@ impl Engine {
             read_history: HashSet::new(),
             skip_active: false,
             voice_progress: 0.0,
+            auto_play_remaining: 0.0,
         })
     }
 
@@ -282,6 +288,26 @@ impl Engine {
     /// 设置快进状态。
     pub fn set_skip_active(&mut self, active: bool) {
         self.skip_active = active;
+    }
+
+    /// 当前对话是否带有语音（语音文件存在且已加载）。
+    ///
+    /// 当前引擎尚未接入语音系统，始终返回 false。
+    /// 接入语音后，此方法应查询当前对话对应的语音资源是否已加载。
+    fn current_dialogue_has_voice(&self) -> bool {
+        false
+    }
+
+    /// 自动播放倒计时剩余秒数（0 表示未在等待）。
+    /// 供渲染层绘制进度指示器使用。
+    pub fn auto_play_remaining(&self) -> f32 {
+        self.auto_play_remaining
+    }
+
+    /// 切换自动播放开关（运行时快捷切换，同步到 settings.auto_play）。
+    pub fn toggle_auto_play(&mut self) {
+        self.settings.auto_play = !self.settings.auto_play;
+        self.auto_play_remaining = 0.0;
     }
 
     /// 已读历史（不可变访问，供调试用）。
@@ -429,6 +455,46 @@ impl Engine {
                 self.phase = EnginePhase::Running;
                 self.process_events_into(&mut events);
             }
+        }
+
+        // 自动播放：当 settings.auto_play 开启、当前处于 Running 阶段、
+        // 对话文本已显示完毕、无过渡、未在等待/选择/快进时，按设定间隔自动推进。
+        // 玩家手动点击 advance() 会立即推进并重置倒计时（在 advance 中处理）。
+        if self.settings.auto_play
+            && !self.skip_active
+            && self.phase == EnginePhase::Running
+            && !self.transition.is_active()
+        {
+            let ready = match &self.scene.dialogue {
+                Some(d) => d.complete,
+                None => false,
+            };
+            if ready {
+                if self.auto_play_remaining <= 0.0 {
+                    // 启动倒计时：当前对话有语音用 with_voice 间隔，否则用 without_voice。
+                    // 当前无语音系统，所有对话均按"无语音"计时。
+                    let delay = if self.current_dialogue_has_voice() {
+                        self.settings.auto_play_delay_with_voice
+                    } else {
+                        self.settings.auto_play_delay_without_voice
+                    };
+                    self.auto_play_remaining = delay.max(0.0);
+                } else {
+                    self.auto_play_remaining -= dt;
+                    if self.auto_play_remaining <= 0.0 {
+                        self.auto_play_remaining = 0.0;
+                        // 倒计时结束，自动推进到下一句。
+                        self.vm.advance();
+                        self.process_events_into(&mut events);
+                    }
+                }
+            } else {
+                // 文本尚未完成或已切换场景，重置倒计时。
+                self.auto_play_remaining = 0.0;
+            }
+        } else {
+            // 自动播放关闭或条件不满足，重置倒计时避免残留。
+            self.auto_play_remaining = 0.0;
         }
 
         // Check for hot reload
@@ -878,6 +944,8 @@ impl Engine {
             self.settings.text_speed,
         );
         self.phase = EnginePhase::Running;
+        // 新对话出现，重置自动播放倒计时（待文本显示完毕后重新计时）。
+        self.auto_play_remaining = 0.0;
         // 记录已读历史
         let key = format!("{}|{}", speaker, text);
         self.read_history.insert(key);
@@ -891,6 +959,8 @@ impl Engine {
             self.settings.text_speed,
         );
         self.phase = EnginePhase::Running;
+        // 新旁白出现，重置自动播放倒计时。
+        self.auto_play_remaining = 0.0;
         // 记录已读历史（旁白 speaker 为空）
         let key = format!("|{}", text);
         self.read_history.insert(key);

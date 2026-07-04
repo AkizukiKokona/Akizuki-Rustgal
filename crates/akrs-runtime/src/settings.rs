@@ -88,10 +88,28 @@ pub struct Settings {
     /// prompt to resume. When false, autosaves are ignored on startup.
     #[serde(default = "default_auto_recovery")]
     pub auto_recovery: bool,
+    /// 是否启用自动播放：对话文本显示完毕后按设定间隔自动跳转下一句。
+    /// 关闭时由玩家手动点击推进。
+    #[serde(default)]
+    pub auto_play: bool,
+    /// 自动播放时，当前对话有语音的间隔（秒），默认 1.0。
+    #[serde(default = "default_auto_play_delay_with_voice")]
+    pub auto_play_delay_with_voice: f32,
+    /// 自动播放时，当前对话无语音的间隔（秒），默认 2.0。
+    #[serde(default = "default_auto_play_delay_without_voice")]
+    pub auto_play_delay_without_voice: f32,
 }
 
 fn default_auto_recovery() -> bool {
     true
+}
+
+fn default_auto_play_delay_with_voice() -> f32 {
+    1.0
+}
+
+fn default_auto_play_delay_without_voice() -> f32 {
+    2.0
 }
 
 impl Default for Settings {
@@ -106,6 +124,9 @@ impl Default for Settings {
             fullscreen: false,
             resolution: (1920, 1080),
             auto_recovery: true,
+            auto_play: false,
+            auto_play_delay_with_voice: 1.0,
+            auto_play_delay_without_voice: 2.0,
         }
     }
 }

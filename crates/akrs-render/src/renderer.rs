@@ -426,6 +426,8 @@ enum ButtonAction {
     ToggleHide,
     /// Toggle fast-forward mode (skip through dialogue quickly).
     FastForward,
+    /// Toggle auto-play mode (advance dialogue automatically after a delay).
+    AutoPlay,
     // ── Save/Load menu paging ───
     /// Go to the previous page of save/load slots.
     PrevPage,
@@ -913,7 +915,7 @@ pub async fn run(mut engine: Engine) {
                 // 完全隐藏时不绘制也不注册按钮，避免误触；
                 // 半显示/全显示时绘制并注册（下沉过程可见，但低于 0.5 不可点击）。
                 if hud_visibility.is_interactable() {
-                    draw_hud_buttons(&mut buttons, sw, sh, &font, scale, &hud_visibility, engine.is_skip_active());
+                    draw_hud_buttons(&mut buttons, sw, sh, &font, scale, &hud_visibility, engine.is_skip_active(), engine.settings().auto_play);
                 } else {
                     // 仍以最终位置注册按钮，使上浮过程中已可见即可点击；
                     // 但完全隐藏时不注册（is_interactable 已过滤）。
@@ -1008,6 +1010,10 @@ pub async fn run(mut engine: Engine) {
                                 engine.save_read_history();
                             }
                         }
+                        ButtonAction::AutoPlay => {
+                            // 切换自动播放开关
+                            engine.toggle_auto_play();
+                        }
                         ButtonAction::PrevPage => {
                             let page = if ui_mode == UiMode::SaveMenu { &mut save_page } else { &mut load_page };
                             if *page > 0 {
@@ -1089,6 +1095,9 @@ pub async fn run(mut engine: Engine) {
                         || current.auto_recovery != snapshot.auto_recovery
                         || current.fullscreen != snapshot.fullscreen
                         || current.resolution != snapshot.resolution
+                        || current.auto_play != snapshot.auto_play
+                        || current.auto_play_delay_with_voice != snapshot.auto_play_delay_with_voice
+                        || current.auto_play_delay_without_voice != snapshot.auto_play_delay_without_voice
                 } else {
                     false
                 };
@@ -2247,6 +2256,12 @@ struct SettingsLayout {
     text_row_mid: f32,
     text_slider_track: Rect4,
     text_slider_hit: Rect4,
+    /// 文本标签页：自动播放相关控件。
+    /// 第 1 行为自动播放开关，第 2 行为有语音间隔滑块，第 3 行为无语音间隔滑块。
+    auto_play_row_mids: [f32; 3],
+    auto_play_toggle: Rect4,
+    auto_play_slider_tracks: [Rect4; 2],
+    auto_play_slider_hits: [Rect4; 2],
     /// 音频标签页：第 0 行 BGM，第 1 行 SFX。
     audio_row_mids: [f32; 2],
     audio_slider_tracks: [Rect4; 2],
@@ -2310,7 +2325,7 @@ fn compute_settings_layout(sw: f32, sh: f32, scale: f32) -> SettingsLayout {
     let toggle_w = 120.0 * scale;
     let toggle_h = 48.0 * scale;
 
-    // 文本标签页（1 行：文本速度）
+    // 文本标签页（4 行：文本速度、自动播放开关、有语音间隔、无语音间隔）
     let text_row_mid = content_top + row_h * 0.5 + row_h;
     let text_slider_track = Rect4 {
         x: control_x, y: text_row_mid - track_h / 2.0,
@@ -2320,6 +2335,28 @@ fn compute_settings_layout(sw: f32, sh: f32, scale: f32) -> SettingsLayout {
         x: control_x - 10.0 * scale, y: text_row_mid - 31.0 * scale,
         w: track_w + 20.0 * scale, h: 62.0 * scale,
     };
+    // 自动播放：第 1 行开关，第 2、3 行滑块
+    let mut auto_play_row_mids = [0.0; 3];
+    let mut auto_play_slider_tracks = [Rect4::default(); 2];
+    let mut auto_play_slider_hits = [Rect4::default(); 2];
+    for i in 0..3 {
+        auto_play_row_mids[i] = content_top + row_h * 0.5 + (i as f32 + 2.0) * row_h;
+    }
+    let auto_play_toggle = Rect4 {
+        x: control_x, y: auto_play_row_mids[0] - toggle_h / 2.0,
+        w: toggle_w, h: toggle_h,
+    };
+    for i in 0..2 {
+        let mid = auto_play_row_mids[i + 1];
+        auto_play_slider_tracks[i] = Rect4 {
+            x: control_x, y: mid - track_h / 2.0,
+            w: track_w, h: track_h,
+        };
+        auto_play_slider_hits[i] = Rect4 {
+            x: control_x - 10.0 * scale, y: mid - 31.0 * scale,
+            w: track_w + 20.0 * scale, h: 62.0 * scale,
+        };
+    }
 
     // 音频标签页（2 行：BGM、SFX）
     let mut audio_row_mids = [0.0; 2];
@@ -2389,6 +2426,8 @@ fn compute_settings_layout(sw: f32, sh: f32, scale: f32) -> SettingsLayout {
         tab_rects, content_top,
         label_x, value_x,
         text_row_mid, text_slider_track, text_slider_hit,
+        auto_play_row_mids, auto_play_toggle,
+        auto_play_slider_tracks, auto_play_slider_hits,
         audio_row_mids, audio_slider_tracks, audio_slider_hits,
         display_row_mids, display_toggles, display_dropdown,
         skip_row_mids, skip_toggle, skip_dropdown,
@@ -2469,6 +2508,31 @@ fn draw_settings_menu(engine: &mut Engine, layout: &SettingsLayout, font: &Optio
                 &format!("{:.0} 字/秒", settings.text_speed),
                 layout.value_x,
                 layout.text_row_mid + 8.0 * scale,
+                value_size,
+                WHITE,
+                font,
+            );
+            // 自动播放开关
+            draw_text_f("自动播放", layout.label_x, layout.auto_play_row_mids[0] + 8.0 * scale, label_size, WHITE, font);
+            draw_toggle(layout.auto_play_toggle, settings.auto_play, font, scale);
+            // 有语音间隔（0.0 - 5.0 秒）
+            draw_text_f("有语音间隔", layout.label_x, layout.auto_play_row_mids[1] + 8.0 * scale, label_size, WHITE, font);
+            draw_slider_track(layout.auto_play_slider_tracks[0], settings.auto_play_delay_with_voice / 5.0, scale);
+            draw_text_f(
+                &format!("{:.1} 秒", settings.auto_play_delay_with_voice),
+                layout.value_x,
+                layout.auto_play_row_mids[1] + 8.0 * scale,
+                value_size,
+                WHITE,
+                font,
+            );
+            // 无语音间隔（0.0 - 5.0 秒）
+            draw_text_f("无语音间隔", layout.label_x, layout.auto_play_row_mids[2] + 8.0 * scale, label_size, WHITE, font);
+            draw_slider_track(layout.auto_play_slider_tracks[1], settings.auto_play_delay_without_voice / 5.0, scale);
+            draw_text_f(
+                &format!("{:.1} 秒", settings.auto_play_delay_without_voice),
+                layout.value_x,
+                layout.auto_play_row_mids[2] + 8.0 * scale,
                 value_size,
                 WHITE,
                 font,
@@ -2707,6 +2771,8 @@ fn handle_settings_interaction(
     {
         let track_opt = match (tab, i) {
             (SettingsTab::Text, 0) => Some(layout.text_slider_track),
+            (SettingsTab::Text, 1) => Some(layout.auto_play_slider_tracks[0]),
+            (SettingsTab::Text, 2) => Some(layout.auto_play_slider_tracks[1]),
             (SettingsTab::Audio, 0) => Some(layout.audio_slider_tracks[0]),
             (SettingsTab::Audio, 1) => Some(layout.audio_slider_tracks[1]),
             _ => None,
@@ -2741,6 +2807,24 @@ fn handle_settings_interaction(
                 if point_in_rect(mx, my, layout.text_slider_hit) {
                     *dragging_slider = Some((SettingsTab::Text, 0));
                     update_slider_value(engine, SettingsTab::Text, 0, mx, layout.text_slider_track);
+                    return None;
+                }
+                // 自动播放开关
+                if point_in_rect(mx, my, layout.auto_play_toggle) {
+                    let settings = engine.settings_mut();
+                    settings.auto_play = !settings.auto_play;
+                    return None;
+                }
+                // 有语音间隔滑块
+                if point_in_rect(mx, my, layout.auto_play_slider_hits[0]) {
+                    *dragging_slider = Some((SettingsTab::Text, 1));
+                    update_slider_value(engine, SettingsTab::Text, 1, mx, layout.auto_play_slider_tracks[0]);
+                    return None;
+                }
+                // 无语音间隔滑块
+                if point_in_rect(mx, my, layout.auto_play_slider_hits[1]) {
+                    *dragging_slider = Some((SettingsTab::Text, 2));
+                    update_slider_value(engine, SettingsTab::Text, 2, mx, layout.auto_play_slider_tracks[1]);
                     return None;
                 }
             }
@@ -2854,6 +2938,9 @@ fn handle_settings_interaction(
                     || current.resolution != snapshot.resolution
                     || current.skip_unread != snapshot.skip_unread
                     || current.skip_mode != snapshot.skip_mode
+                    || current.auto_play != snapshot.auto_play
+                    || current.auto_play_delay_with_voice != snapshot.auto_play_delay_with_voice
+                    || current.auto_play_delay_without_voice != snapshot.auto_play_delay_without_voice
             } else {
                 false
             };
@@ -2879,6 +2966,9 @@ fn update_slider_value(engine: &mut Engine, tab: SettingsTab, index: usize, mx: 
     let settings = engine.settings_mut();
     match (tab, index) {
         (SettingsTab::Text, 0) => settings.text_speed = (t * 999.0).round(),
+        // 自动播放间隔：0.0 - 5.0 秒，按 0.1 秒精度取整
+        (SettingsTab::Text, 1) => settings.auto_play_delay_with_voice = (t * 5.0 * 10.0).round() / 10.0,
+        (SettingsTab::Text, 2) => settings.auto_play_delay_without_voice = (t * 5.0 * 10.0).round() / 10.0,
         (SettingsTab::Audio, 0) => settings.bgm_volume = t,
         (SettingsTab::Audio, 1) => settings.sfx_volume = t,
         _ => {}
@@ -2987,6 +3077,7 @@ fn handle_button_action(action: ButtonAction) -> Option<(UiMode, PendingUiAction
         ButtonAction::OpenSettings => Some((UiMode::SettingsMenu, PendingUiAction::None)),
         ButtonAction::QuickSave | ButtonAction::QuickLoad
         | ButtonAction::ToggleHide | ButtonAction::FastForward
+        | ButtonAction::AutoPlay
         | ButtonAction::PrevPage | ButtonAction::NextPage
         | ButtonAction::AddPage => None,
         ButtonAction::ConfirmYes => Some((UiMode::Normal, PendingUiAction::None)), // 由调用者处理具体确认逻辑
@@ -3040,7 +3131,7 @@ fn draw_button(
 const HUD_BTN_W: f32 = 126.0;
 const HUD_BTN_H: f32 = 54.0;
 const HUD_BTN_GAP: f32 = 12.0;
-const HUD_BTN_COUNT: usize = 8;
+const HUD_BTN_COUNT: usize = 9;
 const HUD_RIGHT_MARGIN: f32 = 20.0;
 const HUD_BOTTOM_MARGIN: f32 = 70.0;
 
@@ -3078,6 +3169,7 @@ fn draw_hud_buttons(
     scale: f32,
     visibility: &HudVisibility,
     skip_active: bool,
+    auto_play_active: bool,
 ) {
     let btn_w = HUD_BTN_W * scale;
     let btn_h = HUD_BTN_H * scale;
@@ -3089,8 +3181,9 @@ fn draw_hud_buttons(
     let start_y = base_y + visibility.sink_offset() * scale;
     let alpha = visibility.alpha();
 
-    let hud_buttons: [(&str, ButtonAction); 8] = [
+    let hud_buttons: [(&str, ButtonAction); 9] = [
         ("快进", ButtonAction::FastForward),
+        ("自动", ButtonAction::AutoPlay),
         ("快存", ButtonAction::QuickSave),
         ("快读", ButtonAction::QuickLoad),
         ("存档", ButtonAction::OpenSaveMenu),
@@ -3104,6 +3197,7 @@ fn draw_hud_buttons(
     for (label, action) in &hud_buttons {
         let is_active = match action {
             ButtonAction::FastForward => skip_active,
+            ButtonAction::AutoPlay => auto_play_active,
             _ => false,
         };
         draw_small_button(x, start_y, btn_w, btn_h, label, buttons, *action, font, scale, alpha, is_active);
