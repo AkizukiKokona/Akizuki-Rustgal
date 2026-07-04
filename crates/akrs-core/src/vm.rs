@@ -450,6 +450,7 @@ mod tests {
     use super::*;
     use crate::lexer::Lexer;
     use crate::parser::Parser;
+    use std::assert_matches;
 
     fn run(src: &str) -> Vec<VmEvent> {
         let tokens = Lexer::new(src).tokenize().expect("lex");
@@ -531,6 +532,6 @@ mod tests {
         // Load back
         vm.load_state(state);
         let e = vm.step().unwrap();
-        assert!(matches!(e, VmEvent::Dialogue { text, .. } if text == "First."));
+        assert_matches!(e, VmEvent::Dialogue { text, .. } if text == "First.");
     }
 }

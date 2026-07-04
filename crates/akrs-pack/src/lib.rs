@@ -403,6 +403,7 @@ fn print_help() {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::assert_matches;
     use std::io::Write;
 
     #[test]
@@ -485,7 +486,7 @@ mod tests {
         };
 
         let result = pack(&config);
-        assert!(matches!(result, Err(PackError::BinaryNotFound(_))));
+        assert_matches!(result, Err(PackError::BinaryNotFound(_)));
     }
 
     #[test]

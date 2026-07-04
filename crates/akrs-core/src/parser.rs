@@ -755,6 +755,7 @@ impl Parser {
 mod tests {
     use super::*;
     use crate::lexer::Lexer;
+    use std::assert_matches;
 
     fn parse(src: &str) -> Program {
         let tokens = Lexer::new(src).tokenize().expect("lex failed");
@@ -866,16 +867,16 @@ mod tests {
     #[test]
     fn test_flow_and_visit() {
         let p = parse("# S\n-> Next\n# T\n=> Sub\n<=\n");
-        assert!(matches!(p.sections[0].nodes[0], Node::Flow { .. }));
-        assert!(matches!(p.sections[1].nodes[0], Node::Visit { .. }));
-        assert!(matches!(p.sections[1].nodes[1], Node::Return { .. }));
+        assert_matches!(p.sections[0].nodes[0], Node::Flow { .. });
+        assert_matches!(p.sections[1].nodes[0], Node::Visit { .. });
+        assert_matches!(p.sections[1].nodes[1], Node::Return { .. });
     }
 
     #[test]
     fn test_varop() {
         let p = parse("# S\n$affection = 10\n$score += 5\n");
-        assert!(matches!(p.sections[0].nodes[0], Node::VarOp { op: VarOpKind::Assign, .. }));
-        assert!(matches!(p.sections[0].nodes[1], Node::VarOp { op: VarOpKind::PlusEq, .. }));
+        assert_matches!(p.sections[0].nodes[0], Node::VarOp { op: VarOpKind::Assign, .. });
+        assert_matches!(p.sections[0].nodes[1], Node::VarOp { op: VarOpKind::PlusEq, .. });
     }
 
     #[test]

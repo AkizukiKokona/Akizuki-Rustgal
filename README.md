@@ -5,7 +5,7 @@
 **纯 Rust 打造的视觉小说引擎 — 编译时检查、自定义 DSL、跨平台运行**
 
 [![License](https://img.shields.io/badge/license-MIT-blue.svg)](#许可证)
-[![Rust](https://img.shields.io/badge/rust-1.92+-orange.svg)](https://www.rust-lang.org)
+[![Rust](https://img.shields.io/badge/rust-1.96+-orange.svg)](https://www.rust-lang.org)
 [![Version](https://img.shields.io/badge/version-1.0.0-success.svg)](#)
 [![Platform](https://img.shields.io/badge/platform-Windows%20%7C%20Linux%20%7C%20macOS-lightgrey.svg)](#下载与安装)
 [![PRs Welcome](https://img.shields.io/badge/PRs-welcome-brightgreen.svg)](#贡献)
@@ -75,7 +75,7 @@ cargo run --release -p akrs-game
 cargo run --release -p akrs-editor
 ```
 
-> **Rust 版本要求**：1.92.0+（使用 Rust 2024 Edition）
+> **Rust 版本要求**：1.96.0+（使用 Rust 2024 Edition）
 >
 > **Linux 额外依赖**：`libxcb-render-util0-dev libxcb-shape0-dev libxcb-xfixes0-dev libxcb-xkb-dev libasound2-dev`
 
