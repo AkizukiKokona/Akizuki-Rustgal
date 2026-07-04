@@ -2331,6 +2331,62 @@ impl eframe::App for EditorApp {
 
                     ui.add_space(16.0);
                     ui.separator();
+                    ui.add_space(12.0);
+
+                    ui.heading("运行设置");
+                    ui.add_space(8.0);
+
+                    ui.horizontal(|ui| {
+                        ui.label("窗口标题：");
+                        ui.add_sized(
+                            [ui.available_width(), 28.0],
+                            egui::TextEdit::singleline(&mut self.project_config.window_title)
+                                .hint_text("留空则使用主标题"),
+                        );
+                    });
+                    ui.add_space(8.0);
+
+                    ui.horizontal(|ui| {
+                        ui.label("默认语言：");
+                        ui.add_sized(
+                            [ui.available_width(), 28.0],
+                            egui::TextEdit::singleline(&mut self.project_config.language)
+                                .hint_text("zh-CN / en-US / ja-JP 等，留空为系统默认"),
+                        );
+                    });
+                    ui.add_space(8.0);
+
+                    ui.horizontal(|ui| {
+                        ui.label("版本号：");
+                        ui.add_sized(
+                            [ui.available_width(), 28.0],
+                            egui::TextEdit::singleline(&mut self.project_config.version)
+                                .hint_text("例如 v1.0.0"),
+                        );
+                    });
+                    ui.add_space(8.0);
+
+                    let mut res_w = self.project_config.default_resolution.0.to_string();
+                    let mut res_h = self.project_config.default_resolution.1.to_string();
+                    ui.horizontal(|ui| {
+                        ui.label("默认分辨率：");
+                        ui.add(egui::TextEdit::singleline(&mut res_w).desired_width(80.0));
+                        ui.label("×");
+                        ui.add(egui::TextEdit::singleline(&mut res_h).desired_width(80.0));
+                    });
+                    if let Ok(w) = res_w.parse::<u32>() {
+                        if let Ok(h) = res_h.parse::<u32>() {
+                            self.project_config.default_resolution = (w, h);
+                        }
+                    }
+                    ui.add_space(8.0);
+
+                    ui.horizontal(|ui| {
+                        ui.checkbox(&mut self.project_config.start_fullscreen, "启动时全屏");
+                    });
+
+                    ui.add_space(16.0);
+                    ui.separator();
                     ui.add_space(8.0);
 
                     ui.horizontal(|ui| {
