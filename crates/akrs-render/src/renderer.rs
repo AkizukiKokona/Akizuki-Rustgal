@@ -1,6 +1,7 @@
 //! Main renderer: game loop, drawing, and input handling.
 
 use crate::assets::{AssetKind, AssetManager};
+use akrs_core::ProjectConfig;
 use akrs_runtime::{
     Engine, EngineEvent, EnginePhase, SceneState, Settings, SettingsTab, SkipMode,
     TransitionPhase,
@@ -598,9 +599,21 @@ impl HudVisibility {
 ///     akrs_render::run(engine).await;
 /// }
 /// ```
-pub async fn run(mut engine: Engine) {
+pub async fn run(mut engine: Engine, project_config: &ProjectConfig) {
     clear_background(BLACK);
     next_frame().await;
+
+    // 应用项目配置的初始窗口大小和全屏状态。
+    // 窗口标题受限于 miniquad 0.3 无运行时 API，暂无法动态修改，
+    // 保留在 ProjectConfig.window_title 字段中，待后续升级启用。
+    if project_config.start_fullscreen {
+        set_fullscreen(true);
+    } else {
+        let (dw, dh) = project_config.default_resolution;
+        if dw > 0 && dh > 0 {
+            request_new_screen_size(dw as f32, dh as f32);
+        }
+    }
 
     let mut assets = AssetManager::new();
     // Load Chinese font for proper CJK text rendering, with system-font fallback.

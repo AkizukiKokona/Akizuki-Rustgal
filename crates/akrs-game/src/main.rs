@@ -108,5 +108,5 @@ async fn main() {
     // 设置项目标题
     engine.set_title(project_config.title, project_config.subtitle);
 
-    akrs_render::run(engine).await;
+    akrs_render::run(engine, &project_config).await;
 }
