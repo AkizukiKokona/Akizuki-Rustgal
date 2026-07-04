@@ -8,6 +8,7 @@ use akrs_runtime::{
     format_play_time, format_timestamp,
     SaveMetadata,
 };
+use macroquad::audio::{play_sound, set_sound_volume, stop_sound, PlaySoundParams, Sound};
 use macroquad::prelude::*;
 use std::path::PathBuf;
 
@@ -632,7 +633,17 @@ pub async fn run(mut engine: Engine, project_config: &ProjectConfig) {
         UiMode::Normal
     };
     let mut buttons: Vec<ButtonRect> = Vec::new();
-    let mut _prev_music: Option<String> = None;
+    // 当前正在循环播放的 BGM 句柄（None 表示无 BGM 在播放）。
+    // 切换 BGM 时先 stop 旧的，再 play 新的。
+    let mut current_bgm: Option<Sound> = None;
+    // 当前正在播放的语音句柄（None 表示无语音在播放）。
+    // 新对话/旁白出现时先 stop 旧的，再 play 新的（一次性，不循环）。
+    let mut current_voice: Option<Sound> = None;
+    // 上一帧应用的 BGM 音量，用于检测设置变更并实时同步。
+    let mut prev_bgm_volume: f32 = engine.settings().bgm_volume;
+    // 上一帧应用的语音音量，用于检测设置变更并实时同步。
+    let mut prev_voice_volume: f32 = engine.settings().voice_volume;
+    // 标题音乐是否已开始播放。
     let mut title_music_played = false;
     // Whether the in-game dialogue box and HUD button group are hidden via
     // the "隐藏" button. The scene (background + characters) is still drawn.
@@ -726,15 +737,66 @@ pub async fn run(mut engine: Engine, project_config: &ProjectConfig) {
         for event in &events {
             match event {
                 EngineEvent::MusicChanged { name } => {
-                    if name.is_empty() {
-                        _prev_music = None;
-                    } else {
-                        _prev_music = Some(name.clone());
-                        assets.check_music(name);
+                    // 先停止当前 BGM（无论 name 是否为空）
+                    if let Some(bgm) = current_bgm.take() {
+                        stop_sound(bgm);
+                    }
+                    if !name.is_empty() {
+                        // 加载并循环播放新 BGM
+                        if let Some(sound) = assets.get_sound(AssetKind::Music, name).await {
+                            let vol = engine.settings().bgm_volume;
+                            play_sound(
+                                sound,
+                                PlaySoundParams { looped: true, volume: vol },
+                            );
+                            current_bgm = Some(sound);
+                        }
                     }
                 }
                 EngineEvent::SoundPlayed { name } => {
-                    assets.check_sound(name);
+                    // 一次性播放音效
+                    if let Some(sound) = assets.get_sound(AssetKind::Sound, name).await {
+                        let vol = engine.settings().sfx_volume;
+                        play_sound(
+                            sound,
+                            PlaySoundParams { looped: false, volume: vol },
+                        );
+                    }
+                }
+                EngineEvent::VoicePlayed { name } => {
+                    // 先停止当前语音（无论 name 是否为空）
+                    if let Some(voice) = current_voice.take() {
+                        stop_sound(voice);
+                    }
+                    if !name.is_empty() {
+                        // 加载并播放新语音（一次性，不循环）
+                        if let Some(sound) = assets.get_sound(AssetKind::Voice, name).await {
+                            let vol = engine.settings().voice_volume;
+                            play_sound(
+                                sound,
+                                PlaySoundParams { looped: false, volume: vol },
+                            );
+                            current_voice = Some(sound);
+                        }
+                    }
+                }
+                EngineEvent::GameStarted => {
+                    // 玩家从标题进入游戏，停止标题音乐与残留语音
+                    if let Some(bgm) = current_bgm.take() {
+                        stop_sound(bgm);
+                    }
+                    if let Some(voice) = current_voice.take() {
+                        stop_sound(voice);
+                    }
+                }
+                EngineEvent::StoryEnded => {
+                    // 故事结束，停止所有 BGM 与语音
+                    if let Some(bgm) = current_bgm.take() {
+                        stop_sound(bgm);
+                    }
+                    if let Some(voice) = current_voice.take() {
+                        stop_sound(voice);
+                    }
                 }
                 EngineEvent::Warning { message } => {
                     eprintln!("[Engine Warning] {}", message);
@@ -746,12 +808,36 @@ pub async fn run(mut engine: Engine, project_config: &ProjectConfig) {
             }
         }
 
-        // Handle title music
+        // Handle title music：进入标题画面时循环播放 title_bgm.mp3（若存在）
         if engine.phase() == EnginePhase::Title && !title_music_played {
-            if assets.check_music("title_bgm.mp3") {
-                // Would play music here; macroquad 0.3 audio is limited
-            }
             title_music_played = true;
+            if current_bgm.is_none() {
+                if let Some(sound) = assets.get_sound(AssetKind::Music, "title_bgm.mp3").await {
+                    let vol = engine.settings().bgm_volume;
+                    play_sound(
+                        sound,
+                        PlaySoundParams { looped: true, volume: vol },
+                    );
+                    current_bgm = Some(sound);
+                }
+            }
+        }
+
+        // 实时同步 BGM 音量：当设置页调整 BGM 音量时立即生效
+        let cur_bgm_vol = engine.settings().bgm_volume;
+        if cur_bgm_vol != prev_bgm_volume {
+            if let Some(bgm) = current_bgm {
+                set_sound_volume(bgm, cur_bgm_vol);
+            }
+            prev_bgm_volume = cur_bgm_vol;
+        }
+        // 实时同步语音音量：当设置页调整语音音量时立即生效
+        let cur_voice_vol = engine.settings().voice_volume;
+        if cur_voice_vol != prev_voice_volume {
+            if let Some(voice) = current_voice {
+                set_sound_volume(voice, cur_voice_vol);
+            }
+            prev_voice_volume = cur_voice_vol;
         }
 
         // Clear buttons for this frame
@@ -1108,6 +1194,7 @@ pub async fn run(mut engine: Engine, project_config: &ProjectConfig) {
                     current.text_speed != snapshot.text_speed
                         || current.bgm_volume != snapshot.bgm_volume
                         || current.sfx_volume != snapshot.sfx_volume
+                        || current.voice_volume != snapshot.voice_volume
                         || current.auto_recovery != snapshot.auto_recovery
                         || current.fullscreen != snapshot.fullscreen
                         || current.resolution != snapshot.resolution
@@ -2278,10 +2365,10 @@ struct SettingsLayout {
     auto_play_toggle: Rect4,
     auto_play_slider_tracks: [Rect4; 2],
     auto_play_slider_hits: [Rect4; 2],
-    /// 音频标签页：第 0 行 BGM，第 1 行 SFX。
-    audio_row_mids: [f32; 2],
-    audio_slider_tracks: [Rect4; 2],
-    audio_slider_hits: [Rect4; 2],
+    /// 音频标签页：第 0 行 BGM，第 1 行 SFX，第 2 行 Voice。
+    audio_row_mids: [f32; 3],
+    audio_slider_tracks: [Rect4; 3],
+    audio_slider_hits: [Rect4; 3],
     /// 画面标签页：第 0 行 auto_recovery，第 1 行 fullscreen，第 2 行 resolution，第 3 行 language。
     display_row_mids: [f32; 4],
     display_toggles: [Rect4; 2],
@@ -2375,11 +2462,11 @@ fn compute_settings_layout(sw: f32, sh: f32, scale: f32) -> SettingsLayout {
         };
     }
 
-    // 音频标签页（2 行：BGM、SFX）
-    let mut audio_row_mids = [0.0; 2];
-    let mut audio_slider_tracks = [Rect4::default(); 2];
-    let mut audio_slider_hits = [Rect4::default(); 2];
-    for i in 0..2 {
+    // 音频标签页（3 行：BGM、SFX、Voice）
+    let mut audio_row_mids = [0.0; 3];
+    let mut audio_slider_tracks = [Rect4::default(); 3];
+    let mut audio_slider_hits = [Rect4::default(); 3];
+    for i in 0..3 {
         let mid = content_top + row_h * 0.5 + (i as f32 + 1.0) * row_h;
         audio_row_mids[i] = mid;
         audio_slider_tracks[i] = Rect4 {
@@ -2578,6 +2665,17 @@ fn draw_settings_menu(engine: &mut Engine, layout: &SettingsLayout, font: &Optio
                 &format!("{:.0}%", settings.sfx_volume * 100.0),
                 layout.value_x,
                 layout.audio_row_mids[1] + 8.0 * scale,
+                value_size,
+                WHITE,
+                font,
+            );
+            // 语音音量
+            draw_text_f("语音音量", layout.label_x, layout.audio_row_mids[2] + 8.0 * scale, label_size, WHITE, font);
+            draw_slider_track(layout.audio_slider_tracks[2], settings.voice_volume, scale);
+            draw_text_f(
+                &format!("{:.0}%", settings.voice_volume * 100.0),
+                layout.value_x,
+                layout.audio_row_mids[2] + 8.0 * scale,
                 value_size,
                 WHITE,
                 font,
@@ -2852,6 +2950,7 @@ fn handle_settings_interaction(
             (SettingsTab::Text, 2) => Some(layout.auto_play_slider_tracks[1]),
             (SettingsTab::Audio, 0) => Some(layout.audio_slider_tracks[0]),
             (SettingsTab::Audio, 1) => Some(layout.audio_slider_tracks[1]),
+            (SettingsTab::Audio, 2) => Some(layout.audio_slider_tracks[2]),
             _ => None,
         };
         if let Some(track) = track_opt {
@@ -2907,8 +3006,8 @@ fn handle_settings_interaction(
                 }
             }
             SettingsTab::Audio => {
-                // BGM、SFX 滑块
-                for i in 0..2 {
+                // BGM、SFX、Voice 滑块
+                for i in 0..3 {
                     if point_in_rect(mx, my, layout.audio_slider_hits[i]) {
                         *dragging_slider = Some((SettingsTab::Audio, i));
                         update_slider_value(engine, SettingsTab::Audio, i, mx, layout.audio_slider_tracks[i]);
@@ -3050,6 +3149,7 @@ fn handle_settings_interaction(
                 current.text_speed != snapshot.text_speed
                     || current.bgm_volume != snapshot.bgm_volume
                     || current.sfx_volume != snapshot.sfx_volume
+                    || current.voice_volume != snapshot.voice_volume
                     || current.auto_recovery != snapshot.auto_recovery
                     || current.fullscreen != snapshot.fullscreen
                     || current.resolution != snapshot.resolution
@@ -3089,6 +3189,7 @@ fn update_slider_value(engine: &mut Engine, tab: SettingsTab, index: usize, mx: 
         (SettingsTab::Text, 2) => settings.auto_play_delay_without_voice = (t * 5.0 * 10.0).round() / 10.0,
         (SettingsTab::Audio, 0) => settings.bgm_volume = t,
         (SettingsTab::Audio, 1) => settings.sfx_volume = t,
+        (SettingsTab::Audio, 2) => settings.voice_volume = t,
         _ => {}
     }
 }

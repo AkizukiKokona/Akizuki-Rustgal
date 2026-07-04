@@ -280,6 +280,13 @@ fn print_events(_engine: &Engine, events: &[EngineEvent]) {
             EngineEvent::SoundPlayed { name } => {
                 println!("[Sound: {}]", name);
             }
+            EngineEvent::VoicePlayed { name } => {
+                if name.is_empty() {
+                    println!("[Voice stopped]");
+                } else {
+                    println!("[Voice: {}]", name);
+                }
+            }
             EngineEvent::TransitionStarted { kind } => {
                 println!("[Transition: {:?}]", kind);
             }

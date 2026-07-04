@@ -20,7 +20,8 @@
 //!   "narration": { "风吹过。": "風が吹いた。" },
 //!   "choices": { "选项A": "選択肢A" },
 //!   "choice_prompts": { "你选哪个？": "どちらを選ぶ？" },
-//!   "characters": { "心夏": "心夏" }
+//!   "characters": { "心夏": "心夏" },
+//!   "voice": { "你好！": "voice/hello_ja.wav" }
 //! }
 //! ```
 //!
@@ -58,6 +59,11 @@ struct TranslationFile {
     /// 逻辑层（跳转、舞台管理、存档）始终用原文，仅显示时替换。
     #[serde(default)]
     characters: HashMap<String, String>,
+    /// 语音文件引用：key = 原文对话/旁白文本，value = 语音文件名（相对 assets/voice/）。
+    /// 与文本翻译不同，找不到 key 时返回 None（表示该句无语音），不回退原文。
+    /// 语音引用按语言区分，可实现「日语配音 + 中文字幕」等组合。
+    #[serde(default)]
+    voice: HashMap<String, String>,
 }
 
 /// 剧本翻译器：运行时查表替换原文为译文。
@@ -79,6 +85,8 @@ pub struct Translator {
     choice_prompts: HashMap<String, String>,
     /// 角色名翻译表。
     characters: HashMap<String, String>,
+    /// 语音文件引用表。
+    voice: HashMap<String, String>,
 }
 
 impl Default for Translator {
@@ -92,6 +100,7 @@ impl Default for Translator {
             choices: HashMap::new(),
             choice_prompts: HashMap::new(),
             characters: HashMap::new(),
+            voice: HashMap::new(),
         }
     }
 }
@@ -141,6 +150,7 @@ impl Translator {
             choices: file.choices,
             choice_prompts: file.choice_prompts,
             characters: file.characters,
+            voice: file.voice,
         })
     }
 
@@ -187,6 +197,16 @@ impl Translator {
         self.characters.get(original).filter(|s| !s.is_empty()).map(|s| s.as_str()).unwrap_or(original)
     }
 
+    /// 查询原文对应的语音文件名。
+    /// 与文本翻译不同，找不到 key 或值为空时返回 None（表示该句无语音），
+    /// 而不是回退原文 —— 没有语音就是没有语音。
+    ///
+    /// 语音引用按语言区分，因此可实现「日语配音 + 中文字幕」等组合：
+    /// 在 ja-JP.json 里填 `voice`，但 `language` 设置读 zh-CN.json。
+    pub fn voice(&self, original: &str) -> Option<&str> {
+        self.voice.get(original).filter(|s| !s.is_empty()).map(|s| s.as_str())
+    }
+
     /// 是否为原文模式（无任何翻译条目）。
     pub fn is_original(&self) -> bool {
         self.dialogue.is_empty()
@@ -225,6 +245,11 @@ impl Translator {
         self.characters.insert(original.to_string(), translated.to_string());
     }
 
+    /// 设置语音文件引用。
+    pub fn set_voice(&mut self, original: &str, voice_file: &str) {
+        self.voice.insert(original.to_string(), voice_file.to_string());
+    }
+
     /// 序列化为 JSON 字符串。
     pub fn to_json(&self) -> Result<String, String> {
         let file = TranslationFile {
@@ -236,6 +261,7 @@ impl Translator {
             choices: self.choices.clone(),
             choice_prompts: self.choice_prompts.clone(),
             characters: self.characters.clone(),
+            voice: self.voice.clone(),
         };
         serde_json::to_string_pretty(&file)
             .map_err(|e| format!("序列化失败：{}", e))
@@ -312,6 +338,9 @@ mod tests {
   },
   "characters": {
     "心夏": "心夏"
+  },
+  "voice": {
+    "你好！": "voice/hello_ja.wav"
   }
 }
 "#;
@@ -327,6 +356,53 @@ mod tests {
         assert_eq!(t.t_choice_prompt("你选哪个？"), "どちらを選ぶ？");
         assert_eq!(t.t_section("序章"), "プロローグ");
         assert_eq!(t.t_character("心夏"), "心夏");
+    }
+
+    #[test]
+    fn test_voice_lookup() {
+        let t = Translator::from_json_str(TEST_JSON).unwrap();
+        // 命中：返回语音文件名
+        assert_eq!(t.voice("你好！"), Some("voice/hello_ja.wav"));
+        // 未命中：返回 None（不回退原文）
+        assert_eq!(t.voice("没有语音的句子"), None);
+        assert_eq!(t.voice("风吹过。"), None);
+    }
+
+    #[test]
+    fn test_voice_empty_string_is_none() {
+        let json = r#"
+{
+  "language": "ja-JP",
+  "voice": {
+    "你好！": ""
+  }
+}
+"#;
+        let t = Translator::from_json_str(json).unwrap();
+        // 空字符串视为未配置语音
+        assert_eq!(t.voice("你好！"), None);
+    }
+
+    #[test]
+    fn test_voice_omitted_in_old_json() {
+        // 旧版翻译文件没有 voice 字段，应能正常加载，voice 查询恒返回 None
+        let json = r#"
+{
+  "language": "zh-CN",
+  "dialogue": { "你好": "你好" }
+}
+"#;
+        let t = Translator::from_json_str(json).unwrap();
+        assert_eq!(t.voice("你好"), None);
+    }
+
+    #[test]
+    fn test_voice_roundtrip() {
+        let mut t = Translator::default();
+        t.set_voice("原文对话", "voice/line_001.wav");
+        let json = t.to_json().unwrap();
+        let t2 = Translator::from_json_str(&json).unwrap();
+        assert_eq!(t2.voice("原文对话"), Some("voice/line_001.wav"));
     }
 
     #[test]

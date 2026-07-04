@@ -63,6 +63,9 @@ pub enum EngineEvent {
     MusicChanged { name: String },
     /// A sound effect was played.
     SoundPlayed { name: String },
+    /// 一句对话/旁白对应的语音文件应当播放（或停止）。
+    /// `name` 为空字符串表示停止当前语音（无语音的句子）。
+    VoicePlayed { name: String },
     /// A transition started.
     TransitionStarted { kind: Transition },
     /// A transition completed.
@@ -176,8 +179,13 @@ pub struct Engine {
     read_history: HashSet<String>,
     /// 快进模式是否激活（玩家点击快进按钮后启用）。
     skip_active: bool,
+    /// 当前对话/旁白对应的语音文件名（若存在）。
+    /// 在 show_dialogue / show_narration 时查询 translator.voice(原文) 设置。
+    /// None 表示当前句子无语音。
+    current_voice: Option<String>,
     /// 语音播放进度（用于 WithVoice 模式下的快进等待）。
-    /// 由于目前没有语音系统，预留为 0 表示"已播完"。
+    /// 当前引擎不追踪语音实际播放时长，渲染层负责播放与停止；
+    /// 此字段保留供未来精细化快进控制使用，目前未使用。
     #[allow(dead_code)]
     voice_progress: f32,
     /// 自动播放倒计时剩余秒数。
@@ -215,6 +223,7 @@ impl Engine {
             hot_reloader: None,
             read_history: HashSet::new(),
             skip_active: false,
+            current_voice: None,
             voice_progress: 0.0,
             auto_play_remaining: 0.0,
             translator: Translator::new(),
@@ -298,12 +307,12 @@ impl Engine {
         self.skip_active = active;
     }
 
-    /// 当前对话是否带有语音（语音文件存在且已加载）。
+    /// 当前对话是否带有语音（翻译表的 voice 字段命中）。
     ///
-    /// 当前引擎尚未接入语音系统，始终返回 false。
-    /// 接入语音后，此方法应查询当前对话对应的语音资源是否已加载。
+    /// 注意：此方法只判断翻译表是否配置了语音引用，
+    /// 不保证语音文件实际存在或已加载（那是渲染层的职责）。
     fn current_dialogue_has_voice(&self) -> bool {
-        false
+        self.current_voice.is_some()
     }
 
     /// 自动播放倒计时剩余秒数（0 表示未在等待）。
@@ -1036,6 +1045,11 @@ impl Engine {
         self.phase = EnginePhase::Running;
         // 新对话出现，重置自动播放倒计时（待文本显示完毕后重新计时）。
         self.auto_play_remaining = 0.0;
+        // 查询语音引用：以原文为 key 查 translator.voice 表。
+        // 命中则触发 VoicePlayed 事件让渲染层播放；未命中则触发空名事件停止上一句语音。
+        let voice_name = self.translator.voice(&text).map(|s| s.to_string()).unwrap_or_default();
+        self.current_voice = if voice_name.is_empty() { None } else { Some(voice_name.clone()) };
+        events.push(EngineEvent::VoicePlayed { name: voice_name });
         events.push(EngineEvent::DialogueShown { speaker: display_speaker, text: display_text });
     }
 
@@ -1053,6 +1067,10 @@ impl Engine {
         self.phase = EnginePhase::Running;
         // 新旁白出现，重置自动播放倒计时。
         self.auto_play_remaining = 0.0;
+        // 旁白也支持语音引用（如旁白配音）
+        let voice_name = self.translator.voice(&text).map(|s| s.to_string()).unwrap_or_default();
+        self.current_voice = if voice_name.is_empty() { None } else { Some(voice_name.clone()) };
+        events.push(EngineEvent::VoicePlayed { name: voice_name });
         events.push(EngineEvent::NarrationShown { text: display_text });
     }
 
