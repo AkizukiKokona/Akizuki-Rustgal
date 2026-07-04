@@ -1,9 +1,11 @@
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 
-/// 项目配置：存储游戏项目的元数据，如标题、副标题等。
+/// 项目配置：存储游戏项目的所有个性化设置，
+/// 包括标题、作者、窗口设置、默认语言、版本号等。
 ///
 /// 保存为项目根目录下的 `project.json` 文件。
+/// 所有新增字段均带 `#[serde(default)]`，确保旧项目文件可正常加载。
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ProjectConfig {
     /// 主标题（标题页显示）
@@ -19,10 +21,38 @@ pub struct ProjectConfig {
     /// 主剧本文件路径（相对于项目根目录）
     #[serde(default = "default_script_path")]
     pub main_script: String,
+    /// OS 窗口标题栏显示的文字。若为空则回退到 title。
+    #[serde(default)]
+    pub window_title: String,
+    /// 启动时是否全屏。
+    #[serde(default)]
+    pub start_fullscreen: bool,
+    /// 默认窗口分辨率（宽，高），默认 1920×1080。
+    #[serde(default = "default_resolution")]
+    pub default_resolution: (u32, u32),
+    /// 项目默认语言代码（如 "zh-CN"、"en-US"）。
+    /// 玩家首次启动时使用此语言，之后以玩家设置为准。
+    #[serde(default = "default_language")]
+    pub language: String,
+    /// 项目版本号。
+    #[serde(default = "default_version")]
+    pub version: String,
 }
 
 fn default_script_path() -> String {
     "main.akrs".to_string()
+}
+
+fn default_resolution() -> (u32, u32) {
+    (1920, 1080)
+}
+
+fn default_language() -> String {
+    "zh-CN".to_string()
+}
+
+fn default_version() -> String {
+    "0.1.0".to_string()
 }
 
 impl Default for ProjectConfig {
@@ -33,6 +63,11 @@ impl Default for ProjectConfig {
             description: String::new(),
             author: String::new(),
             main_script: "main.akrs".to_string(),
+            window_title: String::new(),
+            start_fullscreen: false,
+            default_resolution: (1920, 1080),
+            language: "zh-CN".to_string(),
+            version: "0.1.0".to_string(),
         }
     }
 }
@@ -67,6 +102,15 @@ impl ProjectConfig {
     /// 检查副标题是否过长。
     pub fn is_subtitle_too_long(&self) -> bool {
         estimated_width(&self.subtitle) > 12.0
+    }
+
+    /// 获取有效窗口标题：window_title 非空则使用它，否则回退到 title。
+    pub fn effective_window_title(&self) -> &str {
+        if self.window_title.is_empty() {
+            &self.title
+        } else {
+            &self.window_title
+        }
     }
 }
 
