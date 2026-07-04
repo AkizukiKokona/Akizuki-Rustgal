@@ -198,6 +198,33 @@ pub struct EditorApp {
     game_process: Option<Child>,
     /// 是否显示 cargo 未安装引导。
     show_cargo_guide: bool,
+    /// 对照翻译模式：开启后中央面板显示原文-译文对照视图。
+    translation_mode: bool,
+    /// 当前编辑的目标语言代码。
+    translation_target_lang: String,
+    /// 当前加载的翻译文件内容（内存中编辑，保存时写盘）。
+    translation_file: Option<akrs_runtime::Translator>,
+    /// 可翻译行列表（从剧本解析得到），每项为 (类型, 原文)。
+    translatable_lines: Vec<TranslatableLine>,
+}
+
+/// 可翻译行的类型。
+#[derive(Debug, Clone, PartialEq)]
+enum TranslatableKind {
+    Section,
+    Dialogue,
+    Narration,
+    Choice,
+    ChoicePrompt,
+    Character,
+}
+
+/// 一条可翻译条目。
+#[derive(Debug, Clone)]
+struct TranslatableLine {
+    kind: TranslatableKind,
+    original: String,
+    line_number: usize,
 }
 
 /// 标题过长警告对话框状态。
@@ -374,6 +401,10 @@ impl Default for EditorApp {
             build: BuildState::default(),
             game_process: None,
             show_cargo_guide: false,
+            translation_mode: false,
+            translation_target_lang: "en-US".to_string(),
+            translation_file: None,
+            translatable_lines: Vec::new(),
         };
         app.refresh_file_list();
         app
@@ -678,6 +709,158 @@ impl EditorApp {
                     .count();
                 self.status = format!("编译失败（{} 个错误）", n);
             }
+        }
+    }
+
+    // -- 对照翻译 ---------------------------------------------------------
+
+    /// 从剧本内容解析可翻译行，填充 translatable_lines。
+    fn extract_translatable_lines(&mut self) {
+        self.translatable_lines.clear();
+        let mut characters_seen = std::collections::HashSet::new();
+        for (line_idx, line) in self.editor_content.lines().enumerate() {
+            let line_num = line_idx + 1;
+            let trimmed = line.trim();
+            // 章节标题：# xxx
+            if let Some(rest) = trimmed.strip_prefix('#') {
+                let title = rest.trim().to_string();
+                if !title.is_empty() {
+                    self.translatable_lines.push(TranslatableLine {
+                        kind: TranslatableKind::Section,
+                        original: title,
+                        line_number: line_num,
+                    });
+                }
+            }
+            // 角色对话：角色: "文本" 或 角色(pose): "文本"
+            else if let Some(colon_pos) = trimmed.find(':') {
+                let (speaker_part, rest) = trimmed.split_at(colon_pos);
+                let after_colon = rest[1..].trim();
+                // 提取角色名（去掉括号里的 pose）
+                let speaker = if let Some(paren_pos) = speaker_part.find('(') {
+                    speaker_part[..paren_pos].trim().to_string()
+                } else {
+                    speaker_part.trim().to_string()
+                };
+                // 后面应该是 "..."
+                if after_colon.starts_with('"') && after_colon.ends_with('"') && after_colon.len() >= 2 {
+                    let text = after_colon[1..after_colon.len() - 1].to_string();
+                    // 记录角色名
+                    if !speaker.is_empty() && characters_seen.insert(speaker.clone()) {
+                        self.translatable_lines.push(TranslatableLine {
+                            kind: TranslatableKind::Character,
+                            original: speaker,
+                            line_number: line_num,
+                        });
+                    }
+                    self.translatable_lines.push(TranslatableLine {
+                        kind: TranslatableKind::Dialogue,
+                        original: text,
+                        line_number: line_num,
+                    });
+                }
+            }
+            // 旁白：直接 "..."
+            else if trimmed.starts_with('"') && trimmed.ends_with('"') && trimmed.len() >= 2 {
+                let text = trimmed[1..trimmed.len() - 1].to_string();
+                self.translatable_lines.push(TranslatableLine {
+                    kind: TranslatableKind::Narration,
+                    original: text,
+                    line_number: line_num,
+                });
+            }
+            // 选项提示：? "提示"
+            else if trimmed.starts_with('?') {
+                let rest = trimmed[1..].trim();
+                if rest.starts_with('"') && rest.ends_with('"') && rest.len() >= 2 {
+                    let prompt = rest[1..rest.len() - 1].to_string();
+                    self.translatable_lines.push(TranslatableLine {
+                        kind: TranslatableKind::ChoicePrompt,
+                        original: prompt,
+                        line_number: line_num,
+                    });
+                }
+            }
+            // 选项：| "文本" -> ...
+            else if trimmed.starts_with('|') {
+                let rest = trimmed[1..].trim();
+                if rest.starts_with('"') {
+                    // 找结束引号
+                    if let Some(end_quote) = rest[1..].find('"') {
+                        let text = rest[1..end_quote + 1].to_string();
+                        self.translatable_lines.push(TranslatableLine {
+                            kind: TranslatableKind::Choice,
+                            original: text,
+                            line_number: line_num,
+                        });
+                    }
+                }
+            }
+        }
+    }
+
+    /// 翻译文件的路径（assets/scripts/languages/{lang}.json）。
+    fn translation_file_path(&self, lang: &str) -> PathBuf {
+        self.work_dir.join("assets").join("scripts").join("languages").join(format!("{}.json", lang))
+    }
+
+    /// 加载指定语言的翻译文件；不存在则创建空的。
+    fn load_translation(&mut self, lang: &str) {
+        let path = self.translation_file_path(lang);
+        let translator = akrs_runtime::Translator::from_file(&path);
+        self.translation_file = Some(translator);
+        self.translation_target_lang = lang.to_string();
+        self.status = format!("已加载翻译：{}", lang);
+    }
+
+    /// 保存当前翻译到文件。
+    fn save_translation(&mut self) {
+        let Some(ref translator) = self.translation_file else {
+            self.status = "无翻译数据可保存".to_string();
+            return;
+        };
+        let path = self.translation_file_path(&self.translation_target_lang);
+        if let Some(parent) = path.parent() {
+            if let Err(e) = std::fs::create_dir_all(parent) {
+                self.status = format!("创建目录失败：{}", e);
+                return;
+            }
+        }
+        match translator.to_json() {
+            Ok(json) => {
+                match std::fs::write(&path, json) {
+                    Ok(_) => {
+                        self.status = format!("翻译已保存：{}", path.display());
+                    }
+                    Err(e) => {
+                        self.status = format!("保存失败：{}", e);
+                    }
+                }
+            }
+            Err(e) => {
+                self.status = format!("序列化失败：{}", e);
+            }
+        }
+    }
+
+    /// 切换对照翻译模式。
+    fn toggle_translation_mode(&mut self) {
+        self.translation_mode = !self.translation_mode;
+        if self.translation_mode {
+            self.extract_translatable_lines();
+            // 加载或创建目标语言翻译
+            let path = self.translation_file_path(&self.translation_target_lang);
+            let translator = if path.exists() {
+                akrs_runtime::Translator::from_file(&path)
+            } else {
+                let mut t = akrs_runtime::Translator::new();
+                t.set_language(&self.translation_target_lang, "");
+                t
+            };
+            self.translation_file = Some(translator);
+            self.status = format!("对照翻译模式：{}", self.translation_target_lang);
+        } else {
+            self.status = "已退出对照翻译模式".to_string();
         }
     }
 
@@ -1091,6 +1274,160 @@ impl EditorApp {
                         .desired_width(f32::MAX)
                         .layouter(&mut layouter),
                 );
+            });
+    }
+
+    fn kind_label(kind: &TranslatableKind) -> &'static str {
+        match kind {
+            TranslatableKind::Section => "章节",
+            TranslatableKind::Dialogue => "对话",
+            TranslatableKind::Narration => "旁白",
+            TranslatableKind::Choice => "选项",
+            TranslatableKind::ChoicePrompt => "选项提示",
+            TranslatableKind::Character => "角色",
+        }
+    }
+
+    fn kind_color(kind: &TranslatableKind) -> egui::Color32 {
+        match kind {
+            TranslatableKind::Section => COLOR_SECTION,
+            TranslatableKind::Dialogue => COLOR_STRING,
+            TranslatableKind::Narration => COLOR_STRING,
+            TranslatableKind::Choice => COLOR_CHOICE,
+            TranslatableKind::ChoicePrompt => COLOR_CHOICE,
+            TranslatableKind::Character => COLOR_DIRECTION,
+        }
+    }
+
+    fn show_translation_view(&mut self, ui: &mut egui::Ui) {
+        // 顶部工具栏：目标语言选择 + 刷新 + 保存
+        ui.horizontal(|ui| {
+            ui.label("目标语言：");
+            let mut lang_input = self.translation_target_lang.clone();
+            if ui.text_edit_singleline(&mut lang_input).changed() {
+                self.translation_target_lang = lang_input;
+            }
+            if ui.button("加载").clicked() {
+                self.load_translation(&self.translation_target_lang.clone());
+            }
+            if ui.button("重新提取").clicked() {
+                self.extract_translatable_lines();
+                self.status = "已重新提取可翻译文本".to_string();
+            }
+            if ui.button("保存翻译").clicked() {
+                self.save_translation();
+            }
+            ui.separator();
+            ui.label(format!("共 {} 行可翻译", self.translatable_lines.len()));
+        });
+        ui.separator();
+
+        // 对照翻译列表
+        egui::ScrollArea::vertical()
+            .auto_shrink([false, false])
+            .show(ui, |ui| {
+                let lines: Vec<TranslatableLine> = self.translatable_lines.clone();
+                for (idx, line) in lines.iter().enumerate() {
+                    let kind_color = Self::kind_color(&line.kind);
+                    let kind_label = Self::kind_label(&line.kind);
+
+                    ui.horizontal(|ui| {
+                        ui.label(
+                            egui::RichText::new(format!("[{}]", kind_label))
+                                .color(kind_color)
+                                .monospace()
+                                .size(11.0),
+                        );
+                        ui.label(
+                            egui::RichText::new(format!("行 {}", line.line_number))
+                                .color(egui::Color32::from_rgb(150, 150, 150))
+                                .monospace()
+                                .size(11.0),
+                        );
+                        ui.label(
+                            egui::RichText::new(format!("#{}", idx + 1))
+                                .color(egui::Color32::from_rgb(120, 120, 120))
+                                .monospace()
+                                .size(11.0),
+                        );
+                    });
+
+                    // 原文（只读，灰色背景）
+                    ui.horizontal(|ui| {
+                        ui.add_space(8.0);
+                        ui.vertical(|ui| {
+                            ui.label(
+                                egui::RichText::new("原文")
+                                    .color(egui::Color32::from_rgb(180, 180, 180))
+                                    .size(11.0),
+                            );
+                            let bg = egui::Frame::none()
+                                .fill(egui::Color32::from_rgba_unmultiplied(40, 40, 50, 180))
+                                .rounding(4.0)
+                                .inner_margin(egui::Vec2::new(8.0, 4.0));
+                            bg.show(ui, |ui| {
+                                ui.add(
+                                    egui::TextEdit::multiline(&mut line.original.as_str())
+                                        .desired_width(f32::MAX)
+                                        .desired_rows(1)
+                                        .text_color(egui::Color32::from_rgb(220, 220, 220))
+                                        .interactive(false),
+                                );
+                            });
+                        });
+                    });
+
+                    // 译文输入框
+                    if let Some(translator) = self.translation_file.as_mut() {
+                        let current_translation = match line.kind {
+                            TranslatableKind::Section => translator.t_section(&line.original).to_string(),
+                            TranslatableKind::Dialogue => translator.t_dialogue(&line.original).to_string(),
+                            TranslatableKind::Narration => translator.t_narration(&line.original).to_string(),
+                            TranslatableKind::Choice => translator.t_choice(&line.original).to_string(),
+                            TranslatableKind::ChoicePrompt => translator.t_choice_prompt(&line.original).to_string(),
+                            TranslatableKind::Character => translator.t_character(&line.original).to_string(),
+                        };
+                        let mut translation_buf = current_translation.clone();
+
+                        ui.horizontal(|ui| {
+                            ui.add_space(8.0);
+                            ui.vertical(|ui| {
+                                ui.label(
+                                    egui::RichText::new("译文")
+                                        .color(egui::Color32::from_rgb(150, 200, 255))
+                                        .size(11.0),
+                                );
+                                let bg = egui::Frame::none()
+                                    .fill(egui::Color32::from_rgba_unmultiplied(30, 40, 60, 200))
+                                    .rounding(4.0)
+                                    .inner_margin(egui::Vec2::new(8.0, 4.0));
+                                let response = bg.show(ui, |ui| {
+                                    ui.add(
+                                        egui::TextEdit::multiline(&mut translation_buf)
+                                            .desired_width(f32::MAX)
+                                            .desired_rows(1)
+                                            .text_color(egui::Color32::WHITE)
+                                            .hint_text("输入翻译..."),
+                                    )
+                                });
+                                if response.inner.changed() {
+                                    match line.kind {
+                                        TranslatableKind::Section => translator.set_section(&line.original, &translation_buf),
+                                        TranslatableKind::Dialogue => translator.set_dialogue(&line.original, &translation_buf),
+                                        TranslatableKind::Narration => translator.set_narration(&line.original, &translation_buf),
+                                        TranslatableKind::Choice => translator.set_choice(&line.original, &translation_buf),
+                                        TranslatableKind::ChoicePrompt => translator.set_choice_prompt(&line.original, &translation_buf),
+                                        TranslatableKind::Character => translator.set_character(&line.original, &translation_buf),
+                                    }
+                                }
+                            });
+                        });
+                    }
+
+                    ui.add_space(4.0);
+                    ui.separator();
+                    ui.add_space(4.0);
+                }
             });
     }
 
@@ -1520,6 +1857,16 @@ impl eframe::App for EditorApp {
                     self.show_about = true;
                 }
                 ui.separator();
+                if self.translation_mode {
+                    if ui.button("退出对照翻译").clicked() {
+                        self.toggle_translation_mode();
+                    }
+                } else {
+                    if ui.button("对照翻译").clicked() {
+                        self.toggle_translation_mode();
+                    }
+                }
+                ui.separator();
                 ui.label(format!("文件：{}", self.file_name_input));
             });
         });
@@ -1640,6 +1987,8 @@ impl eframe::App for EditorApp {
         egui::CentralPanel::default().show(ctx, |ui| {
             if self.show_welcome {
                 self.show_welcome_panel(ui);
+            } else if self.translation_mode {
+                self.show_translation_view(ui);
             } else {
                 self.show_editor(ui);
             }
