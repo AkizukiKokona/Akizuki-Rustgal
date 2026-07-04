@@ -646,6 +646,8 @@ pub async fn run(mut engine: Engine, project_config: &ProjectConfig) {
     let mut dropdown_open: bool = false;
     // Whether the skip mode dropdown in the settings menu is expanded.
     let mut skip_dropdown_open: bool = false;
+    // Whether the language dropdown in the settings menu is expanded.
+    let mut lang_dropdown_open: bool = false;
     // 当前激活的设置标签页。
     let mut settings_active_tab: SettingsTab = SettingsTab::Text;
     // Current page index for the save / load menus (grid paging).
@@ -833,6 +835,7 @@ pub async fn run(mut engine: Engine, project_config: &ProjectConfig) {
                     // 恢复进入设置菜单前的设置快照
                     if let Some(snapshot) = settings_snapshot.clone() {
                         *engine.settings_mut() = snapshot;
+                        engine.reload_language();
                     }
                     settings_snapshot = None;
                     // 放弃设置后返回之前的模式
@@ -872,7 +875,7 @@ pub async fn run(mut engine: Engine, project_config: &ProjectConfig) {
                 settings_active_tab = SettingsTab::Text;
             }
             // 设置菜单内部绘制背景和所有控件
-            draw_settings_menu(&mut engine, &settings_layout, &font, dropdown_open, skip_dropdown_open, settings_active_tab, scale);
+            draw_settings_menu(&mut engine, &settings_layout, &font, dropdown_open, skip_dropdown_open, lang_dropdown_open, settings_active_tab, scale);
         } else if ui_mode == UiMode::ConfirmDialog {
             // 确认对话框：先绘制底层界面（保持上下文可见），再叠加 8% 黑色 + 对话框。
             // confirm_return_mode 记录了确认对话框返回后应恢复的模式，据此绘制底层。
@@ -881,7 +884,7 @@ pub async fn run(mut engine: Engine, project_config: &ProjectConfig) {
                     if settings_snapshot.is_none() {
                         settings_snapshot = Some(engine.settings().clone());
                     }
-                    draw_settings_menu(&mut engine, &settings_layout, &font, dropdown_open, skip_dropdown_open, settings_active_tab, scale);
+                    draw_settings_menu(&mut engine, &settings_layout, &font, dropdown_open, skip_dropdown_open, lang_dropdown_open, settings_active_tab, scale);
                 }
                 UiMode::Normal => {
                     if engine.phase() == EnginePhase::Title {
@@ -949,7 +952,7 @@ pub async fn run(mut engine: Engine, project_config: &ProjectConfig) {
             if ui_mode == UiMode::SettingsMenu {
                 if let Some((target, pending)) = handle_settings_interaction(
                     &mut engine, &settings_layout, &mut dragging_slider, &mut dropdown_open,
-                    &mut skip_dropdown_open, &mut settings_active_tab, scale,
+                    &mut skip_dropdown_open, &mut lang_dropdown_open, &mut settings_active_tab, scale,
                     &settings_snapshot, &mut settings_prev_mode,
                 ) {
                     // 如果返回确认对话框，设置确认类型
@@ -2279,10 +2282,11 @@ struct SettingsLayout {
     audio_row_mids: [f32; 2],
     audio_slider_tracks: [Rect4; 2],
     audio_slider_hits: [Rect4; 2],
-    /// 画面标签页：第 0 行 auto_recovery，第 1 行 fullscreen，第 2 行 resolution。
-    display_row_mids: [f32; 3],
+    /// 画面标签页：第 0 行 auto_recovery，第 1 行 fullscreen，第 2 行 resolution，第 3 行 language。
+    display_row_mids: [f32; 4],
     display_toggles: [Rect4; 2],
     display_dropdown: Rect4,
+    language_dropdown: Rect4,
     /// 快进标签页：第 0 行 skip_unread，第 1 行 skip_mode 下拉。
     skip_row_mids: [f32; 2],
     skip_toggle: Rect4,
@@ -2388,10 +2392,10 @@ fn compute_settings_layout(sw: f32, sh: f32, scale: f32) -> SettingsLayout {
         };
     }
 
-    // 画面标签页（3 行：自动续播、全屏、分辨率）
-    let mut display_row_mids = [0.0; 3];
+    // 画面标签页（4 行：自动续播、全屏、分辨率、语言）
+    let mut display_row_mids = [0.0; 4];
     let mut display_toggles = [Rect4::default(); 2];
-    for i in 0..3 {
+    for i in 0..4 {
         display_row_mids[i] = content_top + row_h * 0.5 + (i as f32 + 1.0) * row_h;
     }
     for i in 0..2 {
@@ -2403,6 +2407,10 @@ fn compute_settings_layout(sw: f32, sh: f32, scale: f32) -> SettingsLayout {
     }
     let display_dropdown = Rect4 {
         x: control_x, y: display_row_mids[2] - 26.0 * scale,
+        w: 312.0 * scale, h: 53.0 * scale,
+    };
+    let language_dropdown = Rect4 {
+        x: control_x, y: display_row_mids[3] - 26.0 * scale,
         w: 312.0 * scale, h: 53.0 * scale,
     };
 
@@ -2442,7 +2450,7 @@ fn compute_settings_layout(sw: f32, sh: f32, scale: f32) -> SettingsLayout {
         auto_play_row_mids, auto_play_toggle,
         auto_play_slider_tracks, auto_play_slider_hits,
         audio_row_mids, audio_slider_tracks, audio_slider_hits,
-        display_row_mids, display_toggles, display_dropdown,
+        display_row_mids, display_toggles, display_dropdown, language_dropdown,
         skip_row_mids, skip_toggle, skip_dropdown,
         apply_btn, cancel_btn,
     }
@@ -2451,7 +2459,7 @@ fn compute_settings_layout(sw: f32, sh: f32, scale: f32) -> SettingsLayout {
 /// Draw the interactive full-screen settings menu. Reads live values from the
 /// engine so dragging a slider is reflected immediately.  The dropdown list
 /// is drawn last (via `draw_dropdown_list`) so it floats above the back button.
-fn draw_settings_menu(engine: &mut Engine, layout: &SettingsLayout, font: &Option<Font>, dropdown_open: bool, skip_dropdown_open: bool, active_tab: SettingsTab, scale: f32) {
+fn draw_settings_menu(engine: &mut Engine, layout: &SettingsLayout, font: &Option<Font>, dropdown_open: bool, skip_dropdown_open: bool, lang_dropdown_open: bool, active_tab: SettingsTab, scale: f32) {
     // 天蓝色背景
     draw_rectangle(layout.panel_x, layout.panel_y, layout.panel_w, layout.panel_h,
         Color::new(0.1, 0.15, 0.3, 0.95));
@@ -2585,6 +2593,9 @@ fn draw_settings_menu(engine: &mut Engine, layout: &SettingsLayout, font: &Optio
             // 分辨率下拉
             draw_text_f("分辨率", layout.label_x, layout.display_row_mids[2] + 8.0 * scale, label_size, WHITE, font);
             draw_dropdown_box_resolution(layout.display_dropdown, settings.resolution, font, dropdown_open, scale);
+            // 语言下拉
+            draw_text_f("语言", layout.label_x, layout.display_row_mids[3] + 8.0 * scale, label_size, WHITE, font);
+            draw_dropdown_box_language(layout.language_dropdown, engine, font, lang_dropdown_open, scale);
         }
         SettingsTab::Skip => {
             // 允许跳过未读文本
@@ -2625,6 +2636,9 @@ fn draw_settings_menu(engine: &mut Engine, layout: &SettingsLayout, font: &Optio
     // control (including the buttons) — fixes the z-order issue.
     if dropdown_open && active_tab == SettingsTab::Display {
         draw_dropdown_list_resolution(layout.display_dropdown, settings.resolution, font, scale);
+    }
+    if lang_dropdown_open && active_tab == SettingsTab::Display {
+        draw_dropdown_list_language(layout.language_dropdown, engine, font, scale);
     }
     if skip_dropdown_open && active_tab == SettingsTab::Skip {
         draw_dropdown_list_skip_mode(layout.skip_dropdown, settings.skip_mode, font, scale);
@@ -2713,6 +2727,55 @@ fn draw_dropdown_list_resolution(r: Rect4, resolution: (u32, u32), font: &Option
     }
 }
 
+/// 语言下拉菜单的折叠框。
+fn draw_dropdown_box_language(r: Rect4, engine: &Engine, font: &Option<Font>, open: bool, scale: f32) {
+    draw_rectangle(r.x, r.y, r.w, r.h, Color::new(0.15, 0.25, 0.45, 0.9));
+    draw_rectangle_lines(r.x, r.y, r.w, r.h, 1.5 * scale, Color::new(0.45, 0.7, 0.95, 0.8));
+    let label = if engine.translator().language().is_empty() {
+        "原文".to_string()
+    } else {
+        format!("{} ({})", engine.translator().display_name(), engine.translator().language())
+    };
+    let label_size = 20.0 * scale;
+    draw_text_f(&label, r.x + 12.0 * scale, r.y + r.h / 2.0 + 7.0 * scale, label_size, WHITE, font);
+    let arrow = if open { "v" } else { ">" };
+    let arrow_size = 18.0 * scale;
+    draw_text_f(
+        arrow,
+        r.x + r.w - 24.0 * scale,
+        r.y + r.h / 2.0 + 7.0 * scale,
+        arrow_size,
+        Color::new(0.5, 0.75, 1.0, 0.9),
+        font,
+    );
+}
+
+/// 语言下拉菜单的展开列表。
+fn draw_dropdown_list_language(r: Rect4, engine: &Engine, font: &Option<Font>, scale: f32) {
+    let item_h = 32.0 * scale;
+    let available = engine.available_languages();
+    let mut options: Vec<(String, String)> = Vec::new();
+    options.push(("".to_string(), "原文".to_string()));
+    for (code, name) in &available {
+        options.push((code.clone(), format!("{} ({})", name, code)));
+    }
+    let list_h = item_h * options.len() as f32;
+    draw_rectangle(r.x, r.y + r.h, r.w, list_h, Color::new(0.12, 0.2, 0.35, 0.97));
+    draw_rectangle_lines(r.x, r.y + r.h, r.w, list_h, 1.0 * scale, Color::new(0.45, 0.7, 0.95, 0.6));
+    let item_size = 18.0 * scale;
+    let current_lang = engine.settings().language.clone();
+    for (i, (code, label)) in options.iter().enumerate() {
+        let iy = r.y + r.h + i as f32 * item_h;
+        let is_selected = *code == current_lang;
+        let color = if is_selected {
+            Color::new(0.5, 0.75, 1.0, 0.95)
+        } else {
+            WHITE
+        };
+        draw_text_f(label, r.x + 12.0 * scale, iy + item_h / 2.0 + 6.0 * scale, item_size, color, font);
+    }
+}
+
 /// 快进模式下拉菜单的折叠框。
 fn draw_dropdown_box_skip_mode(r: Rect4, mode: SkipMode, font: &Option<Font>, open: bool, scale: f32) {
     draw_rectangle(r.x, r.y, r.w, r.h, Color::new(0.15, 0.25, 0.45, 0.9));
@@ -2768,6 +2831,7 @@ fn handle_settings_interaction(
     dragging_slider: &mut Option<(SettingsTab, usize)>,
     dropdown_open: &mut bool,
     skip_dropdown_open: &mut bool,
+    lang_dropdown_open: &mut bool,
     active_tab: &mut SettingsTab,
     scale: f32,
     settings_snapshot: &Option<Settings>,
@@ -2809,6 +2873,7 @@ fn handle_settings_interaction(
                 *active_tab = *tab;
                 *dropdown_open = false;
                 *skip_dropdown_open = false;
+                *lang_dropdown_open = false;
                 return None;
             }
         }
@@ -2867,6 +2932,7 @@ fn handle_settings_interaction(
                 // 分辨率下拉
                 if point_in_rect(mx, my, layout.display_dropdown) {
                     *dropdown_open = !*dropdown_open;
+                    *lang_dropdown_open = false;
                     return None;
                 }
                 if *dropdown_open {
@@ -2893,6 +2959,44 @@ fn handle_settings_interaction(
                     }
                     // Clicked outside the list: close it.
                     *dropdown_open = false;
+                    return None;
+                }
+                // 语言下拉
+                if point_in_rect(mx, my, layout.language_dropdown) {
+                    *lang_dropdown_open = !*lang_dropdown_open;
+                    *dropdown_open = false;
+                    return None;
+                }
+                if *lang_dropdown_open {
+                    let item_h = 32.0 * scale;
+                    let available = engine.available_languages();
+                    let mut options: Vec<(String, String)> = Vec::new();
+                    options.push(("".to_string(), "原文".to_string()));
+                    for (code, name) in &available {
+                        options.push((code.clone(), format!("{} ({})", name, code)));
+                    }
+                    let mut hit = false;
+                    for (i, (code, _)) in options.iter().enumerate() {
+                        let item_y = layout.language_dropdown.y + layout.language_dropdown.h + i as f32 * item_h;
+                        let item_rect = Rect4 {
+                            x: layout.language_dropdown.x,
+                            y: item_y,
+                            w: layout.language_dropdown.w,
+                            h: item_h,
+                        };
+                        if point_in_rect(mx, my, item_rect) {
+                            engine.settings_mut().language = code.clone();
+                            engine.reload_language();
+                            *lang_dropdown_open = false;
+                            hit = true;
+                            break;
+                        }
+                    }
+                    if hit {
+                        return None;
+                    }
+                    // Clicked outside the list: close it.
+                    *lang_dropdown_open = false;
                     return None;
                 }
             }
@@ -2954,6 +3058,7 @@ fn handle_settings_interaction(
                     || current.auto_play != snapshot.auto_play
                     || current.auto_play_delay_with_voice != snapshot.auto_play_delay_with_voice
                     || current.auto_play_delay_without_voice != snapshot.auto_play_delay_without_voice
+                    || current.language != snapshot.language
             } else {
                 false
             };

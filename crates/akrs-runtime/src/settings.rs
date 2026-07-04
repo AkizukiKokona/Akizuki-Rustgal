@@ -98,6 +98,10 @@ pub struct Settings {
     /// 自动播放时，当前对话无语音的间隔（秒），默认 2.0。
     #[serde(default = "default_auto_play_delay_without_voice")]
     pub auto_play_delay_without_voice: f32,
+    /// 当前选择的语言代码（如 "zh-CN"、"en-US"、"ja-JP"）。
+    /// 空字符串表示使用系统默认语言。
+    #[serde(default)]
+    pub language: String,
 }
 
 fn default_auto_recovery() -> bool {
@@ -127,6 +131,7 @@ impl Default for Settings {
             auto_play: false,
             auto_play_delay_with_voice: 1.0,
             auto_play_delay_without_voice: 2.0,
+            language: String::new(),
         }
     }
 }
@@ -167,5 +172,16 @@ impl Settings {
     /// The default file path for persistent settings (`saves/settings.json`).
     pub fn default_path() -> std::path::PathBuf {
         std::path::PathBuf::from("saves").join("settings.json")
+    }
+
+    /// 获取有效语言代码。
+    /// 若 settings.language 为空，则检测系统语言并返回；
+    /// 不在支持列表中时回退到 en-US。
+    pub fn effective_language(&self) -> String {
+        if !self.language.is_empty() {
+            self.language.clone()
+        } else {
+            crate::translator::detect_system_language()
+        }
     }
 }

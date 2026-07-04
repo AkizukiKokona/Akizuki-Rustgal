@@ -32,6 +32,7 @@
 use crate::game_state::{SceneState, ChoiceOptionState};
 use crate::save_load::SaveManager;
 use crate::settings::{Settings, SkipMode};
+use crate::translator::Translator;
 use crate::transition::TransitionManager;
 
 use akrs_core::{
@@ -184,6 +185,11 @@ pub struct Engine {
     /// 每帧递减；归零后自动 vm.advance()。
     /// 玩家手动点击 advance() 时重置为 0（取消等待，立即推进）。
     auto_play_remaining: f32,
+    /// 剧本翻译器：运行时把原文对话/旁白/选项替换为目标语言译文。
+    /// 原文即 key，查不到则回退原文，逻辑层（VM/存档/跳转）不受影响。
+    translator: Translator,
+    /// 翻译文件所在目录，用于 reload_language 时定位语言文件。
+    translations_dir: Option<std::path::PathBuf>,
 }
 
 impl Engine {
@@ -211,6 +217,8 @@ impl Engine {
             skip_active: false,
             voice_progress: 0.0,
             auto_play_remaining: 0.0,
+            translator: Translator::new(),
+            translations_dir: None,
         })
     }
 
@@ -313,6 +321,77 @@ impl Engine {
     /// 已读历史（不可变访问，供调试用）。
     pub fn read_history(&self) -> &HashSet<String> {
         &self.read_history
+    }
+
+    /// 访问翻译器（不可变）。
+    pub fn translator(&self) -> &Translator {
+        &self.translator
+    }
+
+    /// 直接设置翻译器（用于加载新的语言文件）。
+    pub fn set_translator(&mut self, translator: Translator) {
+        self.translator = translator;
+    }
+
+    /// 从文件加载翻译器，并保存语言选择到 settings。
+    pub fn load_language(&mut self, lang_code: &str, translations_dir: &std::path::Path) {
+        let path = translations_dir.join(format!("{}.json", lang_code));
+        if path.exists() {
+            self.translator = Translator::from_file(&path);
+        } else {
+            eprintln!("[Engine] 语言文件不存在：{:?}，使用原文", path);
+            self.translator = Translator::new();
+        }
+        self.settings.language = lang_code.to_string();
+        self.translations_dir = Some(translations_dir.to_path_buf());
+    }
+
+    /// 根据当前 settings.language 重新加载翻译文件（切换语言时调用）。
+    /// 若未设置过 translations_dir 或语言文件不存在，则回退到原文。
+    pub fn reload_language(&mut self) {
+        let Some(dir) = self.translations_dir.clone() else {
+            self.translator = Translator::new();
+            return;
+        };
+        let lang = self.settings.effective_language();
+        let path = dir.join(format!("{}.json", lang));
+        if path.exists() {
+            self.translator = Translator::from_file(&path);
+        } else {
+            eprintln!("[Engine] 语言文件不存在：{:?}，使用原文", path);
+            self.translator = Translator::new();
+        }
+    }
+
+    /// 获取可用语言列表（扫描翻译目录）。
+    /// 返回 (语言代码, 显示名) 的 Vec。
+    pub fn available_languages(&self) -> Vec<(String, String)> {
+        let mut result = Vec::new();
+        let Some(dir) = self.translations_dir.clone() else {
+            return result;
+        };
+        let Ok(entries) = std::fs::read_dir(&dir) else {
+            return result;
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.extension().and_then(|e| e.to_str()) == Some("json") {
+                if let Some(stem) = path.file_stem().and_then(|s| s.to_str()) {
+                    // 尝试读取 display_name
+                    let display = if let Ok(content) = std::fs::read_to_string(&path) {
+                        serde_json::from_str::<serde_json::Value>(&content)
+                            .ok()
+                            .and_then(|v| v.get("display_name")?.as_str().map(|s| s.to_string()))
+                            .unwrap_or_else(|| stem.to_string())
+                    } else {
+                        stem.to_string()
+                    };
+                    result.push((stem.to_string(), display));
+                }
+            }
+        }
+        result.sort_by(|a, b| a.0.cmp(&b.0));
+        result
     }
 
     /// Load persistent settings from `saves/settings.json`.
@@ -860,16 +939,21 @@ impl Engine {
                 }
                 VmEvent::Choice { prompt, options } => {
                     let opts: Vec<ChoiceOptionState> = options.into_iter()
-                        .map(|o| ChoiceOptionState { text: o.text, available: o.available })
+                        .map(|o| {
+                            let translated = self.translator.t_choice(&o.text).to_string();
+                            ChoiceOptionState { text: translated, available: o.available }
+                        })
                         .collect();
+                    let translated_prompt = prompt.as_ref()
+                        .map(|p| self.translator.t_choice_prompt(p).to_string());
 
                     if self.transition.is_active() {
-                        self.pending = Some(PendingEvent::Choices { prompt, options: opts });
+                        self.pending = Some(PendingEvent::Choices { prompt: translated_prompt.clone(), options: opts });
                         self.phase = EnginePhase::Transitioning;
                     } else {
-                        self.scene.set_choices(prompt.clone(), opts.clone());
+                        self.scene.set_choices(translated_prompt.clone(), opts.clone());
                         self.phase = EnginePhase::ChoicePending;
-                        events.push(EngineEvent::ChoicesShown { prompt, options: opts });
+                        events.push(EngineEvent::ChoicesShown { prompt: translated_prompt, options: opts });
                     }
                     return;
                 }
@@ -938,33 +1022,38 @@ impl Engine {
         text: String,
         events: &mut Vec<EngineEvent>,
     ) {
-        self.scene.set_dialogue(speaker.clone(), pose, text.clone());
+        // 记录已读历史（用原文，跨语言稳定）
+        let key = format!("{}|{}", speaker, text);
+        self.read_history.insert(key);
+        // 翻译显示文本：角色名 + 对话正文
+        let display_speaker = self.translator.t_character(&speaker).to_string();
+        let display_text = self.translator.t_dialogue(&text).to_string();
+        self.scene.set_dialogue(display_speaker.clone(), pose, display_text.clone());
         self.typewriter.start(
-            text.chars().count(),
+            display_text.chars().count(),
             self.settings.text_speed,
         );
         self.phase = EnginePhase::Running;
         // 新对话出现，重置自动播放倒计时（待文本显示完毕后重新计时）。
         self.auto_play_remaining = 0.0;
-        // 记录已读历史
-        let key = format!("{}|{}", speaker, text);
-        self.read_history.insert(key);
-        events.push(EngineEvent::DialogueShown { speaker, text });
+        events.push(EngineEvent::DialogueShown { speaker: display_speaker, text: display_text });
     }
 
     fn show_narration(&mut self, text: String, events: &mut Vec<EngineEvent>) {
-        self.scene.set_narration(text.clone());
+        // 记录已读历史（用原文，跨语言稳定；旁白 speaker 为空）
+        let key = format!("|{}", text);
+        self.read_history.insert(key);
+        // 翻译显示文本
+        let display_text = self.translator.t_narration(&text).to_string();
+        self.scene.set_narration(display_text.clone());
         self.typewriter.start(
-            text.chars().count(),
+            display_text.chars().count(),
             self.settings.text_speed,
         );
         self.phase = EnginePhase::Running;
         // 新旁白出现，重置自动播放倒计时。
         self.auto_play_remaining = 0.0;
-        // 记录已读历史（旁白 speaker 为空）
-        let key = format!("|{}", text);
-        self.read_history.insert(key);
-        events.push(EngineEvent::NarrationShown { text });
+        events.push(EngineEvent::NarrationShown { text: display_text });
     }
 
     fn handle_command(

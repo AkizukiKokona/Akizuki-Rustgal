@@ -81,7 +81,7 @@ async fn main() {
         let _ = std::io::stdin().read_line(&mut String::new());
     }));
 
-    let (script, project_config, _project_dir) = load_script_and_config();
+    let (script, project_config, project_dir) = load_script_and_config();
 
     let mut engine = match Engine::new(&script) {
         Ok(engine) => engine,
@@ -107,6 +107,16 @@ async fn main() {
 
     // 设置项目标题
     engine.set_title(project_config.title, project_config.subtitle);
+
+    // 加载玩家设置（包括语言偏好）
+    engine.load_settings();
+
+    // 根据设置加载对应语言的翻译文件
+    let translations_dir = project_dir.join("assets").join("scripts").join("languages");
+    let effective_lang = engine.settings().effective_language();
+    if translations_dir.exists() {
+        engine.load_language(&effective_lang, &translations_dir);
+    }
 
     akrs_render::run(engine, &project_config).await;
 }
