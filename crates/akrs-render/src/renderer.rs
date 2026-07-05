@@ -809,18 +809,24 @@ pub async fn run(mut engine: Engine, project_config: &ProjectConfig) {
         }
 
         // Handle title music：进入标题画面时循环播放 title_bgm.mp3（若存在）
-        if engine.phase() == EnginePhase::Title && !title_music_played {
-            title_music_played = true;
-            if current_bgm.is_none() {
-                if let Some(sound) = assets.get_sound(AssetKind::Music, "title_bgm.mp3").await {
-                    let vol = engine.settings().bgm_volume;
-                    play_sound(
-                        sound,
-                        PlaySoundParams { looped: true, volume: vol },
-                    );
-                    current_bgm = Some(sound);
+        // 离开标题时重置 title_music_played，使玩家从游戏返回标题时能重新播放。
+        if engine.phase() == EnginePhase::Title {
+            if !title_music_played {
+                title_music_played = true;
+                if current_bgm.is_none() {
+                    if let Some(sound) = assets.get_sound(AssetKind::Music, "title_bgm.mp3").await {
+                        let vol = engine.settings().bgm_volume;
+                        play_sound(
+                            sound,
+                            PlaySoundParams { looped: true, volume: vol },
+                        );
+                        current_bgm = Some(sound);
+                    }
                 }
             }
+        } else {
+            // 离开标题阶段，重置标志，下次回到标题时会重新检测并播放
+            title_music_played = false;
         }
 
         // 实时同步 BGM 音量：当设置页调整 BGM 音量时立即生效
