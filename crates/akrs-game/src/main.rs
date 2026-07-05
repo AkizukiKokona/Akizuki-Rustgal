@@ -105,8 +105,8 @@ async fn main() {
         }
     };
 
-    // 设置项目标题
-    engine.set_title(project_config.title, project_config.subtitle);
+    // 设置项目标题（克隆字段，避免 project_config 被部分移动后无法再借用）
+    engine.set_title(project_config.title.clone(), project_config.subtitle.clone());
 
     // 加载玩家设置（包括语言偏好）
     engine.load_settings();
@@ -116,6 +116,9 @@ async fn main() {
     let effective_lang = engine.settings().effective_language();
     if translations_dir.exists() {
         engine.load_language(&effective_lang, &translations_dir);
+        // 同时加载 UI 翻译文件（若存在）；UI 语言独立于剧本语言
+        let effective_ui_lang = engine.settings().effective_ui_language();
+        engine.load_ui_language(&effective_ui_lang, &translations_dir);
     }
 
     akrs_render::run(engine, &project_config).await;

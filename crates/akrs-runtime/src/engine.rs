@@ -32,7 +32,7 @@
 use crate::game_state::{SceneState, ChoiceOptionState};
 use crate::save_load::SaveManager;
 use crate::settings::{Settings, SkipMode};
-use crate::translator::Translator;
+use crate::translator::{Translator, UiTranslator};
 use crate::transition::TransitionManager;
 
 use akrs_core::{
@@ -196,6 +196,9 @@ pub struct Engine {
     /// 剧本翻译器：运行时把原文对话/旁白/选项替换为目标语言译文。
     /// 原文即 key，查不到则回退原文，逻辑层（VM/存档/跳转）不受影响。
     translator: Translator,
+    /// UI 翻译器：翻译界面硬编码文本（按钮标签、菜单标题等）。
+    /// 与剧本翻译器独立，可单独切换 UI 语言。
+    ui_translator: UiTranslator,
     /// 翻译文件所在目录，用于 reload_language 时定位语言文件。
     translations_dir: Option<std::path::PathBuf>,
 }
@@ -227,6 +230,7 @@ impl Engine {
             voice_progress: 0.0,
             auto_play_remaining: 0.0,
             translator: Translator::new(),
+            ui_translator: UiTranslator::new(),
             translations_dir: None,
         })
     }
@@ -370,6 +374,57 @@ impl Engine {
             eprintln!("[Engine] 语言文件不存在：{:?}，使用原文", path);
             self.translator = Translator::new();
         }
+    }
+
+    /// 从目录加载 UI 翻译文件。UI 翻译文件位于 `<translations_dir>/ui/<lang>.json`。
+    /// 文件不存在时回退到空 UI 翻译器（所有查询回退到 key 本身，即英文标识符）。
+    pub fn load_ui_language(&mut self, lang_code: &str, translations_dir: &std::path::Path) {
+        let ui_dir = translations_dir.join("ui");
+        let path = ui_dir.join(format!("{}.json", lang_code));
+        if path.exists() {
+            match UiTranslator::from_file(&path, lang_code.to_string()) {
+                Ok(t) => self.ui_translator = t,
+                Err(e) => {
+                    eprintln!("[Engine] UI 翻译文件加载失败：{}", e);
+                    self.ui_translator = UiTranslator::new();
+                }
+            }
+        } else {
+            // UI 翻译文件不存在不报错，静默回退到 key 本身（英文标识符）
+            self.ui_translator = UiTranslator::new();
+        }
+        self.settings.ui_language = lang_code.to_string();
+    }
+
+    /// 根据当前 settings.effective_ui_language() 重新加载 UI 翻译文件。
+    pub fn reload_ui_language(&mut self) {
+        let Some(dir) = self.translations_dir.clone() else {
+            self.ui_translator = UiTranslator::new();
+            return;
+        };
+        let lang = self.settings.effective_ui_language();
+        let path = dir.join("ui").join(format!("{}.json", lang));
+        if path.exists() {
+            match UiTranslator::from_file(&path, lang) {
+                Ok(t) => self.ui_translator = t,
+                Err(e) => {
+                    eprintln!("[Engine] UI 翻译文件加载失败：{}", e);
+                    self.ui_translator = UiTranslator::new();
+                }
+            }
+        } else {
+            self.ui_translator = UiTranslator::new();
+        }
+    }
+
+    /// 获取 UI 翻译器引用。
+    pub fn ui_translator(&self) -> &UiTranslator {
+        &self.ui_translator
+    }
+
+    /// 查询 UI 文本。找不到译文时回退到 key 本身。
+    pub fn t_ui<'a>(&'a self, key: &'a str) -> &'a str {
+        self.ui_translator.t(key)
     }
 
     /// 获取可用语言列表（扫描翻译目录）。

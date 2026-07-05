@@ -313,6 +313,79 @@ pub fn detect_system_language() -> String {
     "en-US".to_string()
 }
 
+/// UI 界面文本翻译器。
+///
+/// 与剧本翻译器（`Translator`）不同，UI 翻译器只翻译界面硬编码文本
+/// （按钮标签、菜单标题等），不影响剧本文本。两者使用独立的翻译文件，
+/// 互不干扰，从而实现「UI 语言」与「剧本语言」分离。
+///
+/// # 文件格式
+///
+/// `assets/scripts/languages/ui/<lang>.json` 是扁平的 `{ "key": "译文" }` 结构：
+///
+/// ```json
+/// {
+///   "title.start": "开始游戏",
+///   "title.settings": "设置",
+///   "settings.label": "设置",
+///   "button.back": "返回"
+/// }
+/// ```
+///
+/// key 使用稳定标识符（不随 UI 改版而变化），找不到时回退到 key 本身。
+pub struct UiTranslator {
+    /// 语言代码。
+    language: String,
+    /// 翻译表：key → 译文。
+    entries: HashMap<String, String>,
+}
+
+impl UiTranslator {
+    /// 创建空的 UI 翻译器（无任何翻译，所有查询回退到 key）。
+    pub fn new() -> Self {
+        Self {
+            language: String::new(),
+            entries: HashMap::new(),
+        }
+    }
+
+    /// 从 JSON 字符串加载 UI 翻译表。
+    /// JSON 格式为 `{ "key": "译文", ... }`。
+    pub fn from_json_str(json: &str, language: String) -> Result<Self, String> {
+        let entries: HashMap<String, String> = serde_json::from_str(json)
+            .map_err(|e| format!("UI 翻译文件解析失败：{}", e))?;
+        Ok(Self { language, entries })
+    }
+
+    /// 从文件加载 UI 翻译表。
+    pub fn from_file(path: &Path, language: String) -> Result<Self, String> {
+        let content = std::fs::read_to_string(path)
+            .map_err(|e| format!("读取 UI 翻译文件失败 {}: {}", path.display(), e))?;
+        Self::from_json_str(&content, language)
+    }
+
+    /// 当前语言代码。
+    pub fn language(&self) -> &str {
+        &self.language
+    }
+
+    /// 查询 key 对应的译文。找不到或译文为空时回退到 key 本身。
+    pub fn t<'a>(&'a self, key: &'a str) -> &'a str {
+        self.entries.get(key).filter(|s| !s.is_empty()).map(|s| s.as_str()).unwrap_or(key)
+    }
+
+    /// 是否为空翻译器（无任何条目）。
+    pub fn is_empty(&self) -> bool {
+        self.entries.is_empty()
+    }
+}
+
+impl Default for UiTranslator {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
