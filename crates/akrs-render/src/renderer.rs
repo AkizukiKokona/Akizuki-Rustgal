@@ -231,38 +231,66 @@ fn measure_text_f(text: &str, font: &Option<Font>, font_size: u16, font_scale: f
 const BASE_WIDTH: f32 = 1920.0;
 const BASE_HEIGHT: f32 = 1080.0;
 
-/// UI 缩放因子：当前窗口相对于 1920×1080 设计基准的最小轴比例。
-/// 所有绝对像素尺寸（字号、按钮尺寸、边距）都乘以此因子，
-/// 使布局在任何窗口尺寸下看起来一致。
-fn ui_scale(sw: f32, sh: f32) -> f32 {
-    (sw / BASE_WIDTH).min(sh / BASE_HEIGHT)
+/// UI 缩放因子：基于窗口的**物理**像素尺寸（= 逻辑尺寸 × DPI）相对于
+/// 1920×1080 设计基准的最小轴比例。
+///
+/// 为什么用物理像素而不是逻辑像素：在 150% DPI 的 2560×1600 屏幕上，
+/// 逻辑窗口只有 1707×1067，若按逻辑尺寸计算缩放会得到 0.89，UI 反而比
+/// 1080p 屏幕更小——这与「高 DPI 让 UI 变大」的直觉相反。改用物理像素后，
+/// 同一屏幕得到 1.33 的缩放，UI 随物理屏幕变大而变大，符合预期。
+///
+/// 全宽元素（对话框、设置面板）直接用 `sw`/`sh` 自适应，不会因 scale
+/// 增大而溢出；固定尺寸元素（按钮、字号）相对屏幕边缘定位，同样安全。
+fn ui_scale(sw: f32, sh: f32, dpi: f32) -> f32 {
+    let physical_w = sw * dpi;
+    let physical_h = sh * dpi;
+    let scale = (physical_w / BASE_WIDTH).min(physical_h / BASE_HEIGHT);
+    // 钳制到合理范围：过小会导致 UI 不可读，过大在极端 DPI 下可能堆叠溢出。
+    scale.clamp(0.5, 2.5)
 }
 
-/// 计算合适的窗口尺寸：约占屏幕面积的 1/2。
-/// 窗口尺寸 = 屏幕尺寸 × sqrt(0.5) ≈ 0.707
-fn calculate_window_size(screen_w: i32, screen_h: i32) -> (i32, i32) {
-    let scale = 0.707;
-    let w = (screen_w as f32 * scale) as i32;
-    let h = (screen_h as f32 * scale) as i32;
-    (w, h)
+/// 计算合适的窗口尺寸（逻辑像素）：约占屏幕面积的 1/2，且不超过屏幕。
+///
+/// `screen_w`/`screen_h` 为屏幕**物理**像素；`dpi` 为显示器 DPI 倍率
+/// （窗口创建前未知时传 1.0，保守估算）。返回逻辑像素尺寸，供
+/// `request_new_screen_size` 使用。
+fn calculate_window_size(screen_w: i32, screen_h: i32, dpi: f32) -> (i32, i32) {
+    // 窗口物理尺寸约占屏幕 70%（面积过半），再换算为逻辑像素。
+    let factor = 0.70;
+    let phys_w = (screen_w as f32 * factor) as i32;
+    let phys_h = (screen_h as f32 * factor) as i32;
+    let log_w = (phys_w as f32 / dpi) as i32;
+    let log_h = (phys_h as f32 / dpi) as i32;
+    (log_w.max(640), log_h.max(360))
 }
 
-/// 获取屏幕尺寸（尽力而为的跨平台方案）。
+/// 获取屏幕物理像素尺寸（真实检测，不再瞎写）。
+///
+/// 委托给 `platform` 模块：Windows 用 `GetSystemMetrics`，Linux 解析
+/// `xrandr`，其余平台回退 1920×1080。
 fn get_screen_size() -> (i32, i32) {
-    // 尝试使用 miniquad 的平台 API
-    #[cfg(target_os = "windows")]
-    {
-        // Windows: 尝试获取主显示器尺寸
-        if let Ok(width) = std::env::var("SCREEN_WIDTH") {
-            if let Ok(height) = std::env::var("SCREEN_HEIGHT") {
-                if let (Ok(w), Ok(h)) = (width.parse::<i32>(), height.parse::<i32>()) {
-                    return (w, h);
-                }
-            }
-        }
+    crate::platform::get_screen_size_physical()
+}
+
+/// 把用户期望的窗口分辨率（逻辑像素）夹取到屏幕能容纳的范围内。
+///
+/// 返回最终应使用的逻辑像素尺寸。规则：
+/// - 若 `desired` 在屏幕物理尺寸的 95% 以内（按 DPI 换算后），原样使用；
+/// - 否则按比例缩到 95% 以内，确保窗口边框和任务栏都有空间。
+/// - 这同时保证 150% 缩放下选 2560×1600 也不会超屏。
+fn clip_resolution_to_screen(desired: (u32, u32), screen_phys: (i32, i32), dpi: f32) -> (i32, i32) {
+    let (dw, dh) = desired;
+    if dw == 0 || dh == 0 {
+        return calculate_window_size(screen_phys.0, screen_phys.1, dpi);
     }
-    // 默认假设为 1920×1080 屏幕
-    (1920, 1080)
+    let dw_phys = dw as f32 * dpi;
+    let dh_phys = dh as f32 * dpi;
+    let max_w_phys = screen_phys.0 as f32 * 0.95;
+    let max_h_phys = screen_phys.1 as f32 * 0.95;
+    let scale_w = if dw_phys > max_w_phys { max_w_phys / dw_phys } else { 1.0 };
+    let scale_h = if dh_phys > max_h_phys { max_h_phys / dh_phys } else { 1.0 };
+    let s = scale_w.min(scale_h);
+    ((dw as f32 * s) as i32, (dh as f32 * s) as i32)
 }
 
 /// UI state for menus and overlays.
@@ -450,7 +478,9 @@ enum ButtonAction {
 /// 窗口尺寸约为屏幕面积的 1/2，系统自动居中。
 pub fn window_conf() -> macroquad::miniquad::conf::Conf {
     let (screen_w, screen_h) = get_screen_size();
-    let (win_w, win_h) = calculate_window_size(screen_w, screen_h);
+    // 窗口创建前 DPI 未知，按 1.0 保守估算；启动后 run() 内会根据真实
+    // DPI 重新调整尺寸并居中。
+    let (win_w, win_h) = calculate_window_size(screen_w, screen_h, 1.0);
 
     macroquad::miniquad::conf::Conf {
         window_title: "Akizuki*Rustgal".to_string(),
@@ -601,7 +631,8 @@ impl HudVisibility {
 /// }
 /// ```
 pub async fn run(mut engine: Engine, project_config: &ProjectConfig) {
-    clear_background(BLACK);
+    // 启动时先用白色填充，避免"先黑一帧再渲染"的视觉瑕疵。
+    clear_background(WHITE);
     next_frame().await;
 
     // 应用项目配置的初始窗口大小和全屏状态。
@@ -610,10 +641,22 @@ pub async fn run(mut engine: Engine, project_config: &ProjectConfig) {
     if project_config.start_fullscreen {
         set_fullscreen(true);
     } else {
-        let (dw, dh) = project_config.default_resolution;
-        if dw > 0 && dh > 0 {
-            request_new_screen_size(dw as f32, dh as f32);
-        }
+        // 用真实 DPI 重新计算窗口尺寸并居中。
+        // window_conf() 创建窗口时 DPI 未知，按 1.0 估算，
+        // 此处拿到真实 DPI 后修正，确保 150% 缩放下不会超屏。
+        let dpi = macroquad::window::dpi_scale();
+        let screen_phys = get_screen_size();
+        let (final_w, final_h) = clip_resolution_to_screen(
+            project_config.default_resolution,
+            screen_phys,
+            dpi,
+        );
+        request_new_screen_size(final_w as f32, final_h as f32);
+        // 物理像素尺寸用于平台层居中调用（Windows 用 SetWindowPos）。
+        crate::platform::center_window_on_screen(
+            (final_w as f32 * dpi) as i32,
+            (final_h as f32 * dpi) as i32,
+        );
     }
 
     let mut assets = AssetManager::new();
@@ -681,6 +724,10 @@ pub async fn run(mut engine: Engine, project_config: &ProjectConfig) {
     // 已应用的全屏设置值。只有点击"应用"按钮时才会更新此值。
     // 启动时用 engine.settings().fullscreen 初始化（应用上次保存的偏好）。
     let mut applied_fullscreen: bool = engine.settings().fullscreen;
+    // 待应用的分辨率变更标志。仅在用户点击"应用"按钮时置 true，
+    // 主循环消费后置 false。主循环读取 engine.settings().resolution 并夹取到
+    // 屏幕能容纳的范围内，再调整窗口尺寸并居中。
+    let mut pending_resolution_apply: bool = false;
     // 设置菜单进入时保存的设置快照，用于检测是否有未应用的更改。
     let mut settings_snapshot: Option<Settings> = None;
     // 确认对话框的类型（返回标题/未应用设置退出）。
@@ -700,24 +747,50 @@ pub async fn run(mut engine: Engine, project_config: &ProjectConfig) {
     loop {
         let dt = get_frame_time();
         let (sw, sh) = (screen_width(), screen_height());
-        // UI scale factor relative to the 1280×720 design baseline.
-        let scale = ui_scale(sw, sh);
+        // 当前显示器真实 DPI 倍率（如 150% 缩放返回 1.5）。
+        let dpi = macroquad::window::dpi_scale();
+        // UI scale factor relative to the 1920×1080 design baseline.
+        // 基于物理像素计算，避免高 DPI 下 UI 过小。
+        let scale = ui_scale(sw, sh, dpi);
 
         // 全屏状态同步：使用 applied_fullscreen（已应用的值）而非正在编辑的值。
         // 这样设置菜单中切换全屏开关不会立即生效，只有点击"应用"后才生效。
-        // 从全屏恢复为窗口时，恢复为屏幕面积的 1/2 大小。
+        // 从全屏恢复为窗口时，恢复为屏幕面积的 ~70% 大小并居中。
         {
             let want_fullscreen = applied_fullscreen;
             if want_fullscreen != last_fullscreen_applied {
                 set_fullscreen(want_fullscreen);
-                // 如果从全屏恢复为窗口模式，设置窗口大小为 1/2 屏幕
+                // 如果从全屏恢复为窗口模式，重新计算窗口大小并居中
                 if !want_fullscreen && last_fullscreen_applied {
                     let (screen_w, screen_h) = get_screen_size();
-                    let (win_w, win_h) = calculate_window_size(screen_w, screen_h);
+                    let (win_w, win_h) = calculate_window_size(screen_w, screen_h, dpi);
                     request_new_screen_size(win_w as f32, win_h as f32);
+                    // 物理像素尺寸 = 逻辑 × DPI，用于平台层居中调用
+                    crate::platform::center_window_on_screen(
+                        (win_w as f32 * dpi) as i32,
+                        (win_h as f32 * dpi) as i32,
+                    );
                 }
                 last_fullscreen_applied = want_fullscreen;
             }
+        }
+
+        // 分辨率同步：仅当不在全屏模式、且用户在设置中改了分辨率并点击应用后生效。
+        // 关键：用 clip_resolution_to_screen 把期望分辨率夹取到屏幕能容纳的范围内，
+        // 这样在 150% 系统缩放下选 2560×1600 也不会超屏。
+        if pending_resolution_apply && !applied_fullscreen {
+            let screen_phys = get_screen_size();
+            let (win_w, win_h) = clip_resolution_to_screen(
+                engine.settings().resolution,
+                screen_phys,
+                dpi,
+            );
+            request_new_screen_size(win_w as f32, win_h as f32);
+            crate::platform::center_window_on_screen(
+                (win_w as f32 * dpi) as i32,
+                (win_h as f32 * dpi) as i32,
+            );
+            pending_resolution_apply = false;
         }
 
         // The player clicked the window's close button. Autosave the current
@@ -921,6 +994,9 @@ pub async fn run(mut engine: Engine, project_config: &ProjectConfig) {
                     let _ = engine.save_settings();
                     // 同步已应用的全屏值，使下一帧的全屏同步逻辑生效。
                     applied_fullscreen = engine.settings().fullscreen;
+                    // 标记分辨率待应用，主循环会读取 engine.settings().resolution
+                    // 并夹取到屏幕能容纳的范围内，然后调整窗口尺寸并居中。
+                    pending_resolution_apply = true;
                     settings_snapshot = None;
                     // 应用设置后返回之前的模式
                     ui_mode = settings_prev_mode;

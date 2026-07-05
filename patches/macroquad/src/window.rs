@@ -65,6 +65,21 @@ pub fn screen_height() -> f32 {
     context.screen_height / get_quad_context().dpi_scale()
 }
 
+/// 当前显示器的 DPI 缩放倍率（例如 150% 缩放返回 1.5）。
+///
+/// `screen_width()` / `screen_height()` 返回的是逻辑像素（已除以 DPI），
+/// 而帧缓冲区物理像素 = 逻辑像素 × `dpi_scale()`。
+/// 高 DPI 适配需要此值来按物理尺寸缩放 UI。
+pub fn dpi_scale() -> f32 {
+    get_quad_context().dpi_scale()
+}
+
+/// 当前帧缓冲区的物理像素尺寸（= 逻辑尺寸 × DPI）。
+pub fn framebuffer_size() -> (f32, f32) {
+    let ctx = get_quad_context();
+    ctx.screen_size()
+}
+
 /// Request the window size to be the given value. This takes DPI into account.
 ///
 /// Note that the OS might decide to give a different size. Additionally, the size in macroquad won't be updated until the next `next_frame().await`.

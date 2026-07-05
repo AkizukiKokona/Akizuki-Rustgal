@@ -22,6 +22,7 @@
 //! ```
 
 mod assets;
+mod platform;
 mod renderer;
 
 pub use renderer::{run, window_conf};

@@ -101,6 +101,7 @@ dependencies = [
  "akrs-core",
  "akrs-runtime",
  "macroquad",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]
