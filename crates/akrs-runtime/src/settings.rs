@@ -108,6 +108,15 @@ pub struct Settings {
     /// 这样默认 UI 语言跟随剧本语言，玩家也可单独指定。
     #[serde(default)]
     pub ui_language: String,
+    /// 是否显示终端调试输出（默认关闭）。
+    ///
+    /// 三端默认静默启动：
+    /// - Windows：通过 `windows_subsystem = "windows"` 默认不弹控制台；
+    ///   开启此项后会调用 `AllocConsole()` 重新分配控制台以显示 println!/eprintln!。
+    /// - Linux/macOS：默认 GUI 启动无终端；从终端启动时输出可见。
+    ///   开启此项不影响行为，仅作为开发者标志位。
+    #[serde(default)]
+    pub debug_terminal: bool,
 }
 
 fn default_auto_recovery() -> bool {
@@ -139,6 +148,7 @@ impl Default for Settings {
             auto_play_delay_without_voice: 2.0,
             language: String::new(),
             ui_language: String::new(),
+            debug_terminal: false,
         }
     }
 }

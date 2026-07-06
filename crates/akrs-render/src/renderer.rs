@@ -668,6 +668,12 @@ pub async fn run(mut engine: Engine, project_config: &ProjectConfig) {
     // Load persistent settings (text speed, volume, etc.) before starting so
     // the player's preferences from the previous session are honored.
     engine.load_settings();
+    // 如果设置中开启了「显示终端调试输出」，为当前进程分配控制台窗口。
+    // Windows 上默认 windows_subsystem = "windows" 无控制台；开启后调用
+    // AllocConsole 重新分配，使 println!/eprintln! 输出可见。
+    if engine.settings().debug_terminal {
+        let _ = crate::platform::try_alloc_console();
+    }
     // If a crash-recovery autosave exists from a previous run, prompt the
     // player to resume before showing the title screen.
     let mut ui_mode = if engine.has_autosave() {
@@ -2452,9 +2458,10 @@ struct SettingsLayout {
     audio_row_mids: [f32; 3],
     audio_slider_tracks: [Rect4; 3],
     audio_slider_hits: [Rect4; 3],
-    /// 画面标签页：第 0 行 auto_recovery，第 1 行 fullscreen，第 2 行 resolution，第 3 行 language。
-    display_row_mids: [f32; 5],
-    display_toggles: [Rect4; 2],
+    /// 画面标签页：第 0 行 auto_recovery，第 1 行 fullscreen，第 2 行 resolution，
+    /// 第 3 行 ui_language，第 4 行 script_language，第 5 行 debug_terminal。
+    display_row_mids: [f32; 6],
+    display_toggles: [Rect4; 3],
     display_dropdown: Rect4,
     /// UI 语言下拉（影响界面文本）。
     ui_language_dropdown: Rect4,
@@ -2565,15 +2572,17 @@ fn compute_settings_layout(sw: f32, sh: f32, scale: f32) -> SettingsLayout {
         };
     }
 
-    // 画面标签页（5 行：自动续播、全屏、分辨率、UI 语言、剧本语言）
-    let mut display_row_mids = [0.0; 5];
-    let mut display_toggles = [Rect4::default(); 2];
-    for i in 0..5 {
+    // 画面标签页（6 行：自动续播、全屏、分辨率、UI 语言、剧本语言、终端调试）
+    let mut display_row_mids = [0.0; 6];
+    let mut display_toggles = [Rect4::default(); 3];
+    for i in 0..6 {
         display_row_mids[i] = content_top + row_h * 0.5 + (i as f32 + 1.0) * row_h;
     }
-    for i in 0..2 {
-        let mid = display_row_mids[i];
-        display_toggles[i] = Rect4 {
+    // 第 0 行 auto_recovery，第 1 行 fullscreen，第 5 行 debug_terminal
+    let toggle_indices = [0usize, 1, 5];
+    for (idx, row) in toggle_indices.iter().enumerate() {
+        let mid = display_row_mids[*row];
+        display_toggles[idx] = Rect4 {
             x: control_x, y: mid - toggle_h / 2.0,
             w: toggle_w, h: toggle_h,
         };
@@ -2810,6 +2819,9 @@ fn draw_settings_menu(engine: &mut Engine, layout: &SettingsLayout, font: &Optio
                 format!("{} ({})", engine.translator().display_name(), engine.translator().language())
             };
             draw_dropdown_box_language(layout.language_dropdown, &settings.language, &script_lang_label, font, lang_dropdown_open, scale);
+            // 显示终端调试输出（第 6 行，索引 5）
+            draw_text_f(engine.t_ui("settings.debug_terminal"), layout.label_x, layout.display_row_mids[5] + 8.0 * scale, label_size, WHITE, font);
+            draw_toggle(layout.display_toggles[2], settings.debug_terminal, font, scale);
         }
         SettingsTab::Skip => {
             // 允许跳过未读文本
@@ -3137,13 +3149,14 @@ fn handle_settings_interaction(
                 }
             }
             SettingsTab::Display => {
-                // 开关
-                for i in 0..2 {
+                // 开关（auto_recovery、fullscreen、debug_terminal 共 3 个）
+                for i in 0..3 {
                     if point_in_rect(mx, my, layout.display_toggles[i]) {
                         let settings = engine.settings_mut();
                         match i {
                             0 => settings.auto_recovery = !settings.auto_recovery,
                             1 => settings.fullscreen = !settings.fullscreen,
+                            2 => settings.debug_terminal = !settings.debug_terminal,
                             _ => {}
                         }
                         return None;

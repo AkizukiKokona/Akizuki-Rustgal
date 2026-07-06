@@ -9,11 +9,12 @@ akrs-core = { workspace = true }
 akrs-runtime = { workspace = true }
 macroquad = { workspace = true }
 
-# Windows 平台专用：用于真实显示器尺寸检测与窗口居中。
+# Windows 平台专用：用于真实显示器尺寸检测、窗口居中、控制台分配。
 # 仅在编译 Windows 目标时引入，其他平台无此依赖。
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "0.52", features = [
     "Win32_Foundation",
     "Win32_UI_WindowsAndMessaging",
     "Win32_Graphics_Gdi",
+    "Win32_System_Console",
 ] }

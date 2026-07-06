@@ -8,6 +8,8 @@
 //!   akrs-game <path.akrs>      — run the specified script
 //!   akrs-game --project <dir>  — run from project directory
 
+#![cfg_attr(target_os = "windows", windows_subsystem = "windows")]
+
 use akrs_core::ProjectConfig;
 use akrs_render::window_conf;
 use akrs_runtime::Engine;

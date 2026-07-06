@@ -5,6 +5,8 @@
 //! so `cargo build -p akrs-editor` produces an executable
 //! (`akrs-editor` / `akrs-editor.exe`) without changing the public library API.
 
+#![cfg_attr(target_os = "windows", windows_subsystem = "windows")]
+
 fn main() {
     if let Err(e) = akrs_editor::run_editor() {
         eprintln!("Editor exited with error: {e:?}");

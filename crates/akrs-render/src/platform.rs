@@ -1,6 +1,6 @@
 //! 平台相关的窗口与显示器工具。
 //!
-//! 主要解决两个问题：
+//! 主要解决三个问题：
 //! 1. **真实显示器尺寸检测**：miniquad 0.3.16 不暴露显示器（物理）尺寸，
 //!    仅暴露帧缓冲区尺寸。但帧缓冲区尺寸 = 窗口尺寸，而非显示器尺寸。
 //!    为了在创建窗口前就知道屏幕多大（用于计算初始窗口大小、防止超屏），
@@ -10,6 +10,9 @@
 //!    `set_window_size`（调整窗口大小）在大多数平台上保持窗口左上角不动，
 //!    导致放大后窗口向右下偏移甚至超出屏幕。这里在 Windows 上通过
 //!    `FindWindowW` + `SetWindowPos` 重新居中。
+//! 3. **控制台分配**：三端默认静默启动（Windows 上用 `windows_subsystem =
+//!    "windows"` 不弹控制台），但「显示终端调试输出」设置项开启后，
+//!    需要调用 `AllocConsole` 重新分配控制台。
 
 /// 窗口标题，用于 `FindWindowW` 定位窗口句柄。
 /// 必须与 `renderer::window_conf` 中设置的 `window_title` 完全一致。
@@ -57,11 +60,32 @@ pub fn center_window_on_screen(w_physical: i32, h_physical: i32) {
     }
 }
 
+/// 尝试为当前进程分配一个控制台窗口（仅 Windows 有效）。
+///
+/// 用于「显示终端调试输出」设置项：
+/// - `windows_subsystem = "windows"` 默认不弹控制台；
+/// - 用户在设置中开启 `debug_terminal` 后，启动时调用此函数分配控制台，
+///   使随后的 println!/eprintln! 输出可见。
+///
+/// 返回 true 表示成功分配或已存在控制台；false 表示分配失败。
+/// 在非 Windows 平台始终返回 true（无操作，但不视为错误）。
+pub fn try_alloc_console() -> bool {
+    #[cfg(target_os = "windows")]
+    {
+        windows_alloc_console()
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        true
+    }
+}
+
 // ─── Windows 实现 ───────────────────────────────────────────────────────────
 
 #[cfg(target_os = "windows")]
 mod windows_impl {
     use windows_sys::Win32::Foundation::HWND;
+    use windows_sys::Win32::System::Console::{AllocConsole, GetConsoleWindow};
     use windows_sys::Win32::UI::WindowsAndMessaging::{
         FindWindowW, GetSystemMetrics, SetWindowPos, HWND_TOP, SM_CXSCREEN, SM_CYSCREEN,
         SWP_NOACTIVATE, SWP_NOSIZE, SWP_NOZORDER,
@@ -108,10 +132,29 @@ mod windows_impl {
             SetWindowPos(hwnd, HWND_TOP, x, y, 0, 0, flags);
         }
     }
+
+    /// 调用 `AllocConsole()` 为当前进程分配一个控制台窗口。
+    /// 若进程已有控制台（如从 cmd 启动），`AllocConsole` 会失败，此时视作成功。
+    /// 返回 true 表示已有控制台或新分配成功。
+    pub fn alloc_console() -> bool {
+        unsafe {
+            // 若已有控制台窗口，无需再分配。
+            if GetConsoleWindow() != 0 {
+                return true;
+            }
+            // AllocConsole 返回 0 表示失败（通常是因为已有控制台）。
+            // 这里把"已有控制台"和"分配成功"都视为 true。
+            let ok = AllocConsole();
+            ok != 0 || GetConsoleWindow() != 0
+        }
+    }
 }
 
 #[cfg(target_os = "windows")]
-use windows_impl::{center_window as windows_center_window, screen_size as windows_screen_size};
+use windows_impl::{
+    alloc_console as windows_alloc_console, center_window as windows_center_window,
+    screen_size as windows_screen_size,
+};
 
 // ─── Linux 实现（尽力而为） ─────────────────────────────────────────────────
 
