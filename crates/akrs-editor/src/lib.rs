@@ -101,6 +101,10 @@ enum PreviewTab {
     Script,
     /// 立绘摆放预览（无需启动游戏进程）。
     Sprite,
+    /// 背景预览。
+    Background,
+    /// 音乐预览。
+    Music,
 }
 
 /// 立绘预览状态：允许作者在不启动游戏的情况下调整立绘位置与大小，
@@ -145,6 +149,63 @@ impl Default for SpritePreview {
 }
 
 // ---------------------------------------------------------------------------
+// 背景预览
+// ---------------------------------------------------------------------------
+
+/// 背景预览状态：允许作者选择背景图片，预览效果，并生成对应的 `.akrs` 语法。
+struct BackgroundPreview {
+    /// 当前选中的背景资源名（不含扩展名，对应 `assets/bg/{name}.png`）。
+    selected: String,
+    /// 已加载的纹理缓存（按背景名称索引）。
+    textures: HashMap<String, TextureHandle>,
+    /// `assets/bg/` 中可用的背景列表（不含扩展名）。
+    available: Vec<String>,
+    /// 已扫描的背景目录（用于检测变更后重新扫描）。
+    scanned_dir: Option<PathBuf>,
+    /// 最近一次加载错误信息。
+    load_error: Option<String>,
+    /// 过渡效果选择。
+    transition: String,
+}
+
+impl Default for BackgroundPreview {
+    fn default() -> Self {
+        Self {
+            selected: String::new(),
+            textures: HashMap::new(),
+            available: Vec::new(),
+            scanned_dir: None,
+            load_error: None,
+            transition: "fade".to_string(),
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// 音乐预览
+// ---------------------------------------------------------------------------
+
+/// 音乐预览状态：允许作者选择音乐文件，并生成对应的 `.akrs` 语法。
+struct MusicPreview {
+    /// 当前选中的音乐资源名（不含扩展名，对应 `assets/music/{name}.ogg/mp3`）。
+    selected: String,
+    /// `assets/music/` 中可用的音乐列表（不含扩展名）。
+    available: Vec<String>,
+    /// 已扫描的音乐目录（用于检测变更后重新扫描）。
+    scanned_dir: Option<PathBuf>,
+}
+
+impl Default for MusicPreview {
+    fn default() -> Self {
+        Self {
+            selected: String::new(),
+            available: Vec::new(),
+            scanned_dir: None,
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
 // 编辑器应用状态
 // ---------------------------------------------------------------------------
 
@@ -178,6 +239,18 @@ pub struct EditorApp {
     preview_tab: PreviewTab,
     /// 立绘预览状态。
     sprite_preview: SpritePreview,
+    /// 背景预览状态。
+    bg_preview: BackgroundPreview,
+    /// 音乐预览状态。
+    music_preview: MusicPreview,
+    /// 是否显示放大预览弹窗。
+    show_enlarged_preview: bool,
+    /// 是否显示查找替换对话框。
+    show_find_replace_dialog: bool,
+    /// 查找替换对话框中的查找内容。
+    find_replace_target: String,
+    /// 查找替换对话框中待插入的语法（缓存）。
+    find_replace_syntax: String,
     /// 文件选择对话框状态（None 表示未打开）。
     file_picker: Option<FilePickerState>,
     /// 当前项目配置（project.json）。
@@ -391,6 +464,12 @@ impl Default for EditorApp {
             show_about: false,
             preview_tab: PreviewTab::Script,
             sprite_preview: SpritePreview::default(),
+            bg_preview: BackgroundPreview::default(),
+            music_preview: MusicPreview::default(),
+            show_enlarged_preview: false,
+            show_find_replace_dialog: false,
+            find_replace_target: String::new(),
+            find_replace_syntax: String::new(),
             file_picker: None,
             project_config: ProjectConfig::default(),
             project_loaded: false,
@@ -412,6 +491,74 @@ impl Default for EditorApp {
 }
 
 impl EditorApp {
+    // -- 辅助方法：插入语法 -----------------------------------------------
+
+    /// 智能插入语法：如果剪贴板内容存在于脚本中，替换第一个匹配；
+    /// 否则追加到脚本末尾。
+    fn smart_insert_syntax(&mut self, syntax: &str, ctx: &egui::Context) {
+        // 获取剪贴板内容
+        let clipboard_text = ctx.input(|i| i.raw.events.iter().filter_map(|e| {
+            if let egui::Event::Paste(s) = e { Some(s.clone()) } else { None }
+        }).next());
+
+        // 如果剪贴板有内容且在脚本中能找到，则替换
+        if let Some(clip) = clipboard_text {
+            if !clip.is_empty() && self.editor_content.contains(&clip) {
+                // 替换第一个匹配
+                self.editor_content = self.editor_content.replace(&clip, syntax);
+                self.status = "已替换剪贴板内容为生成的语法".to_string();
+                return;
+            }
+        }
+
+        // 否则追加到末尾
+        self.editor_content.push_str(&format!("{}\n", syntax));
+        self.status = "语法已追加到脚本末尾".to_string();
+    }
+
+    /// 替换剪贴板内容为生成的语法。
+    fn replace_clipboard_with_syntax(&mut self, syntax: &str, ctx: &egui::Context) {
+        // 尝试从系统剪贴板获取文本
+        let clipboard_text = ctx.input(|i| {
+            // 从最近的 Paste 事件获取
+            i.raw.events.iter().filter_map(|e| {
+                if let egui::Event::Paste(s) = e { Some(s.clone()) } else { None }
+            }).next()
+        });
+
+        // 如果没有从事件获取，尝试使用 output 的剪贴板（用户之前复制过的）
+        let clip = clipboard_text.or_else(|| {
+            // 尝试读取系统剪贴板（需要特殊处理）
+            None // egui 不提供直接读取剪贴板的方法
+        });
+
+        // 如果剪贴板内容存在于脚本中，则替换
+        if let Some(clip_text) = clip {
+            if !clip_text.is_empty() && self.editor_content.contains(&clip_text) {
+                self.editor_content = self.editor_content.replace(&clip_text, syntax);
+                self.status = "已替换剪贴板内容为生成的语法".to_string();
+            } else {
+                self.editor_content.push_str(&format!("{}\n", syntax));
+                self.status = "剪贴板内容未在脚本中找到，语法已追加到末尾".to_string();
+            }
+        } else {
+            self.editor_content.push_str(&format!("{}\n", syntax));
+            self.status = "剪贴板为空，语法已追加到末尾".to_string();
+        }
+    }
+
+    // -- 辅助方法：查找并替换 -----------------------------------------------
+
+    /// 查找脚本中匹配 target 的内容，替换为 replacement。
+    /// 返回是否成功替换。
+    fn find_and_replace(&mut self, target: &str, replacement: &str) -> bool {
+        if target.is_empty() || !self.editor_content.contains(target) {
+            return false;
+        }
+        self.editor_content = self.editor_content.replace(target, replacement);
+        true
+    }
+
     // -- 文件操作（全部可失败，不 panic）-----------------------------------
 
     /// 重新扫描 `work_dir` 中的 `.akrs` 文件。
@@ -587,13 +734,25 @@ impl EditorApp {
             self.show_welcome = false;
         }
 
-        // 重置立绘预览状态（切换项目后旧的立绘缓存和选中都无效）
+        // 重立绘预览状态（切换项目后旧的立绘缓存和选中都无效）
         self.sprite_preview.scanned_dir = None;
         self.sprite_preview.selected = String::new();
         self.sprite_preview.character_name = String::new();
         self.sprite_preview.textures.clear();
         self.sprite_preview.available.clear();
         self.sprite_preview.load_error = None;
+
+        // 重置背景预览状态
+        self.bg_preview.scanned_dir = None;
+        self.bg_preview.selected = String::new();
+        self.bg_preview.textures.clear();
+        self.bg_preview.available.clear();
+        self.bg_preview.load_error = None;
+
+        // 重置音乐预览状态
+        self.music_preview.scanned_dir = None;
+        self.music_preview.selected = String::new();
+        self.music_preview.available.clear();
 
         self.status = format!("已打开项目：{}", project_name);
     }
@@ -1742,6 +1901,322 @@ impl EditorApp {
                 self.editor_content.push_str(&format!("{}\n", syntax));
                 self.status = "语法已追加到脚本末尾".to_string();
             }
+            if ui.button("隐藏此立绘").clicked() {
+                let hide_syntax = format!("- {}\n", name);
+                self.editor_content.push_str(&hide_syntax);
+                self.status = "隐藏立绘语法已追加到脚本末尾".to_string();
+            }
+            if ui.button("放大预览").clicked() {
+                self.show_enlarged_preview = true;
+            }
+            if ui.button("替换插入").clicked() {
+                self.find_replace_syntax = syntax.clone();
+                self.show_find_replace_dialog = true;
+            }
+        });
+    }
+
+    /// 渲染背景预览面板：允许作者选择背景图片，预览效果，并生成对应的 `.akrs` 语法。
+    fn show_bg_preview(&mut self, ui: &mut egui::Ui) {
+        let ctx = ui.ctx().clone();
+
+        // 扫描 assets/bg/ 目录（检测变更后重新扫描）
+        let bg_dir = self.work_dir.join("assets").join("bg");
+        if self.bg_preview.scanned_dir.as_ref() != Some(&bg_dir) {
+            self.bg_preview.available.clear();
+            if let Ok(entries) = std::fs::read_dir(&bg_dir) {
+                let mut names: Vec<String> = entries
+                    .filter_map(|e| e.ok())
+                    .filter_map(|e| {
+                        let p = e.path();
+                        if p.extension().is_some_and(|ext| ext.eq_ignore_ascii_case("png") || ext.eq_ignore_ascii_case("jpg") || ext.eq_ignore_ascii_case("jpeg")) {
+                            p.file_stem().map(|n| n.to_string_lossy().into_owned())
+                        } else {
+                            None
+                        }
+                    })
+                    .collect();
+                names.sort();
+                self.bg_preview.available = names;
+            }
+            self.bg_preview.scanned_dir = Some(bg_dir);
+            // 默认选中第一个可用背景
+            if self.bg_preview.selected.is_empty() {
+                if let Some(first) = self.bg_preview.available.first() {
+                    self.bg_preview.selected = first.clone();
+                }
+            }
+        }
+
+        // -- 背景选择 --
+        ui.label("选择背景：");
+        let selected_empty = self.bg_preview.selected.is_empty();
+        egui::ComboBox::from_id_source("bg_preview_select")
+            .selected_text(if selected_empty {
+                "（无可用背景）"
+            } else {
+                self.bg_preview.selected.as_str()
+            })
+            .show_ui(ui, |ui| {
+                for name in &self.bg_preview.available {
+                    ui.selectable_value(
+                        &mut self.bg_preview.selected,
+                        name.clone(),
+                        name,
+                    );
+                }
+            });
+
+        ui.add_space(4.0);
+
+        // -- 过渡效果选择 --
+        ui.label("过渡效果：");
+        let transitions = ["fade", "fade_black", "fade_white", "dissolve", "slide_left", "slide_right", "slide_up", "slide_down", "wipe_left", "wipe_right", "blur", "instant"];
+        egui::ComboBox::from_id_source("bg_transition_select")
+            .selected_text(self.bg_preview.transition.as_str())
+            .show_ui(ui, |ui| {
+                for t in transitions {
+                    ui.selectable_value(&mut self.bg_preview.transition, t.to_string(), t);
+                }
+            });
+
+        ui.add_space(8.0);
+
+        // -- 预览区域（16:9，模拟游戏屏幕）--
+        let avail_w = ui.available_width();
+        let preview_w = avail_w;
+        let preview_h = (preview_w * 9.0 / 16.0).max(180.0);
+
+        let (rect, _response) = ui.allocate_exact_size(
+            egui::Vec2::new(preview_w, preview_h),
+            egui::Sense::hover(),
+        );
+
+        let painter = ui.painter();
+        // 预览背景（模拟游戏屏幕）
+        painter.rect_filled(rect, 0.0, egui::Color32::from_rgb(28, 28, 38));
+        painter.rect_stroke(
+            rect,
+            0.0,
+            egui::Stroke::new(1.0, egui::Color32::from_rgb(80, 80, 100)),
+        );
+
+        // 加载并渲染背景图片
+        if !self.bg_preview.selected.is_empty() {
+            let selected = self.bg_preview.selected.clone();
+            let need_load = !self.bg_preview.textures.contains_key(&selected);
+            if need_load {
+                let bg_dir = self.work_dir.join("assets").join("bg");
+                // 尝试 png, jpg, jpeg 扩展名
+                let extensions = ["png", "jpg", "jpeg"];
+                for ext in extensions {
+                    let path = bg_dir.join(format!("{}.{}", selected, ext));
+                    if path.exists() {
+                        match image::open(&path) {
+                            Ok(img) => {
+                                let rgba = img.to_rgba8();
+                                let (w, h) = (rgba.width() as usize, rgba.height() as usize);
+                                let color_image = ColorImage::from_rgba_unmultiplied([w, h], rgba.as_raw());
+                                let handle = ctx.load_texture(&selected, color_image, Default::default());
+                                self.bg_preview.textures.insert(selected.clone(), handle);
+                                self.bg_preview.load_error = None;
+                                break;
+                            }
+                            Err(e) => {
+                                self.bg_preview.load_error = Some(format!("加载失败：{}", e));
+                            }
+                        }
+                    }
+                }
+                if !self.bg_preview.textures.contains_key(&selected) && self.bg_preview.load_error.is_none() {
+                    self.bg_preview.load_error = Some("未找到背景文件".to_string());
+                }
+            }
+
+            if let Some(handle) = self.bg_preview.textures.get(&selected) {
+                let tex_w = handle.size()[0] as f32;
+                let tex_h = handle.size()[1] as f32;
+                // 按预览区比例缩放，保持宽高比
+                let scale = (preview_w / tex_w).min(preview_h / tex_h);
+                let draw_w = tex_w * scale;
+                let draw_h = tex_h * scale;
+                let x = rect.left() + (preview_w - draw_w) / 2.0;
+                let y = rect.top() + (preview_h - draw_h) / 2.0;
+                let dest_rect = egui::Rect::from_min_size(
+                    egui::pos2(x, y),
+                    egui::Vec2::new(draw_w, draw_h),
+                );
+                painter.image(
+                    handle.id(),
+                    dest_rect,
+                    egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)),
+                    egui::Color32::WHITE,
+                );
+            } else if let Some(err) = &self.bg_preview.load_error {
+                painter.text(
+                    rect.center(),
+                    egui::Align2::CENTER_CENTER,
+                    err,
+                    egui::FontId::proportional(12.0),
+                    egui::Color32::from_rgb(255, 150, 150),
+                );
+            }
+        } else {
+            painter.text(
+                rect.center(),
+                egui::Align2::CENTER_CENTER,
+                "请在 assets/bg/ 放置 PNG/JPG 背景",
+                egui::FontId::proportional(12.0),
+                egui::Color32::from_rgb(140, 150, 170),
+            );
+        }
+
+        ui.add_space(8.0);
+
+        // -- 生成的语法 --
+        ui.separator();
+        ui.strong("生成的语法：");
+        let syntax = if self.bg_preview.selected.is_empty() {
+            "（未选择背景）".to_string()
+        } else {
+            format!(
+                "@bg {} with {}",
+                self.bg_preview.selected, self.bg_preview.transition
+            )
+        };
+        ui.label(
+            egui::RichText::new(&syntax)
+                .monospace()
+                .color(egui::Color32::from_rgb(200, 220, 255)),
+        );
+        ui.horizontal(|ui| {
+            if ui.button("复制到剪贴板").clicked() {
+                ctx.output_mut(|o| o.copied_text = syntax.clone());
+                self.status = "语法已复制到剪贴板".to_string();
+            }
+            if ui.button("追加到脚本").clicked() {
+                self.editor_content.push_str(&format!("{}\n", syntax));
+                self.status = "语法已追加到脚本末尾".to_string();
+            }
+            if ui.button("放大预览").clicked() {
+                self.show_enlarged_preview = true;
+            }
+            if ui.button("替换插入").clicked() {
+                self.find_replace_syntax = syntax.clone();
+                self.show_find_replace_dialog = true;
+            }
+        });
+    }
+
+    /// 渲染音乐预览面板：允许作者选择音乐文件，并生成对应的 `.akrs` 语法。
+    fn show_music_preview(&mut self, ui: &mut egui::Ui) {
+        let ctx = ui.ctx().clone();
+
+        // 扫描 assets/music/ 目录（检测变更后重新扫描）
+        let music_dir = self.work_dir.join("assets").join("music");
+        if self.music_preview.scanned_dir.as_ref() != Some(&music_dir) {
+            self.music_preview.available.clear();
+            if let Ok(entries) = std::fs::read_dir(&music_dir) {
+                let mut names: Vec<String> = entries
+                    .filter_map(|e| e.ok())
+                    .filter_map(|e| {
+                        let p = e.path();
+                        if p.extension().is_some_and(|ext| ext.eq_ignore_ascii_case("ogg") || ext.eq_ignore_ascii_case("mp3") || ext.eq_ignore_ascii_case("wav")) {
+                            p.file_stem().map(|n| n.to_string_lossy().into_owned())
+                        } else {
+                            None
+                        }
+                    })
+                    .collect();
+                names.sort();
+                self.music_preview.available = names;
+            }
+            self.music_preview.scanned_dir = Some(music_dir);
+            // 默认选中第一个可用音乐
+            if self.music_preview.selected.is_empty() {
+                if let Some(first) = self.music_preview.available.first() {
+                    self.music_preview.selected = first.clone();
+                }
+            }
+        }
+
+        // -- 音乐选择 --
+        ui.label("选择音乐：");
+        let selected_empty = self.music_preview.selected.is_empty();
+        egui::ComboBox::from_id_source("music_preview_select")
+            .selected_text(if selected_empty {
+                "（无可用音乐）"
+            } else {
+                self.music_preview.selected.as_str()
+            })
+            .show_ui(ui, |ui| {
+                for name in &self.music_preview.available {
+                    ui.selectable_value(
+                        &mut self.music_preview.selected,
+                        name.clone(),
+                        name,
+                    );
+                }
+            });
+
+        ui.add_space(8.0);
+
+        // -- 生成的语法 --
+        ui.separator();
+        ui.strong("生成的语法：");
+        let play_syntax = if self.music_preview.selected.is_empty() {
+            "（未选择音乐）".to_string()
+        } else {
+            format!("@music {}", self.music_preview.selected)
+        };
+        let stop_syntax = "@stop_music";
+        ui.label(
+            egui::RichText::new("播放音乐：")
+                .color(egui::Color32::from_rgb(180, 180, 180)),
+        );
+        ui.label(
+            egui::RichText::new(&play_syntax)
+                .monospace()
+                .color(egui::Color32::from_rgb(200, 220, 255)),
+        );
+        ui.label(
+            egui::RichText::new("关闭音乐：")
+                .color(egui::Color32::from_rgb(180, 180, 180)),
+        );
+        ui.label(
+            egui::RichText::new(stop_syntax)
+                .monospace()
+                .color(egui::Color32::from_rgb(200, 220, 255)),
+        );
+
+        ui.add_space(8.0);
+        ui.horizontal(|ui| {
+            if ui.button("复制播放语法").clicked() {
+                ctx.output_mut(|o| o.copied_text = play_syntax.clone());
+                self.status = "播放语法已复制到剪贴板".to_string();
+            }
+            if ui.button("追加播放语法").clicked() {
+                self.editor_content.push_str(&format!("{}\n", play_syntax));
+                self.status = "播放语法已追加到脚本末尾".to_string();
+            }
+            if ui.button("替换插入播放语法").clicked() {
+                self.find_replace_syntax = play_syntax.clone();
+                self.show_find_replace_dialog = true;
+            }
+        });
+        ui.horizontal(|ui| {
+            if ui.button("复制关闭语法").clicked() {
+                ctx.output_mut(|o| o.copied_text = stop_syntax.to_string());
+                self.status = "关闭语法已复制到剪贴板".to_string();
+            }
+            if ui.button("追加关闭语法").clicked() {
+                self.editor_content.push_str(&format!("{}\n", stop_syntax));
+                self.status = "关闭语法已追加到脚本末尾".to_string();
+            }
+            if ui.button("替换插入关闭语法").clicked() {
+                self.find_replace_syntax = stop_syntax.to_string();
+                self.show_find_replace_dialog = true;
+            }
         });
     }
 }
@@ -1946,42 +2421,53 @@ impl eframe::App for EditorApp {
             });
 
         // ---- 右栏：预览 --------------------------------------------------
-        egui::SidePanel::right("preview")
-            .resizable(true)
-            .default_width(330.0)
-            .show(ctx, |ui| {
-                ui.heading("预览");
-                ui.horizontal(|ui| {
-                    ui.selectable_value(&mut self.preview_tab, PreviewTab::Script, "剧本");
-                    ui.selectable_value(&mut self.preview_tab, PreviewTab::Sprite, "立绘");
-                });
-                ui.separator();
-                match self.preview_tab {
-                    PreviewTab::Script => {
-                        ui.horizontal(|ui| {
-                            if ui.button("运行").clicked() {
-                                self.run_script();
-                            }
-                            if self.engine.is_some() {
-                                if ui.button("前进").clicked() {
-                                    if let Some(engine) = self.engine.as_mut() {
-                                        let _ = engine.advance();
+        // 翻译模式时隐藏右侧边栏（防呆设计）
+        if !self.translation_mode {
+            egui::SidePanel::right("preview")
+                .resizable(true)
+                .default_width(330.0)
+                .show(ctx, |ui| {
+                    ui.heading("预览");
+                    ui.horizontal(|ui| {
+                        ui.selectable_value(&mut self.preview_tab, PreviewTab::Script, "剧本");
+                        ui.selectable_value(&mut self.preview_tab, PreviewTab::Sprite, "立绘");
+                        ui.selectable_value(&mut self.preview_tab, PreviewTab::Background, "背景");
+                        ui.selectable_value(&mut self.preview_tab, PreviewTab::Music, "音乐");
+                    });
+                    ui.separator();
+                    match self.preview_tab {
+                        PreviewTab::Script => {
+                            ui.horizontal(|ui| {
+                                if ui.button("运行").clicked() {
+                                    self.run_script();
+                                }
+                                if self.engine.is_some() {
+                                    if ui.button("前进").clicked() {
+                                        if let Some(engine) = self.engine.as_mut() {
+                                            let _ = engine.advance();
+                                        }
+                                    }
+                                    if ui.button("停止").clicked() {
+                                        self.engine = None;
+                                        self.status = "预览已停止".to_string();
                                     }
                                 }
-                                if ui.button("停止").clicked() {
-                                    self.engine = None;
-                                    self.status = "预览已停止".to_string();
-                                }
-                            }
-                        });
-                        ui.separator();
-                        self.show_preview(ui);
+                            });
+                            ui.separator();
+                            self.show_preview(ui);
+                        }
+                        PreviewTab::Sprite => {
+                            self.show_sprite_preview(ui);
+                        }
+                        PreviewTab::Background => {
+                            self.show_bg_preview(ui);
+                        }
+                        PreviewTab::Music => {
+                            self.show_music_preview(ui);
+                        }
                     }
-                    PreviewTab::Sprite => {
-                        self.show_sprite_preview(ui);
-                    }
-                }
-            });
+                });
+        }
 
         // ---- 中央面板：编辑器或欢迎页 -----------------------------------
         egui::CentralPanel::default().show(ctx, |ui| {
@@ -2569,6 +3055,106 @@ impl eframe::App for EditorApp {
                 if !self.build.is_building() {
                     self.build.show = false;
                 }
+            }
+        }
+
+        // ---- 放大预览弹窗 ------------------------------------------------
+        if self.show_enlarged_preview {
+            let mut close = false;
+            egui::Window::new("放大预览")
+                .open(&mut self.show_enlarged_preview)
+                .collapsible(false)
+                .resizable(true)
+                .default_size(egui::Vec2::new(960.0, 540.0))
+                .anchor(egui::Align2::CENTER_CENTER, egui::Vec2::ZERO)
+                .show(ctx, |ui| {
+                    // 根据当前标签页显示对应的放大预览
+                    match self.preview_tab {
+                        PreviewTab::Sprite => {
+                            // 显示立绘放大预览
+                            self.show_sprite_preview(ui);
+                        }
+                        PreviewTab::Background => {
+                            // 显示背景放大预览
+                            self.show_bg_preview(ui);
+                        }
+                        _ => {
+                            ui.label("当前标签页不支持放大预览");
+                        }
+                    }
+                    ui.separator();
+                    if ui.button("关闭").clicked() {
+                        close = true;
+                    }
+                });
+            if close {
+                self.show_enlarged_preview = false;
+            }
+        }
+
+        // ---- 查找替换对话框 ------------------------------------------------
+        if self.show_find_replace_dialog {
+            let mut close = false;
+            let mut do_replace = false;
+            let syntax = self.find_replace_syntax.clone();
+
+            egui::Window::new("替换插入")
+                .open(&mut self.show_find_replace_dialog)
+                .collapsible(false)
+                .resizable(false)
+                .default_width(420.0)
+                .anchor(egui::Align2::CENTER_CENTER, egui::Vec2::ZERO)
+                .show(ctx, |ui| {
+                    ui.add_space(8.0);
+                    ui.label("请在下方输入要替换的内容：");
+                    ui.add_space(4.0);
+                    ui.horizontal(|ui| {
+                        ui.label("查找：");
+                        ui.text_edit_singleline(&mut self.find_replace_target);
+                    });
+                    ui.add_space(4.0);
+                    ui.label(
+                        egui::RichText::new("替换为（生成的语法）：")
+                            .color(egui::Color32::from_rgb(180, 180, 180)),
+                    );
+                    ui.label(
+                        egui::RichText::new(&syntax)
+                            .monospace()
+                            .color(egui::Color32::from_rgb(200, 220, 255)),
+                    );
+                    ui.add_space(12.0);
+                    ui.separator();
+                    ui.add_space(8.0);
+                    ui.horizontal(|ui| {
+                        if ui.button("替换").clicked() {
+                            do_replace = true;
+                        }
+                        if ui.button("取消").clicked() {
+                            close = true;
+                        }
+                    });
+                    ui.add_space(4.0);
+                    ui.label(
+                        egui::RichText::new("提示：直接追加到脚本末尾请点击「追加」按钮")
+                            .small()
+                            .color(egui::Color32::from_rgb(140, 150, 170)),
+                    );
+                });
+
+            if do_replace {
+                if self.find_and_replace(&self.find_replace_target, &syntax) {
+                    self.status = format!("已将「{}」替换为生成的语法", self.find_replace_target);
+                } else {
+                    self.editor_content.push_str(&format!("{}\n", syntax));
+                    self.status = format!("未找到「{}」，已追加到脚本末尾", self.find_replace_target);
+                }
+                close = true;
+            }
+
+            if close {
+                self.show_find_replace_dialog = false;
+                self.find_replace_target.clear();
+                self.find_replace_syntax.clear();
             }
         }
 
