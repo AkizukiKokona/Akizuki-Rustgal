@@ -185,7 +185,10 @@ akrs translate init scripts/demo.akrs en-US > assets/scripts/languages/en-US.jso
 ゲーム起動時に以下の順序で翻訳を読み込みます：
 
 1. `ProjectConfig` の `language` フィールドを読み取る（プロジェクトのデフォルト言語）
-2. 空の場合、システム言語を検出（`LANG`/`LC_ALL` などの環境変数）
+2. 空の場合、システム言語を検出:
+   - **Windows**: `GetUserDefaultLocaleName` を呼び出してユーザーロケールを取得（BCP 47 形式）
+   - **Linux/macOS**: `LANGUAGE`→`LC_ALL`→`LC_MESSAGES`→`LANG` の順に環境変数を読み取る
+   - 検出結果はエンジン対応の言語コード（`zh-CN`/`zh-TW`/`en-US`/`ja-JP`）に正規化
 3. `assets/scripts/languages/<言語コード>.json` から翻訳ファイルを読み込む
 4. ファイルが存在しない場合、原文モードを使用（すべてのテキストは原文を表示）
 

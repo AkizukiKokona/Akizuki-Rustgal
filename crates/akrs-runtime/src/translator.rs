@@ -282,35 +282,86 @@ impl Translator {
 ///
 /// 支持列表：zh-CN、zh-TW、en-US、ja-JP。
 /// 不在支持列表中时回退到 en-US。
+///
+/// # 平台实现
+///
+/// - **Windows**：调用 `GetUserDefaultLocaleName` 读取用户区域设置
+///   （返回 BCP 47 格式如 `zh-CN`、`ja-JP`、`en-US`）。这是修复
+///   「Windows 上自动检测永远返回 en-US」的关键——Unix 的 `LANG`
+///   等环境变量在 Windows 上根本不存在。
+/// - **Linux/macOS/其他**：按 `LANGUAGE`→`LC_ALL`→`LC_MESSAGES`→`LANG`
+///   顺序读取环境变量（POSIX 惯例）。
+/// - 全部失败时回退到 en-US。
 pub fn detect_system_language() -> String {
-    // 按优先级尝试多个环境变量
-    let candidates = [
-        "LANG",
-        "LC_ALL",
-        "LC_MESSAGES",
-        "LANGUAGE",
-    ];
+    // Windows 优先：用 Win32 API 读取用户区域设置。
+    #[cfg(target_os = "windows")]
+    if let Some(locale) = windows_user_locale() {
+        if let Some(code) = normalize_locale(&locale) {
+            return code;
+        }
+    }
+
+    // POSIX 路径：按优先级尝试多个环境变量。
+    let candidates = ["LANGUAGE", "LC_ALL", "LC_MESSAGES", "LANG"];
     for var in &candidates {
         if let Ok(val) = std::env::var(var) {
-            let lang = val.split('.').next().unwrap_or(&val).to_lowercase();
-            if lang.starts_with("zh_cn") || lang.starts_with("zh-cn") || lang == "zh" {
-                return "zh-CN".to_string();
-            }
-            if lang.starts_with("zh_tw") || lang.starts_with("zh-tw")
-                || lang.starts_with("zh_hk") || lang.starts_with("zh-hk")
-            {
-                return "zh-TW".to_string();
-            }
-            if lang.starts_with("ja") {
-                return "ja-JP".to_string();
-            }
-            if lang.starts_with("en") {
-                return "en-US".to_string();
+            // 取首个语言（LANGUAGE 可能是 "zh_CN:en_US:en" 形式）
+            let first = val.split(':').next().unwrap_or(&val);
+            let lang = first.split('.').next().unwrap_or(first);
+            if let Some(code) = normalize_locale(lang) {
+                return code;
             }
         }
     }
     // 均未识别，回退到英语
     "en-US".to_string()
+}
+
+/// 把任意 locale 字符串（POSIX 风格 `zh_CN.UTF-8` 或 BCP 47 风格
+/// `zh-Hans-CN`）归一化为引擎支持的语言代码。
+///
+/// 支持的输出：`zh-CN`、`zh-TW`、`en-US`、`ja-JP`。
+/// 无法识别时返回 `None`（由调用方决定回退策略）。
+fn normalize_locale(raw: &str) -> Option<String> {
+    let s = raw.trim().to_lowercase();
+    if s.is_empty() {
+        return None;
+    }
+    // 中文：区分简体/繁体。BCP 47 可能写作 zh-Hans-CN / zh-Hant-TW，
+    // POSIX 可能写作 zh_CN / zh_TW / zh_HK。繁体判定关键字：tw、hk、hant。
+    if s.starts_with("zh") {
+        let is_traditional = s.contains("hant") || s.contains("tw") || s.contains("hk");
+        return Some(if is_traditional { "zh-TW" } else { "zh-CN" }.to_string());
+    }
+    if s.starts_with("ja") {
+        return Some("ja-JP".to_string());
+    }
+    if s.starts_with("en") {
+        return Some("en-US".to_string());
+    }
+    None
+}
+
+// ─── Windows 实现 ───────────────────────────────────────────────────────────
+
+#[cfg(target_os = "windows")]
+fn windows_user_locale() -> Option<String> {
+    use windows_sys::Win32::Globalization::GetUserDefaultLocaleName;
+    // LOCALE_NAME_MAX_LENGTH = 85（含结尾 \0）。
+    let mut buf = [0u16; 85];
+    // 返回值为写入的字符数（含 \0）；0 表示失败。
+    let len = unsafe { GetUserDefaultLocaleName(buf.as_mut_ptr(), buf.len() as i32) };
+    if len <= 0 {
+        return None;
+    }
+    // 去掉结尾 \0。
+    let end = (len as usize).saturating_sub(1);
+    let s = String::from_utf16_lossy(&buf[..end]);
+    if s.is_empty() {
+        None
+    } else {
+        Some(s)
+    }
 }
 
 /// UI 界面文本翻译器。
@@ -498,5 +549,37 @@ mod tests {
     fn test_invalid_json_falls_back() {
         let t = Translator::from_json_str("not valid json");
         assert!(t.is_err());
+    }
+
+    #[test]
+    fn test_normalize_locale_posix() {
+        // POSIX 风格（含编码后缀）
+        assert_eq!(normalize_locale("zh_CN.UTF-8"), Some("zh-CN".to_string()));
+        assert_eq!(normalize_locale("zh_TW.BIG5"), Some("zh-TW".to_string()));
+        assert_eq!(normalize_locale("zh_HK"), Some("zh-TW".to_string()));
+        assert_eq!(normalize_locale("ja_JP.UTF-8"), Some("ja-JP".to_string()));
+        assert_eq!(normalize_locale("en_US"), Some("en-US".to_string()));
+        assert_eq!(normalize_locale("en_GB.UTF-8"), Some("en-US".to_string()));
+        assert_eq!(normalize_locale("zh"), Some("zh-CN".to_string()));
+    }
+
+    #[test]
+    fn test_normalize_locale_bcp47() {
+        // BCP 47 风格（Windows GetUserDefaultLocaleName 返回此格式）
+        assert_eq!(normalize_locale("zh-CN"), Some("zh-CN".to_string()));
+        assert_eq!(normalize_locale("zh-TW"), Some("zh-TW".to_string()));
+        assert_eq!(normalize_locale("zh-Hans-CN"), Some("zh-CN".to_string()));
+        assert_eq!(normalize_locale("zh-Hant-TW"), Some("zh-TW".to_string()));
+        assert_eq!(normalize_locale("ja-JP"), Some("ja-JP".to_string()));
+        assert_eq!(normalize_locale("en-US"), Some("en-US".to_string()));
+    }
+
+    #[test]
+    fn test_normalize_locale_unsupported() {
+        // 不支持的语言返回 None（由调用方回退到 en-US）
+        assert_eq!(normalize_locale("ko_KR"), None);
+        assert_eq!(normalize_locale("fr_FR.UTF-8"), None);
+        assert_eq!(normalize_locale(""), None);
+        assert_eq!(normalize_locale("   "), None);
     }
 }

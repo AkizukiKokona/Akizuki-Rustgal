@@ -668,6 +668,13 @@ pub async fn run(mut engine: Engine, project_config: &ProjectConfig) {
     // Load persistent settings (text speed, volume, etc.) before starting so
     // the player's preferences from the previous session are honored.
     engine.load_settings();
+    // load_settings() 从磁盘覆盖了 settings.language / settings.ui_language，
+    // 而 main.rs 中 load_language() 设置的 translations_dir 仍保留。
+    // 这里按刷新后的设置重新加载翻译器，使「设置态」与「已加载翻译表」一致。
+    // 若 settings.language 为空，effective_language() 会走系统语言自动检测
+    // （Windows 上现在用 GetUserDefaultLocaleName，不再永远返回 en-US）。
+    engine.reload_language();
+    engine.reload_ui_language();
     // 如果设置中开启了「显示终端调试输出」，为当前进程分配控制台窗口。
     // Windows 上默认 windows_subsystem = "windows" 无控制台；开启后调用
     // AllocConsole 重新分配，使 println!/eprintln! 输出可见。

@@ -14,3 +14,8 @@ serde = { workspace = true }
 serde_json = { workspace = true }
 notify = { workspace = true, optional = true }
 notify-debouncer-mini = { workspace = true, optional = true }
+
+# Windows 平台专用：用于检测系统语言（GetUserDefaultLocaleName）。
+# 仅在编译 Windows 目标时引入，其他平台无此依赖。
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.52", features = ["Win32_Globalization"] }

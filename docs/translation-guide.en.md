@@ -185,7 +185,10 @@ You can switch languages in real time via the **Language drop-down box** on the 
 At game startup, translations are loaded in the following order:
 
 1. Read the `language` field in `ProjectConfig` (the project's default language)
-2. If empty, detect the system language (`LANG`/`LC_ALL` and other environment variables)
+2. If empty, detect the system language:
+   - **Windows**: calls `GetUserDefaultLocaleName` to read the user locale (BCP 47 format)
+   - **Linux/macOS**: reads environment variables in `LANGUAGE`→`LC_ALL`→`LC_MESSAGES`→`LANG` order
+   - The detected locale is normalized to a supported language code (`zh-CN`/`zh-TW`/`en-US`/`ja-JP`)
 3. Load the translation file from `assets/scripts/languages/<language_code>.json`
 4. If the file does not exist, use original-text mode (all text is displayed in the original text)
 

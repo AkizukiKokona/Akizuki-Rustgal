@@ -185,7 +185,10 @@ akrs translate init scripts/demo.akrs en-US > assets/scripts/languages/en-US.jso
 遊戲啟動時按以下順序載入翻譯：
 
 1. 讀取 `ProjectConfig` 中的 `language` 欄位（專案預設語言）
-2. 若為空，偵測系統語言（`LANG`/`LC_ALL` 等環境變數）
+2. 若為空，偵測系統語言：
+   - **Windows**：呼叫 `GetUserDefaultLocaleName` 讀取使用者地區設定（BCP 47 格式）
+   - **Linux/macOS**：按 `LANGUAGE`→`LC_ALL`→`LC_MESSAGES`→`LANG` 順序讀取環境變數
+   - 偵測結果會正規化為引擎支援的語言代碼（`zh-CN`/`zh-TW`/`en-US`/`ja-JP`）
 3. 從 `assets/scripts/languages/<語言代碼>.json` 載入翻譯檔案
 4. 若檔案不存在，使用原文模式（所有文字顯示原文）
 
