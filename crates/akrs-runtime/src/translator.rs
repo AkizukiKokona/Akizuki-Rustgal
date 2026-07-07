@@ -420,9 +420,21 @@ impl UiTranslator {
         &self.language
     }
 
-    /// 查询 key 对应的译文。找不到或译文为空时回退到 key 本身。
+    /// 查询 key 对应的译文。查找顺序：
+    /// 1. 当前语言的翻译表（命中且非空）；
+    /// 2. 内置英文默认值（见 [`builtin_english`]）；
+    /// 3. key 本身。
+    ///
+    /// 内置英文兜底确保即便目标语言文件缺失或部分 key 未翻译，
+    /// 界面也只会显示英文而非形如 `title.start` 的 raw key。
     pub fn t<'a>(&'a self, key: &'a str) -> &'a str {
-        self.entries.get(key).filter(|s| !s.is_empty()).map(|s| s.as_str()).unwrap_or(key)
+        if let Some(s) = self.entries.get(key).filter(|s| !s.is_empty()) {
+            return s.as_str();
+        }
+        if let Some(s) = builtin_english(key) {
+            return s;
+        }
+        key
     }
 
     /// 是否为空翻译器（无任何条目）。
@@ -435,6 +447,92 @@ impl Default for UiTranslator {
     fn default() -> Self {
         Self::new()
     }
+}
+
+/// UI 翻译的内置英文兜底表。
+///
+/// 当目标语言文件缺失或某个 key 未翻译时，[`UiTranslator::t`] 会回退到
+/// 这里返回的英文文案，而非把 `title.start` 这样的 raw key 直接显示给玩家。
+///
+/// 新增 UI 文本时必须同步在此处补上英文默认值，并在各语言文件里补译。
+/// key 与 `assets/scripts/languages/ui/*.json` 的键保持一致。
+fn builtin_english(key: &str) -> Option<&'static str> {
+    Some(match key {
+        // 标题界面
+        "title.start" => "Start Game",
+        "title.continue" => "Continue",
+        "title.load" => "Load Game",
+        "title.settings" => "Settings",
+        "title.exit" => "Quit",
+        // HUD
+        "hud.skip" => "Skip",
+        "hud.auto" => "Auto",
+        "hud.quick_save" => "Q.Save",
+        "hud.quick_load" => "Q.Load",
+        "hud.save" => "Save",
+        "hud.load" => "Load",
+        "hud.title" => "Title",
+        "hud.settings" => "Settings",
+        "hud.hide" => "Hide",
+        // 设置面板
+        "settings.title" => "Settings",
+        "settings.tab.text" => "Text",
+        "settings.tab.audio" => "Audio",
+        "settings.tab.display" => "Display",
+        "settings.tab.skip" => "Skip",
+        "settings.apply" => "Apply",
+        "settings.cancel" => "Cancel",
+        "settings.text_speed" => "Text Speed",
+        "settings.auto_play" => "Auto Play",
+        "settings.auto_play_delay_with_voice" => "Delay (Voiced)",
+        "settings.auto_play_delay_without_voice" => "Delay (Unvoiced)",
+        "settings.bgm_volume" => "BGM Volume",
+        "settings.sfx_volume" => "SFX Volume",
+        "settings.voice_volume" => "Voice Volume",
+        "settings.auto_recovery" => "Auto Recovery",
+        "settings.fullscreen" => "Fullscreen",
+        "settings.resolution" => "Resolution",
+        "settings.ui_language" => "UI Language",
+        "settings.script_language" => "Script Language",
+        "settings.skip_unread" => "Skip Unread Text",
+        "settings.skip_mode" => "Skip Mode",
+        "settings.debug_terminal" => "Debug Terminal",
+        // 快进模式
+        "skip_mode.text_only" => "Text Only",
+        "skip_mode.with_voice" => "With Voice",
+        // 存档/读档
+        "save.load_title" => "Load Game",
+        "save.save_title" => "Save Game",
+        "save.slot" => "Slot",
+        "save.empty" => "Empty",
+        "save.back" => "Back",
+        "save.continue" => "Continue",
+        "save.cancel" => "Cancel",
+        // 备注编辑
+        "note.edit_title" => "Edit Note",
+        "note.edit_title_slot" => "Edit Note (Slot {slot})",
+        "note.hint" => "Enter to confirm · Esc to cancel · Backspace to delete",
+        // 确认对话框
+        "confirm.return_title" => "Return to Title",
+        "confirm.unapplied" => "Unapplied Settings",
+        "confirm.default_title" => "Confirm",
+        "confirm.return_message" => "Return to the title screen?\nYour progress will be auto-saved as \"Continue\".",
+        "confirm.unapplied_message" => "Settings changes have not been applied.\nDiscard changes and exit?",
+        "confirm.default_message" => "Are you sure you want to proceed?",
+        "confirm.ok" => "OK",
+        "confirm.cancel" => "Cancel",
+        // 自动恢复
+        "autosave.title" => "Abnormal Exit Detected",
+        "autosave.line1" => "An abnormal exit was detected during the last session.",
+        "autosave.line2" => "Continue from where you left off?",
+        "autosave.prompt" => "Abnormal exit detected. Continue the game?",
+        "autosave.continue" => "Continue",
+        "autosave.restart" => "Restart",
+        // 语言选项
+        "language.original" => "Original",
+        "language.follow_script" => "Follow Script",
+        _ => return None,
+    })
 }
 
 #[cfg(test)]
@@ -581,5 +679,65 @@ mod tests {
         assert_eq!(normalize_locale("fr_FR.UTF-8"), None);
         assert_eq!(normalize_locale(""), None);
         assert_eq!(normalize_locale("   "), None);
+    }
+
+    #[test]
+    fn test_ui_translator_falls_back_to_builtin_english() {
+        // 空翻译器（语言文件缺失）应回退到内置英文，而非 raw key。
+        let t = UiTranslator::new();
+        assert_eq!(t.t("title.start"), "Start Game");
+        assert_eq!(t.t("title.exit"), "Quit");
+        assert_eq!(t.t("save.empty"), "Empty");
+        assert_eq!(t.t("note.edit_title"), "Edit Note");
+    }
+
+    #[test]
+    fn test_ui_translator_prefers_loaded_entries() {
+        // 已加载的译文优先于内置英文。
+        let t = UiTranslator::from_json_str(
+            r#"{ "title.start": "开始游戏" }"#,
+            "zh-CN".to_string(),
+        )
+        .unwrap();
+        assert_eq!(t.t("title.start"), "开始游戏");
+        // 未覆盖的 key 仍回退到内置英文。
+        assert_eq!(t.t("title.exit"), "Quit");
+    }
+
+    #[test]
+    fn test_ui_translator_unknown_key_returns_key() {
+        // 完全未知的 key（不在内置表里）才回退到 key 本身。
+        let t = UiTranslator::new();
+        assert_eq!(t.t("some.unknown.key"), "some.unknown.key");
+    }
+
+    #[test]
+    fn test_builtin_english_covers_all_known_keys() {
+        // 内置英文表必须覆盖 zh-CN.json 中的全部 key（含 note.*）。
+        for key in [
+            "title.start", "title.continue", "title.load", "title.settings", "title.exit",
+            "hud.skip", "hud.auto", "hud.quick_save", "hud.quick_load",
+            "hud.save", "hud.load", "hud.title", "hud.settings", "hud.hide",
+            "settings.title", "settings.tab.text", "settings.tab.audio",
+            "settings.tab.display", "settings.tab.skip", "settings.apply", "settings.cancel",
+            "settings.text_speed", "settings.auto_play",
+            "settings.auto_play_delay_with_voice", "settings.auto_play_delay_without_voice",
+            "settings.bgm_volume", "settings.sfx_volume", "settings.voice_volume",
+            "settings.auto_recovery", "settings.fullscreen", "settings.resolution",
+            "settings.ui_language", "settings.script_language",
+            "settings.skip_unread", "settings.skip_mode", "settings.debug_terminal",
+            "skip_mode.text_only", "skip_mode.with_voice",
+            "save.load_title", "save.save_title", "save.slot", "save.empty",
+            "save.back", "save.continue", "save.cancel",
+            "note.edit_title", "note.edit_title_slot", "note.hint",
+            "confirm.return_title", "confirm.unapplied", "confirm.default_title",
+            "confirm.return_message", "confirm.unapplied_message", "confirm.default_message",
+            "confirm.ok", "confirm.cancel",
+            "autosave.title", "autosave.line1", "autosave.line2", "autosave.prompt",
+            "autosave.continue", "autosave.restart",
+            "language.original", "language.follow_script",
+        ] {
+            assert!(builtin_english(key).is_some(), "内置英文表缺失 key: {}", key);
+        }
     }
 }

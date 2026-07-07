@@ -2048,7 +2048,7 @@ fn draw_autosave_prompt(engine: &Engine, buttons: &mut Vec<ButtonRect>, sw: f32,
 /// 字符输入由主循环在 `ui_mode == NoteEditDialog` 时收集到 `buffer`，
 /// 此函数只负责绘制当前 buffer 内容。40% 黑色遮罩已由调用方绘制。
 fn draw_note_edit_dialog(
-    _engine: &Engine,
+    engine: &Engine,
     buttons: &mut Vec<ButtonRect>,
     sw: f32,
     sh: f32,
@@ -2067,18 +2067,17 @@ fn draw_note_edit_dialog(
     draw_rectangle_lines(dialog_x, dialog_y, dialog_w, dialog_h, 2.0 * scale, Color::new(0.29, 0.62, 1.0, 0.9));
 
     let pad = 28.0 * scale;
-    // 标题。
-    let title = if let Some(s) = slot {
-        format!("编辑存档 {} 的备注", s + 1)
-    } else {
-        "编辑备注".to_string()
+    // 标题。带槽位时用 note.edit_title_slot（含 {slot} 占位符），否则用 note.edit_title。
+    let title = match slot {
+        Some(s) => engine.t_ui("note.edit_title_slot").replace("{slot}", &format!("{}", s + 1)),
+        None => engine.t_ui("note.edit_title").to_string(),
     };
     let title_size = 24.0 * scale;
     draw_text_f(&title, dialog_x + pad, dialog_y + pad + title_size, title_size, WHITE, font);
     // 提示。
     let hint_size = 14.0 * scale;
     draw_text_f(
-        "Enter 确认 · Esc 取消 · Backspace 删除",
+        engine.t_ui("note.hint"),
         dialog_x + pad,
         dialog_y + pad + title_size + 22.0 * scale,
         hint_size,
@@ -2125,8 +2124,8 @@ fn draw_note_edit_dialog(
     let btn1_x = dialog_x + (dialog_w - total_w) / 2.0;
     let btn2_x = btn1_x + btn_w + gap;
     let btn_y = dialog_y + dialog_h - btn_h - 24.0 * scale;
-    draw_button(btn1_x, btn_y, btn_w, btn_h, "确认", buttons, ButtonAction::NoteConfirm, font, scale);
-    draw_button(btn2_x, btn_y, btn_w, btn_h, "取消", buttons, ButtonAction::NoteCancel, font, scale);
+    draw_button(btn1_x, btn_y, btn_w, btn_h, engine.t_ui("confirm.ok"), buttons, ButtonAction::NoteConfirm, font, scale);
+    draw_button(btn2_x, btn_y, btn_w, btn_h, engine.t_ui("confirm.cancel"), buttons, ButtonAction::NoteCancel, font, scale);
 }
 
 /// Draw a confirmation dialog for returning to title or discarding settings.

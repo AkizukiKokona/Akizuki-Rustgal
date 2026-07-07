@@ -50,6 +50,10 @@
   "save.continue": "继续游戏",
   "save.cancel": "取消",
 
+  "note.edit_title": "编辑备注",
+  "note.edit_title_slot": "编辑存档 {slot} 的备注",
+  "note.hint": "Enter 确认 · Esc 取消 · Backspace 删除",
+
   "confirm.return_title": "确认返回标题",
   "confirm.unapplied": "设置未应用",
   "confirm.default_title": "确认",
