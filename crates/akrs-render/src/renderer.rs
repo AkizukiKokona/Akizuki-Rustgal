@@ -2556,9 +2556,9 @@ async fn draw_slot_cell(
 
         // 「编辑备注」小按钮：缩略图下方，点击弹出输入框。
         let note_label = if m.note.as_deref().filter(|s| !s.is_empty()).is_some() {
-            "✎ 改备注"
+            "改备注"
         } else {
-            "✎ 加备注"
+            "加备注"
         };
         let note_label_size = 13.0 * scale;
         let (nmx, nmy) = mouse_position();
