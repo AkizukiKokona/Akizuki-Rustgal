@@ -1008,8 +1008,14 @@ pub async fn run(mut engine: Engine, project_config: &ProjectConfig) {
                     has_continue_save = true;
                     let source = engine.source().to_string();
                     let saved_settings = engine.settings().clone();
+                    // 保存翻译目录，重建引擎后恢复（Engine::new 不会继承 translations_dir，
+                    // 若不恢复则返回标题后 UI 翻译重置为英文且无法切换语言）。
+                    let saved_translations_dir = engine.translations_dir().map(|p| p.to_path_buf());
                     if let Ok(mut new_engine) = Engine::new(&source) {
                         *new_engine.settings_mut() = saved_settings;
+                        if let Some(dir) = saved_translations_dir {
+                            new_engine.restore_translations(dir);
+                        }
                         engine = new_engine;
                         title_music_played = false;
                     }
@@ -1039,6 +1045,10 @@ pub async fn run(mut engine: Engine, project_config: &ProjectConfig) {
                     if let Some(snapshot) = settings_snapshot.clone() {
                         *engine.settings_mut() = snapshot;
                         engine.reload_language();
+                        // 注意：UI 语言独立于剧本语言，放弃设置时也需重新加载
+                        // UI 翻译文件，否则用户在设置页切换 UI 语言后放弃会被
+                        // 保留为切换后的语言而非快照值。
+                        engine.reload_ui_language();
                     }
                     settings_snapshot = None;
                     // 放弃设置后返回之前的模式
@@ -1050,8 +1060,13 @@ pub async fn run(mut engine: Engine, project_config: &ProjectConfig) {
                     has_continue_save = false;
                     let source = engine.source().to_string();
                     let saved_settings = engine.settings().clone();
+                    // 保存翻译目录，重建引擎后恢复（同 BackToTitle）。
+                    let saved_translations_dir = engine.translations_dir().map(|p| p.to_path_buf());
                     if let Ok(mut new_engine) = Engine::new(&source) {
                         *new_engine.settings_mut() = saved_settings;
+                        if let Some(dir) = saved_translations_dir {
+                            new_engine.restore_translations(dir);
+                        }
                         engine = new_engine;
                         title_music_played = false;
                     }
@@ -1409,6 +1424,10 @@ pub async fn run(mut engine: Engine, project_config: &ProjectConfig) {
                         || current.auto_play != snapshot.auto_play
                         || current.auto_play_delay_with_voice != snapshot.auto_play_delay_with_voice
                         || current.auto_play_delay_without_voice != snapshot.auto_play_delay_without_voice
+                        || current.skip_unread != snapshot.skip_unread
+                        || current.skip_mode != snapshot.skip_mode
+                        || current.language != snapshot.language
+                        || current.ui_language != snapshot.ui_language
                 } else {
                     false
                 };
@@ -3754,6 +3773,7 @@ fn handle_settings_interaction(
                     || current.auto_play_delay_with_voice != snapshot.auto_play_delay_with_voice
                     || current.auto_play_delay_without_voice != snapshot.auto_play_delay_without_voice
                     || current.language != snapshot.language
+                    || current.ui_language != snapshot.ui_language
             } else {
                 false
             };

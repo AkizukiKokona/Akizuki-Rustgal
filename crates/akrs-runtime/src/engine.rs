@@ -417,6 +417,20 @@ impl Engine {
         }
     }
 
+    /// 获取翻译文件所在目录（可能为 None，表示从未调用过 load_language）。
+    /// 用于在重建引擎（如返回标题）时继承翻译目录。
+    pub fn translations_dir(&self) -> Option<&std::path::Path> {
+        self.translations_dir.as_deref()
+    }
+
+    /// 设置翻译文件所在目录，并立即根据当前 settings 重新加载剧本与 UI 翻译。
+    /// 用于重建引擎后恢复翻译能力（Engine::new 不会设置 translations_dir）。
+    pub fn restore_translations(&mut self, dir: std::path::PathBuf) {
+        self.translations_dir = Some(dir);
+        self.reload_language();
+        self.reload_ui_language();
+    }
+
     /// 获取 UI 翻译器引用。
     pub fn ui_translator(&self) -> &UiTranslator {
         &self.ui_translator
