@@ -85,7 +85,7 @@ Akizuki\*Rustgal 是一个从零开始、**100% 纯 Rust** 实现的视觉小说
 | **零成本抽象** | 泛型和 trait 不引入运行时开销，性能媲美 C/C++ |
 | **无 GC 停顿** | 没有垃圾回收器，游戏帧率稳定可预测 |
 | **Fearless concurrency** | 编译器保证线程安全，多线程开发无需提心吊胆 |
-| **跨平台编译** | 一套代码编译到 Windows / Linux / macOS / WASM |
+| **跨平台编译** | 一套代码编译到 Windows / Linux / macOS 三大桌面平台 |
 
 ## 功能特性
 
