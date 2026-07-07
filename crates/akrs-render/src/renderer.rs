@@ -674,6 +674,8 @@ pub async fn run(mut engine: Engine, project_config: &ProjectConfig) {
     }
 
     let mut assets = AssetManager::new();
+    // 预加载软件图标（关于页使用），加载失败时为 None，关于页画占位框。
+    let about_icon_texture = assets.get_texture(AssetKind::Title, "./icon.png").await;
     // Load Chinese font for proper CJK text rendering, with system-font fallback.
     let (font, fallback_font) = load_font_with_fallback();
     set_fallback_font(fallback_font);
@@ -1093,7 +1095,7 @@ pub async fn run(mut engine: Engine, project_config: &ProjectConfig) {
                 settings_active_tab = SettingsTab::Text;
             }
             // 设置菜单内部绘制背景和所有控件
-            draw_settings_menu(&mut engine, &settings_layout, &font, dropdown_open, skip_dropdown_open, ui_lang_dropdown_open, lang_dropdown_open, settings_active_tab, scale);
+            draw_settings_menu(&mut engine, &settings_layout, &font, dropdown_open, skip_dropdown_open, ui_lang_dropdown_open, lang_dropdown_open, settings_active_tab, scale, &about_icon_texture);
         } else if ui_mode == UiMode::ConfirmDialog {
             // 确认对话框：先绘制底层界面（保持上下文可见），再叠加 8% 黑色 + 对话框。
             // confirm_return_mode 记录了确认对话框返回后应恢复的模式，据此绘制底层。
@@ -1102,7 +1104,7 @@ pub async fn run(mut engine: Engine, project_config: &ProjectConfig) {
                     if settings_snapshot.is_none() {
                         settings_snapshot = Some(engine.settings().clone());
                     }
-                    draw_settings_menu(&mut engine, &settings_layout, &font, dropdown_open, skip_dropdown_open, ui_lang_dropdown_open, lang_dropdown_open, settings_active_tab, scale);
+                    draw_settings_menu(&mut engine, &settings_layout, &font, dropdown_open, skip_dropdown_open, ui_lang_dropdown_open, lang_dropdown_open, settings_active_tab, scale, &about_icon_texture);
                 }
                 UiMode::Normal => {
                     if engine.phase() == EnginePhase::Title {
@@ -2870,8 +2872,8 @@ struct SettingsLayout {
     panel_y: f32,
     panel_w: f32,
     panel_h: f32,
-    /// 标签页按钮位置（文本、音频、画面、快进）。
-    tab_rects: [Rect4; 4],
+    /// 标签页按钮位置（文本、音频、画面、快进、帮助、关于）。
+    tab_rects: [Rect4; 6],
     /// 内容区顶部 y（标签页下方）。
     #[allow(dead_code)]
     content_top: f32,
@@ -2926,13 +2928,13 @@ fn compute_settings_layout(sw: f32, sh: f32, scale: f32) -> SettingsLayout {
     let title_top = 36.0 * scale;
 
     // 标签页（浏览器风格，位于标题下方）
-    let tab_labels = ["文本", "音频", "画面", "快进"];
+    let tab_labels = ["文本", "音频", "画面", "快进", "帮助", "关于"];
     let tab_h = 62.0 * scale;
     let tab_top = title_top + title_size + 24.0 * scale;
     let tab_start_x = 96.0 * scale;
     let tab_w = 168.0 * scale;
     let tab_gap = 5.0 * scale;
-    let mut tab_rects = [Rect4::default(); 4];
+    let mut tab_rects = [Rect4::default(); 6];
     for (i, _) in tab_labels.iter().enumerate() {
         tab_rects[i] = Rect4 {
             x: tab_start_x + i as f32 * (tab_w + tab_gap),
@@ -3079,10 +3081,179 @@ fn compute_settings_layout(sw: f32, sh: f32, scale: f32) -> SettingsLayout {
     }
 }
 
+/// 绘制「帮助」选项卡：键位功能对照表。
+/// 表格分两栏（按键 | 功能），分两个区块（游戏内操作 / 备注编辑）。
+/// 字号略大于普通设置项，多 DPI 自适应。
+fn draw_help_tab(engine: &Engine, layout: &SettingsLayout, font: &Option<Font>, scale: f32) {
+    let text_size = 36.0 * scale;
+    let section_size = 40.0 * scale;
+    let row_h = text_size * 1.8;
+    let gap = 40.0 * scale;
+
+    // 两列布局：按键列 + 功能列
+    let col_key_x = layout.label_x;
+    let col_key_w = 240.0 * scale;
+    let col_func_x = col_key_x + col_key_w + gap;
+    let col_func_w = 600.0 * scale;
+
+    let mut y = layout.content_top + 20.0 * scale;
+
+    // ── 区块 1：游戏内操作 ──
+    draw_text_f(engine.t_ui("help.section.game"), col_key_x, y + section_size, section_size,
+        Color::new(0.7, 0.85, 1.0, 1.0), font);
+    y += section_size + 16.0 * scale;
+    // 表头
+    draw_text_f(engine.t_ui("help.key"), col_key_x, y + text_size, text_size,
+        Color::new(0.5, 0.6, 0.75, 1.0), font);
+    draw_text_f(engine.t_ui("help.function"), col_func_x, y + text_size, text_size,
+        Color::new(0.5, 0.6, 0.75, 1.0), font);
+    y += row_h;
+    let game_rows: [(&str, &str); 3] = [
+        ("Space / Enter", engine.t_ui("help.advance")),
+        ("Esc", engine.t_ui("help.escape")),
+        ("鼠标点击", engine.t_ui("help.click")),
+    ];
+    for (key, func) in &game_rows {
+        draw_text_f(key, col_key_x, y + text_size, text_size, WHITE, font);
+        draw_text_f(func, col_func_x, y + text_size, text_size, WHITE, font);
+        y += row_h;
+    }
+
+    y += 30.0 * scale;
+
+    // ── 区块 2：备注编辑 ──
+    draw_text_f(engine.t_ui("help.section.note"), col_key_x, y + section_size, section_size,
+        Color::new(0.7, 0.85, 1.0, 1.0), font);
+    y += section_size + 16.0 * scale;
+    draw_text_f(engine.t_ui("help.key"), col_key_x, y + text_size, text_size,
+        Color::new(0.5, 0.6, 0.75, 1.0), font);
+    draw_text_f(engine.t_ui("help.function"), col_func_x, y + text_size, text_size,
+        Color::new(0.5, 0.6, 0.75, 1.0), font);
+    y += row_h;
+    let note_rows: [(&str, &str); 3] = [
+        ("Enter", engine.t_ui("help.enter_note")),
+        ("Esc", engine.t_ui("help.escape")),
+        ("Backspace", engine.t_ui("help.backspace")),
+    ];
+    for (key, func) in &note_rows {
+        draw_text_f(key, col_key_x, y + text_size, text_size, WHITE, font);
+        draw_text_f(func, col_func_x, y + text_size, text_size, WHITE, font);
+        y += row_h;
+    }
+
+    y += 20.0 * scale;
+    draw_text_f(engine.t_ui("help.hint"), col_key_x, y + text_size * 0.85,
+        text_size * 0.85, Color::new(0.55, 0.65, 0.8, 0.9), font);
+
+    // 消除未使用变量警告
+    let _ = col_func_w;
+}
+
+/// 绘制「关于」选项卡：图标 + 5 行文字，整体占屏幕 50% 居中。
+///
+/// 布局：
+/// ```text
+/// ┌──────────────────────────────────┐
+/// │  ┌──────┐                        │
+/// │  │      │  **Akizuki*Rustgal**   │  ← 第 1 行（粗体），与图标顶部对齐
+/// │  │ 图标 │  简单好用的视觉小说引擎  │  ← 第 2 行
+/// │  │      │  版本 1.0 Build 35     │  ← 第 3 行
+/// │  └──────┘                        │
+/// │           心夏麻麻可爱喵           │  ← 第 4 行（不再与图标对齐）
+/// │           最喜欢心夏麻麻了喵       │  ← 第 5 行
+/// └──────────────────────────────────┘
+/// ```
+/// 图标高度 ≈ 3 行文字高度。5 行文字全部左对齐。
+fn draw_about_tab(engine: &Engine, layout: &SettingsLayout, font: &Option<Font>, scale: f32, icon_texture: &Option<Texture2D>) {
+    let sw = layout.panel_w;
+    let sh = layout.panel_h;
+
+    // 文字尺寸（略大于普通设置项，多 DPI 自适应）
+    let text_size = 40.0 * scale;
+    let line_h = text_size * 1.5;
+
+    // 关于块占屏幕 50% 宽度，居中
+    let block_w = sw * 0.5;
+    let block_x = (sw - block_w) / 2.0;
+
+    // 图标高度 = 3 行文字高度
+    let icon_h = line_h * 3.0;
+    let icon_w = icon_h; // 正方形图标
+    let icon_x = block_x;
+    let gap = 40.0 * scale;
+    let text_x = icon_x + icon_w + gap;
+
+    // 前三行与图标顶部对齐；后两行在图标下方
+    let line1_y = layout.content_top + 20.0 * scale + text_size; // baseline
+    let line2_y = line1_y + line_h;
+    let line3_y = line2_y + line_h;
+    let line4_y = line3_y + line_h;
+    let line5_y = line4_y + line_h;
+
+    let icon_y = line1_y - text_size; // 图标顶部与第一行顶部对齐
+
+    // ── 绘制图标 ──
+    if let Some(tex) = icon_texture {
+        let tex_w = tex.width();
+        let tex_h = tex.height();
+        if tex_w > 0.0 && tex_h > 0.0 {
+            // 保持比例缩放到 icon_h 高度（contain 模式）
+            let s = (icon_w / tex_w).min(icon_h / tex_h);
+            let dw = tex_w * s;
+            let dh = tex_h * s;
+            let dx = icon_x + (icon_w - dw) / 2.0;
+            let dy = icon_y + (icon_h - dh) / 2.0;
+            draw_texture_ex(*tex, dx, dy, WHITE, DrawTextureParams {
+                dest_size: Some(vec2(dw, dh)),
+                ..Default::default()
+            });
+        }
+    } else {
+        // 图标加载失败时画占位框
+        draw_rectangle_lines(icon_x, icon_y, icon_w, icon_h, 2.0 * scale,
+            Color::new(0.5, 0.6, 0.75, 0.6));
+    }
+
+    // ── 第 1 行：Akizuki*Rustgal（粗体）──
+    // macroquad 仅加载单一字体，通过多次微小偏移绘制模拟加粗效果。
+    let name = engine.t_ui("about.name");
+    let bold_color = Color::new(1.0, 0.95, 0.6, 1.0);
+    let bold_off = 1.5 * scale;
+    for (dx, dy) in [(0.0, 0.0), (bold_off, 0.0), (-bold_off, 0.0), (0.0, bold_off), (0.0, -bold_off)] {
+        draw_text_f(name, text_x + dx, line1_y + dy, text_size, bold_color, font);
+    }
+
+    // ── 第 2 行：简单好用的视觉小说引擎 ──
+    let subtitle = engine.t_ui("about.subtitle");
+    draw_text_f(subtitle, text_x, line2_y, text_size,
+        Color::new(0.8, 0.85, 0.95, 1.0), font);
+
+    // ── 第 3 行：版本 1.0 Build XX ──
+    let build_str = format!("{} 1.0   {} {}",
+        engine.t_ui("about.version_label"),
+        engine.t_ui("about.build_label"),
+        env!("BUILD_NUMBER"));
+    draw_text_f(&build_str, text_x, line3_y, text_size,
+        Color::new(0.7, 0.8, 0.95, 1.0), font);
+
+    // ── 第 4 行：心夏麻麻可爱喵（不再与图标对齐）──
+    let line4 = engine.t_ui("about.line4");
+    draw_text_f(line4, text_x, line4_y, text_size * 0.9,
+        Color::new(0.9, 0.7, 0.8, 1.0), font);
+
+    // ── 第 5 行：最喜欢心夏麻麻了喵 ──
+    let line5 = engine.t_ui("about.line5");
+    draw_text_f(line5, text_x, line5_y, text_size * 0.9,
+        Color::new(0.9, 0.7, 0.8, 1.0), font);
+
+    // 消除未使用变量警告
+    let _ = sh;
+}
+
 /// Draw the interactive full-screen settings menu. Reads live values from the
 /// engine so dragging a slider is reflected immediately.  The dropdown list
 /// is drawn last (via `draw_dropdown_list`) so it floats above the back button.
-fn draw_settings_menu(engine: &mut Engine, layout: &SettingsLayout, font: &Option<Font>, dropdown_open: bool, skip_dropdown_open: bool, ui_lang_dropdown_open: bool, lang_dropdown_open: bool, active_tab: SettingsTab, scale: f32) {
+fn draw_settings_menu(engine: &mut Engine, layout: &SettingsLayout, font: &Option<Font>, dropdown_open: bool, skip_dropdown_open: bool, ui_lang_dropdown_open: bool, lang_dropdown_open: bool, active_tab: SettingsTab, scale: f32, icon_texture: &Option<Texture2D>) {
     // 天蓝色背景
     draw_rectangle(layout.panel_x, layout.panel_y, layout.panel_w, layout.panel_h,
         Color::new(0.1, 0.15, 0.3, 0.95));
@@ -3111,8 +3282,10 @@ fn draw_settings_menu(engine: &mut Engine, layout: &SettingsLayout, font: &Optio
         engine.t_ui("settings.tab.audio"),
         engine.t_ui("settings.tab.display"),
         engine.t_ui("settings.tab.skip"),
+        engine.t_ui("settings.tab.help"),
+        engine.t_ui("settings.tab.about"),
     ];
-    let tab_tabs = [SettingsTab::Text, SettingsTab::Audio, SettingsTab::Display, SettingsTab::Skip];
+    let tab_tabs = [SettingsTab::Text, SettingsTab::Audio, SettingsTab::Display, SettingsTab::Skip, SettingsTab::Help, SettingsTab::About];
     let tab_label_size = 29.0 * scale;
     for (i, label) in tab_labels.iter().enumerate() {
         let r = layout.tab_rects[i];
@@ -3141,7 +3314,7 @@ fn draw_settings_menu(engine: &mut Engine, layout: &SettingsLayout, font: &Optio
     // 内容区分隔线（标签页下方一条横线）
     let line_y = layout.tab_rects[0].y + layout.tab_rects[0].h;
     draw_rectangle(layout.tab_rects[0].x, line_y,
-        layout.tab_rects[3].x + layout.tab_rects[3].w - layout.tab_rects[0].x, 1.5 * scale,
+        layout.tab_rects[5].x + layout.tab_rects[5].w - layout.tab_rects[0].x, 1.5 * scale,
         Color::new(0.45, 0.7, 0.95, 0.6));
 
     let settings = engine.settings();
@@ -3265,6 +3438,12 @@ fn draw_settings_menu(engine: &mut Engine, layout: &SettingsLayout, font: &Optio
             // 快进模式下拉
             draw_text_f(engine.t_ui("settings.skip_mode"), layout.label_x, layout.skip_row_mids[1] + 8.0 * scale, label_size, WHITE, font);
             draw_dropdown_box_skip_mode(engine, layout.skip_dropdown, settings.skip_mode, font, skip_dropdown_open, scale);
+        }
+        SettingsTab::Help => {
+            draw_help_tab(engine, layout, font, scale);
+        }
+        SettingsTab::About => {
+            draw_about_tab(engine, layout, font, scale, icon_texture);
         }
     }
 
@@ -3532,8 +3711,8 @@ fn handle_settings_interaction(
 
     // A fresh press starts a new interaction.
     if pressed {
-        // 先检查标签页点击
-        let tab_tabs = [SettingsTab::Text, SettingsTab::Audio, SettingsTab::Display, SettingsTab::Skip];
+        // 先检查标签页点击（6 个标签：文本/音频/画面/快进/帮助/关于）
+        let tab_tabs = [SettingsTab::Text, SettingsTab::Audio, SettingsTab::Display, SettingsTab::Skip, SettingsTab::Help, SettingsTab::About];
         for (i, tab) in tab_tabs.iter().enumerate() {
             if point_in_rect(mx, my, layout.tab_rects[i]) {
                 *active_tab = *tab;
@@ -3747,6 +3926,8 @@ fn handle_settings_interaction(
                     return None;
                 }
             }
+            // 帮助和关于页为纯展示，无交互控件
+            SettingsTab::Help | SettingsTab::About => {}
         }
 
         // 应用按钮：保存设置并返回

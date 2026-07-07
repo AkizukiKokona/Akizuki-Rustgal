@@ -221,6 +221,7 @@ akrs-game      游戏启动器：读取剧本并启动图形界面
 | [剧本语言规范](docs/剧本语言规范.md) | `.akrs` 剧本语言的完整语法参考，涵盖所有指令、变量、流程控制和编译时检查规则 |
 | [立绘摆放语法](docs/立绘摆放语法.md) | 立绘位置、大小、过渡效果的详细说明与编辑器预览指南 |
 | [翻译功能使用说明](docs/翻译功能使用说明.md)（[EN](docs/translation-guide.en.md) / [JA](docs/translation-guide.ja.md) / [ZH-TW](docs/translation-guide.zh-TW.md)） | 多语言翻译系统完整指南：翻译文件格式、CLI 骨架生成、编辑器对照翻译模式、运行时语言切换 |
+| [快捷键说明](docs/快捷键说明.md) | 游戏与编辑器的全部键盘 / 鼠标快捷键对照表，含三平台差异说明 |
 | [DSL 规范（交互式 HTML）](docs/dsl-specification.html) | 带语法高亮和侧边导航的网页版语法文档 |
 
 ## 编辑器功能

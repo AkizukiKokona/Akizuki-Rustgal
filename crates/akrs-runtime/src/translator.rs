@@ -480,6 +480,8 @@ fn builtin_english(key: &str) -> Option<&'static str> {
         "settings.tab.audio" => "Audio",
         "settings.tab.display" => "Display",
         "settings.tab.skip" => "Skip",
+        "settings.tab.help" => "Help",
+        "settings.tab.about" => "About",
         "settings.apply" => "Apply",
         "settings.cancel" => "Cancel",
         "settings.text_speed" => "Text Speed",
@@ -531,6 +533,26 @@ fn builtin_english(key: &str) -> Option<&'static str> {
         // 语言选项
         "language.original" => "Original",
         "language.follow_script" => "Follow Script",
+        // 帮助选项卡
+        "help.title" => "Keyboard Shortcuts",
+        "help.section.game" => "In-Game Controls",
+        "help.section.note" => "Note Editing",
+        "help.key" => "Key",
+        "help.function" => "Function",
+        "help.advance" => "Advance dialogue",
+        "help.escape" => "Open settings / Cancel dialog / Close note",
+        "help.backspace" => "Delete note character",
+        "help.enter_note" => "Confirm note save",
+        "help.click" => "Click to advance / select choice / interact",
+        "help.hint" => "Use HUD buttons at the bottom for skip, auto, quick save, quick load, etc.",
+        // 关于选项卡
+        "about.title" => "About",
+        "about.name" => "Akizuki*Rustgal",
+        "about.subtitle" => "A simple and easy-to-use visual novel engine",
+        "about.version_label" => "Version",
+        "about.build_label" => "Build",
+        "about.line4" => "心夏麻麻可爱喵",
+        "about.line5" => "最喜欢心夏麻麻了喵",
         _ => return None,
     })
 }
@@ -713,13 +735,15 @@ mod tests {
 
     #[test]
     fn test_builtin_english_covers_all_known_keys() {
-        // 内置英文表必须覆盖 zh-CN.json 中的全部 key（含 note.*）。
+        // 内置英文表必须覆盖 zh-CN.json 中的全部 key（含 note.* / help.* / about.*）。
         for key in [
             "title.start", "title.continue", "title.load", "title.settings", "title.exit",
             "hud.skip", "hud.auto", "hud.quick_save", "hud.quick_load",
             "hud.save", "hud.load", "hud.title", "hud.settings", "hud.hide",
             "settings.title", "settings.tab.text", "settings.tab.audio",
-            "settings.tab.display", "settings.tab.skip", "settings.apply", "settings.cancel",
+            "settings.tab.display", "settings.tab.skip",
+            "settings.tab.help", "settings.tab.about",
+            "settings.apply", "settings.cancel",
             "settings.text_speed", "settings.auto_play",
             "settings.auto_play_delay_with_voice", "settings.auto_play_delay_without_voice",
             "settings.bgm_volume", "settings.sfx_volume", "settings.voice_volume",
@@ -736,6 +760,12 @@ mod tests {
             "autosave.title", "autosave.line1", "autosave.line2", "autosave.prompt",
             "autosave.continue", "autosave.restart",
             "language.original", "language.follow_script",
+            "help.title", "help.section.game", "help.section.note",
+            "help.key", "help.function", "help.advance", "help.escape",
+            "help.backspace", "help.enter_note", "help.click", "help.hint",
+            "about.title", "about.name", "about.subtitle",
+            "about.version_label", "about.build_label",
+            "about.line4", "about.line5",
         ] {
             assert!(builtin_english(key).is_some(), "内置英文表缺失 key: {}", key);
         }

@@ -44,6 +44,10 @@ pub enum SettingsTab {
     Display,
     /// 快进设置。
     Skip,
+    /// 帮助：键位功能对照。
+    Help,
+    /// 关于：引擎信息。
+    About,
 }
 
 impl SettingsTab {
@@ -53,11 +57,13 @@ impl SettingsTab {
             Self::Audio => "音频",
             Self::Display => "画面",
             Self::Skip => "快进",
+            Self::Help => "帮助",
+            Self::About => "关于",
         }
     }
 
     pub fn all() -> &'static [Self] {
-        &[Self::Text, Self::Audio, Self::Display, Self::Skip]
+        &[Self::Text, Self::Audio, Self::Display, Self::Skip, Self::Help, Self::About]
     }
 }
 

@@ -20,6 +20,8 @@
   "settings.tab.audio": "音訊",
   "settings.tab.display": "畫面",
   "settings.tab.skip": "快轉",
+  "settings.tab.help": "說明",
+  "settings.tab.about": "關於",
   "settings.apply": "套用",
   "settings.cancel": "取消",
 
@@ -71,5 +73,25 @@
   "autosave.restart": "重新開始",
 
   "language.original": "原文",
-  "language.follow_script": "跟隨劇本語言"
+  "language.follow_script": "跟隨劇本語言",
+
+  "help.title": "鍵盤快速鍵",
+  "help.section.game": "遊戲內操作",
+  "help.section.note": "備註編輯",
+  "help.key": "按鍵",
+  "help.function": "功能",
+  "help.advance": "推進對話",
+  "help.escape": "開啟設定 / 取消對話框 / 關閉備註",
+  "help.backspace": "刪除備註字元",
+  "help.enter_note": "確認備註儲存",
+  "help.click": "點擊推進對話 / 選擇選項 / 與介面互動",
+  "help.hint": "也可透過底部 HUD 按鈕使用快進、自動、快存、快讀等功能。",
+
+  "about.title": "關於",
+  "about.name": "Akizuki*Rustgal",
+  "about.subtitle": "簡單好用的視覺小說引擎",
+  "about.version_label": "版本",
+  "about.build_label": "Build",
+  "about.line4": "心夏麻麻可愛喵",
+  "about.line5": "最喜歡心夏麻麻了喵"
 }

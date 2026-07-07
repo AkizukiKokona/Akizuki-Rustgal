@@ -20,6 +20,8 @@
   "settings.tab.audio": "オーディオ",
   "settings.tab.display": "画面",
   "settings.tab.skip": "スキップ",
+  "settings.tab.help": "ヘルプ",
+  "settings.tab.about": "バージョン情報",
   "settings.apply": "適用",
   "settings.cancel": "キャンセル",
 
@@ -71,5 +73,25 @@
   "autosave.restart": "最初から",
 
   "language.original": "原文",
-  "language.follow_script": "スクリプト言語に従う"
+  "language.follow_script": "スクリプト言語に従う",
+
+  "help.title": "キーボードショートカット",
+  "help.section.game": "ゲーム内操作",
+  "help.section.note": "メモ編集",
+  "help.key": "キー",
+  "help.function": "機能",
+  "help.advance": "会話を進める",
+  "help.escape": "設定を開く / ダイアログをキャンセル / メモを閉じる",
+  "help.backspace": "メモの文字を削除",
+  "help.enter_note": "メモを保存して確認",
+  "help.click": "クリックで進める / 選択肢を選ぶ / 操作",
+  "help.hint": "下部の HUD ボタンでスキップ、オート、クイックセーブ、クイックロードなども使えます。",
+
+  "about.title": "バージョン情報",
+  "about.name": "Akizuki*Rustgal",
+  "about.subtitle": "シンプルで使いやすいノベルエンジン",
+  "about.version_label": "バージョン",
+  "about.build_label": "Build",
+  "about.line4": "心夏麻麻可爱喵",
+  "about.line5": "最喜欢心夏麻麻了喵"
 }

@@ -20,6 +20,8 @@
   "settings.tab.audio": "Audio",
   "settings.tab.display": "Display",
   "settings.tab.skip": "Skip",
+  "settings.tab.help": "Help",
+  "settings.tab.about": "About",
   "settings.apply": "Apply",
   "settings.cancel": "Cancel",
 
@@ -71,5 +73,25 @@
   "autosave.restart": "Restart",
 
   "language.original": "Original",
-  "language.follow_script": "Follow Script Language"
+  "language.follow_script": "Follow Script Language",
+
+  "help.title": "Keyboard Shortcuts",
+  "help.section.game": "In-Game Controls",
+  "help.section.note": "Note Editing",
+  "help.key": "Key",
+  "help.function": "Function",
+  "help.advance": "Advance dialogue",
+  "help.escape": "Open settings / Cancel dialog / Close note",
+  "help.backspace": "Delete note character",
+  "help.enter_note": "Confirm note save",
+  "help.click": "Click to advance / select choice / interact",
+  "help.hint": "Use HUD buttons at the bottom for skip, auto, quick save, quick load, etc.",
+
+  "about.title": "About",
+  "about.name": "Akizuki*Rustgal",
+  "about.subtitle": "A simple and easy-to-use visual novel engine",
+  "about.version_label": "Version",
+  "about.build_label": "Build",
+  "about.line4": "心夏麻麻可爱喵",
+  "about.line5": "最喜欢心夏麻麻了喵"
 }
