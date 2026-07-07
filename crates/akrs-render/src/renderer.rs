@@ -3260,11 +3260,22 @@ fn draw_about_tab(engine: &Engine, layout: &SettingsLayout, font: &Option<Font>,
     draw_text_f(subtitle, text_x, line2_y, text_size,
         Color::new(0.8, 0.85, 0.95, 1.0), font);
 
-    // ── 第 3 行：版本 1.0 Build XX ──
-    // build 号取自 git 提交数（build.rs 注入 BUILD_NUMBER），按四位数格式补零显示。
-    let build_num: u64 = env!("BUILD_NUMBER").parse().unwrap_or(0);
-    let build_str = format!("{} 1.0   {} {:04}",
+    // ── 第 3 行：版本 1.0(Build 0040) ──
+    // 版本号取自 Cargo.toml 的 CARGO_PKG_VERSION（SemVer 形如 "1.0.40"）：
+    //   - 主次版本 = major.minor（如 "1.0"）
+    //   - build 号 = patch 段数字，按四位数补零显示（如 40 → "0040"）
+    //     该值与 build.rs 注入的 BUILD_NUMBER（commit 数 + 37）保持一致。
+    // 显示格式：版本 1.0(Build 0040)。
+    // 注：SemVer 不允许 patch 段有前导零，故 Cargo.toml 写 "1.0.40"，
+    // 显示时再补零为 "0040"。
+    let pkg_ver = env!("CARGO_PKG_VERSION");
+    let (ver_main, build_num) = match pkg_ver.rsplit_once('.') {
+        Some((head, patch)) => (head, patch.parse::<u64>().unwrap_or(0)),
+        None => (pkg_ver, 0),
+    };
+    let build_str = format!("{} {}({} {:04})",
         engine.t_ui("about.version_label"),
+        ver_main,
         engine.t_ui("about.build_label"),
         build_num);
     draw_text_f(&build_str, text_x, line3_y, text_size,
