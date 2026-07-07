@@ -812,6 +812,10 @@ impl Engine {
                 // 避免读档/崩溃恢复后背景黑屏、音乐中断。背景每帧按名字
                 // 查纹理，恢复 state 后渲染层自动正确绘制；音乐是事件
                 // 驱动的，需额外发 MusicChanged 事件让渲染层重新播放。
+                //
+                // 旧格式存档没有 scene 字段：调用 rebuild_scene_for_slot
+                // 从入口重放到存档点重建场景持久态，并回写升级存档文件，
+                // 使后续读档/缩略图渲染可直接使用 scene 字段。
                 if let Some(snap) = save.scene {
                     self.scene.background = snap.background;
                     self.scene.characters = snap.characters;
@@ -821,6 +825,27 @@ impl Engine {
                             events.push(EngineEvent::MusicChanged { name: name.clone() });
                         }
                     }
+                } else {
+                    // 旧格式存档：重建场景持久态。
+                    if let Some(rebuilt) = self.rebuild_scene_for_slot(slot) {
+                        self.scene.background = rebuilt.background.clone();
+                        self.scene.characters = rebuilt.characters.clone();
+                        self.scene.music = rebuilt.music.clone();
+                        if let Some(name) = &self.scene.music {
+                            if !name.is_empty() {
+                                events.push(EngineEvent::MusicChanged { name: name.clone() });
+                            }
+                        }
+                        // 回写升级存档文件（失败仅警告，不阻断读档）。
+                        if let Err(e) = self.saves.upgrade_scene(slot, rebuilt) {
+                            events.push(EngineEvent::Warning {
+                                message: format!("failed to upgrade save scene: {}", e),
+                            });
+                        }
+                    }
+                    // rebuild_scene_for_slot 内部已用 save_state/load_state
+                    // 保护并恢复 VM 到调用前状态（即 802 行 load 后的存档状态），
+                    // 此处无需再 load_state。
                 }
                 self.process_events_into(&mut events);
                 events.push(EngineEvent::Loaded { slot });
@@ -830,6 +855,128 @@ impl Engine {
             }
         }
         events
+    }
+
+    /// 为指定槽位重建场景快照（用于旧格式存档升级）。
+    ///
+    /// 旧格式存档没有 `scene` 字段，读档后背景黑屏、立绘消失。本方法通过
+    /// `Vm::rebuild_scene_to` 从入口重放到存档点，把沿途的 `@bg` / `+角色` /
+    /// `@music` 等指令**直接应用到 scene**（绕过过渡，重建只关心最终态），
+    /// 构造出存档时刻的场景持久态快照。
+    ///
+    /// 返回 `Some(SceneSnapshot)` 表示重建成功；`None` 表示该槽位无存档或
+    /// 读取失败。重建后调用方可通过 `saves().upgrade_scene()` 把快照回写
+    /// 到存档文件，完成一次性升级。
+    ///
+    /// 注意：本方法会临时修改 `self.vm` 的状态，但会在返回前恢复到调用前
+    /// 的状态（用 `save_state` / `load_state` 保护），不影响当前游戏进度。
+    pub fn rebuild_scene_for_slot(&mut self, slot: usize) -> Option<SceneSnapshot> {
+        let save = self.saves.load(slot).ok()?;
+        let saved_vm_state = self.vm.save_state();
+
+        // 加载存档的 VM 状态，重建场景。
+        self.vm.load_state(save.vm_state.clone());
+        let target_section = save.vm_state.section;
+        let target_ip = save.vm_state.ip;
+        let events = self.vm.rebuild_scene_to(target_section, target_ip);
+
+        // 用一个临时 scene 应用重建事件（直接应用，不走过渡）。
+        // 临时 scene 从空开始，因为重建是从入口重放，背景/立绘逐步累积到存档点状态。
+        let mut snap_scene = SceneState::default();
+
+        for ev in events {
+            match ev {
+                VmEvent::Command { cmd, args, .. } => {
+                    // 直接应用命令到临时 scene（不触发过渡、不产生引擎事件）。
+                    match cmd.as_str() {
+                        "bg" | "background" => {
+                            let name = args.first().cloned().unwrap_or_default();
+                            if !name.is_empty() {
+                                snap_scene.set_background(name);
+                            } else {
+                                snap_scene.background = None;
+                            }
+                        }
+                        "music" | "bgm" => {
+                            let name = args.first().cloned().unwrap_or_default();
+                            if !name.is_empty() {
+                                snap_scene.music = Some(name);
+                            } else {
+                                snap_scene.music = None;
+                            }
+                        }
+                        "stop_music" | "stop_bgm" => {
+                            snap_scene.music = None;
+                        }
+                        // sound/sfx 是瞬时音效，不影响场景持久态，跳过。
+                        _ => {}
+                    }
+                }
+                VmEvent::Direction { action } => {
+                    match action.kind {
+                        DirectionKind::Enter => {
+                            // 重建时直接入场（不走过渡），保留 pose/position/transform。
+                            match action.position {
+                                Some(pos) => snap_scene.character_enter_at_with(
+                                    action.character.clone(),
+                                    action.pose.clone(),
+                                    pos,
+                                    action.transform,
+                                ),
+                                None => snap_scene.character_enter_with(
+                                    action.character.clone(),
+                                    action.pose.clone(),
+                                    action.transform,
+                                ),
+                            }
+                        }
+                        DirectionKind::Exit => {
+                            snap_scene.character_exit(&action.character);
+                        }
+                    }
+                }
+                // 重建模式下 Dialogue/Narration/Choice/Wait/Flow/Visit/Return/StoryEnd
+                // 不影响场景持久态，跳过。
+                _ => {}
+            }
+        }
+
+        // 恢复 VM 到调用前状态，避免影响当前游戏。
+        self.vm.load_state(saved_vm_state);
+
+        Some(SceneSnapshot {
+            background: snap_scene.background,
+            characters: snap_scene.characters,
+            music: snap_scene.music,
+        })
+    }
+
+    /// 升级所有旧格式存档（无 `scene` 字段）。
+    ///
+    /// 启动时调用一次：扫描所有常规存档槽位，对没有 `scene` 快照的存档
+    /// 调用 `rebuild_scene_for_slot` 重建场景持久态并回写升级。这样后续
+    /// 读档/缩略图渲染都能直接使用 `scene` 字段，旧存档也能正常显示
+    /// 背景与立绘画面，不再黑屏或回退到标题图。
+    ///
+    /// 仅升级常规槽位（0..max_slots），不处理 autosave/continue/quicksave
+    /// （这些在各自读档路径中已按需重建升级）。
+    ///
+    /// 重建失败的单个槽位仅跳过，不影响其他槽位升级。
+    pub fn upgrade_all_legacy_saves(&mut self) {
+        let max_slots = self.saves.max_slots();
+        for slot in 0..max_slots {
+            // 只升级存在且无 scene 的存档。
+            let need_upgrade = match self.saves.load_slot_full(slot) {
+                Some(save) => save.scene.is_none(),
+                None => false,
+            };
+            if !need_upgrade {
+                continue;
+            }
+            if let Some(rebuilt) = self.rebuild_scene_for_slot(slot) {
+                let _ = self.saves.upgrade_scene(slot, rebuilt);
+            }
+        }
     }
 
     // ─── Autosave (crash-recovery) ───

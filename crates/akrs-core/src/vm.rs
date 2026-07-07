@@ -82,6 +82,9 @@ pub struct Vm {
     sections: Vec<CompiledSection>,
     #[allow(dead_code)]
     section_map: HashMap<String, usize>,
+    /// 入口 section 索引（由 `program.entry` 或第一个 section 决定）。
+    /// 用于 `rebuild_scene_to` 重置到入口重新执行。
+    entry_section: usize,
     current_section: usize,
     ip: usize,
     variables: HashMap<String, Value>,
@@ -112,6 +115,7 @@ impl Vm {
         Self {
             sections,
             section_map,
+            entry_section: current_section,
             current_section,
             ip: 0,
             variables: HashMap::new(),
@@ -244,6 +248,173 @@ impl Vm {
 
     pub fn save_state(&self) -> VmState {
         VmState { ip: self.ip, section: self.current_section, variables: self.variables.clone(), call_stack: self.call_stack.clone() }
+    }
+
+    /// 重建场景持久态：从入口 section / ip 0 开始执行，直到到达
+    /// `(target_section, target_ip)`，收集沿途的 `Command` / `Direction`
+    /// 事件（这些事件设置背景/立绘/音乐等持久态）。
+    ///
+    /// 用途：旧格式存档没有 `scene` 快照字段，读档后背景黑屏、立绘消失。
+    /// 本方法通过重放从开头到存档点的指令，重建存档时刻的场景持久态。
+    ///
+    /// # 执行规则
+    ///
+    /// - `Command` / `Direction`：正常执行并收集事件（ip 推进由 step 完成）。
+    /// - `VarOp` / `Jump` / `JumpIfFalse` / `SectionJump` / `VisitCall` / `Return`：
+    ///   正常执行（影响控制流）。注意：这些指令在 step 中是"非阻塞"的，
+    ///   会被 step 内部循环跳过直到遇到下个会产生事件的指令。
+    /// - `Dialogue` / `Narration` / `Wait`：重建模式下视为"已播放过"，
+    ///   只推进 ip，不产生事件。
+    /// - `Choice`：按已保存的变量评估各选项条件，取第一个 available 的选项
+    ///   跳转（模拟玩家当时的选择）。若无法评估则停止重建。
+    /// - `StoryEnd`：到达故事结尾，停止。
+    ///
+    /// # 停止条件
+    ///
+    /// 当 `current_section == target_section && ip == target_ip` 时停止。
+    /// 设置最大步数上限防止死循环（如剧本含无限循环但未到达 target）。
+    ///
+    /// 返回收集到的事件列表（按执行顺序）。若中途出错或超步数上限，
+    /// 返回已收集的事件（部分重建，好过完全不重建）。
+    pub fn rebuild_scene_to(
+        &mut self,
+        target_section: usize,
+        target_ip: usize,
+    ) -> Vec<VmEvent> {
+        // 重置到入口：ip=0，section 由 Vm::new 时确定的入口，call_stack 清空。
+        // 注意：不从 section 0 开始，而是从入口 section 开始，与正常游戏流程一致。
+        self.ip = 0;
+        self.current_section = self.entry_section();
+        self.call_stack.clear();
+        self.pending_choice = None;
+        // 变量保留（load_state 已设置存档时的变量），重建时按这些变量评估条件。
+
+        let mut collected = Vec::new();
+        // 步数上限：防止剧本含未到达 target 的循环导致死循环。
+        // 一个典型剧本几千条指令，上限取 100000 足够安全。
+        let max_steps = 100_000;
+        let mut steps = 0;
+
+        loop {
+            // 到达目标点：停止。
+            if self.current_section == target_section && self.ip == target_ip {
+                break;
+            }
+            // 超步数上限：停止，返回已收集的（部分重建）。
+            if steps >= max_steps {
+                break;
+            }
+            steps += 1;
+
+            // 越界保护：当前 section/ip 无效则停止。
+            if self.current_section >= self.sections.len() {
+                break;
+            }
+            let section = &self.sections[self.current_section];
+            if self.ip >= section.instrs.len() {
+                // 当前 section 结束：若 call_stack 有返回点则返回，否则停止。
+                if let Some((sec, instr)) = self.call_stack.pop() {
+                    self.current_section = sec;
+                    self.ip = instr;
+                    continue;
+                } else {
+                    break;
+                }
+            }
+
+            let instr = section.instrs[self.ip].clone();
+            match instr {
+                // 持久态指令：收集事件，step 会推进 ip。
+                Instr::Command { cmd, args, transition } => {
+                    self.ip += 1;
+                    collected.push(VmEvent::Command { cmd, args, transition });
+                }
+                Instr::Direction { action } => {
+                    self.ip += 1;
+                    collected.push(VmEvent::Direction { action });
+                }
+                // 控制/状态指令：正常执行（不收集事件）。
+                Instr::VarOp { name, op, expr } => {
+                    // 复用 step 中的逻辑：求值并写变量。
+                    if let Ok(val) = self.eval(&expr) {
+                        match op {
+                            VarOpKind::Assign => { self.variables.insert(name, val); }
+                            VarOpKind::PlusEq => {
+                                let cur = self.variables.get(&name).cloned().unwrap_or(Value::Int(0));
+                                if let Ok(result) = self.arith(&cur, &val, BinOp::Add) {
+                                    self.variables.insert(name, result);
+                                }
+                            }
+                            VarOpKind::MinusEq => {
+                                let cur = self.variables.get(&name).cloned().unwrap_or(Value::Int(0));
+                                if let Ok(result) = self.arith(&cur, &val, BinOp::Sub) {
+                                    self.variables.insert(name, result);
+                                }
+                            }
+                        }
+                    }
+                    self.ip += 1;
+                }
+                Instr::JumpIfFalse { cond, target } => {
+                    let jump = self.eval(&cond)
+                        .map(|v| !v.is_truthy())
+                        .unwrap_or(false);
+                    if jump { self.ip = target; } else { self.ip += 1; }
+                }
+                Instr::Jump { target } => { self.ip = target; }
+                Instr::SectionJump { target } => {
+                    self.current_section = target;
+                    self.ip = 0;
+                    self.call_stack.clear();
+                }
+                Instr::VisitCall { target } => {
+                    self.call_stack.push((self.current_section, self.ip + 1));
+                    self.current_section = target;
+                    self.ip = 0;
+                }
+                Instr::Return => {
+                    if let Some((sec, instr)) = self.call_stack.pop() {
+                        self.current_section = sec;
+                        self.ip = instr;
+                    } else {
+                        break;
+                    }
+                }
+                // 瞬时态指令：重建模式下视为"已播放过"，只推进 ip。
+                Instr::Dialogue { .. } | Instr::Narration { .. } => {
+                    self.ip += 1;
+                }
+                Instr::Wait { .. } => {
+                    self.ip += 1;
+                }
+                // Choice：按已存变量评估，取第一个 available 选项跳转。
+                Instr::Choice { options, .. } => {
+                    // 找到第一个条件为真（或无条件）的选项，模拟玩家选择。
+                    let chosen = options.iter().find(|o| {
+                        o.condition.as_ref().is_none_or(|c| {
+                            self.eval(c).map(|v| v.is_truthy()).unwrap_or(false)
+                        })
+                    });
+                    if let Some(opt) = chosen {
+                        self.ip = opt.target;
+                    } else {
+                        // 无可选选项：停止重建。
+                        break;
+                    }
+                }
+                Instr::StoryEnd => break,
+            }
+        }
+
+        // 重建后恢复 VM 到目标点（load_state 已设置过，这里重新设置确保一致）。
+        self.current_section = target_section;
+        self.ip = target_ip;
+        collected
+    }
+
+    /// 返回入口 section 索引（Vm::new 时确定的 entry）。
+    fn entry_section(&self) -> usize {
+        self.entry_section
     }
 
     pub fn load_state(&mut self, state: VmState) {

@@ -698,6 +698,11 @@ pub async fn run(mut engine: Engine, project_config: &ProjectConfig) {
     if engine.settings().debug_terminal {
         let _ = crate::platform::try_alloc_console();
     }
+    // 启动时一次性升级所有旧格式存档（无 scene 字段）：
+    // 旧存档通过 rebuild_scene_to 从入口重放重建场景持久态并回写。
+    // 这样存档页缩略图能正常渲染背景与立绘，读档也不再黑屏。
+    // 仅扫描常规槽位；autosave/continue/quicksave 在各自读档路径按需升级。
+    engine.upgrade_all_legacy_saves();
     // If a crash-recovery autosave exists from a previous run, prompt the
     // player to resume before showing the title screen.
     let mut ui_mode = if engine.has_autosave() {
@@ -2339,14 +2344,23 @@ async fn draw_slot_grid(
     assets: &mut AssetManager,
 ) {
     let cols = 4; // 2 rows × 4 columns = SLOTS_PER_PAGE
-    let cell_w = 408.0 * scale;
-    let cell_h = 240.0 * scale;
-    let gap_x = 29.0 * scale;
-    let gap_y = 29.0 * scale;
+    // 存档页放大倍率：在 dpi 适配系数 `scale` 之上再叠加 1.2x 放大，
+    // 让存档格子更饱满。cell_w 按不溢出屏幕宽度反算（充分利用横向空间），
+    // cell_h 与内部元素按 1.2x 放大，保留多 dpi 适配。
+    const SAVE_ZOOM: f32 = 1.2;
+    let eff = scale * SAVE_ZOOM; // 有效倍率 = dpi × 存档页放大
+    let gap_x = 29.0 * eff;
+    let gap_y = 29.0 * eff;
+    let cell_h = 240.0 * eff;
+    // cell_w：按 4 列不溢出 sw 反算，左右各留 24×scale 边距。
+    // 同时不超过基准 408×eff（避免超宽屏上格子过宽破坏比例）。
+    let usable_w = sw - 2.0 * 24.0 * scale;
+    let cell_w_max = 408.0 * eff;
+    let cell_w = ((usable_w - (cols - 1) as f32 * gap_x) / cols as f32).min(cell_w_max);
 
     let grid_w = cols as f32 * cell_w + (cols - 1) as f32 * gap_x;
     let grid_x = (sw - grid_w) / 2.0;
-    let grid_y = sh * 0.24;
+    let grid_y = sh * 0.22;
 
     // At most one cell can be hovered per frame; remember its tooltip text so
     // it can be rendered last (above the page nav and neighbouring cells).
@@ -2370,7 +2384,7 @@ async fn draw_slot_grid(
         } else {
             ButtonAction::LoadSlot(slot)
         };
-        if let Some(t) = draw_slot_cell(engine, x, y, cell_w, cell_h, slot, meta_clone.as_ref(), buttons, font, scale, action, assets).await {
+        if let Some(t) = draw_slot_cell(engine, x, y, cell_w, cell_h, slot, meta_clone.as_ref(), buttons, font, eff, action, assets).await {
             hovered_tooltip = Some(t);
         }
     }
@@ -2379,7 +2393,7 @@ async fn draw_slot_grid(
     // "+" button on the last page when more slots can be revealed.
     let total_pages = ((displayed_slots + SLOTS_PER_PAGE - 1) / SLOTS_PER_PAGE).max(1);
     let can_add_page = displayed_slots < max_slots;
-    draw_page_nav(buttons, sw, sh, font, scale, page, total_pages, can_add_page);
+    draw_page_nav(buttons, sw, sh, font, eff, page, total_pages, can_add_page);
 
     // Draw the hover tooltip last so it floats above the grid cells and the
     // page navigation control.
@@ -2470,24 +2484,46 @@ async fn draw_slot_cell(
 
         // 右侧文字栏：章节名 + 描述 + 备注。
         let section_size = 18.0 * scale;
-        let section = fit_text(&m.section_name, font, section_size, text_w);
-        draw_text_f(&section, text_x, thumb_y + section_size, section_size, WHITE, font);
+        let section_display = fit_text(&m.section_name, font, section_size, text_w);
+        let section_truncated = section_display.ends_with('…') && m.section_name != section_display;
+        draw_text_f(&section_display, text_x, thumb_y + section_size, section_size, WHITE, font);
 
-        // 描述：最多 3 行，字符换行 + 省略。
+        // 描述：按可用高度动态计算行数（放大后区域变大可显示更多行），
+        // 字符换行 + 末行省略。可用高度 = 缩略图高度 - 章节名行 - 间距，
+        // 行高 = desc_size + 行间距。
         let desc_size = 15.0 * scale;
-        let desc_lines = wrap_text_cn(&m.description, font, desc_size, text_w, 3);
-        let mut desc_y = thumb_y + section_size + 8.0 * scale;
+        let desc_line_h = desc_size + 4.0 * scale;
+        // 描述区域底部留出备注行高度（有备注时）或贴齐缩略图底部（无备注时）。
+        let has_note = m.note.as_deref().filter(|s| !s.is_empty()).is_some();
+        let desc_bottom = if has_note {
+            thumb_y + thumb_h - 16.0 * scale // 留备注行空间
+        } else {
+            thumb_y + thumb_h - 4.0 * scale
+        };
+        let desc_top = thumb_y + section_size + 8.0 * scale;
+        let desc_avail_h = (desc_bottom - desc_top).max(desc_line_h);
+        let desc_max_lines = ((desc_avail_h / desc_line_h) as usize).max(1);
+        let desc_lines = wrap_text_cn(&m.description, font, desc_size, text_w, desc_max_lines);
+        // 判断描述是否被截断：wrap_text_cn 超过 max_lines 会省略末行。
+        let desc_truncated = {
+            // 重新算不限制行数时的总行数，若大于 desc_max_lines 则被截断。
+            let full_lines = wrap_text_cn(&m.description, font, desc_size, text_w, usize::MAX);
+            full_lines.len() > desc_lines.len() || desc_lines.last().map(|l| l.ends_with('…')).unwrap_or(false)
+        };
+        let mut desc_y = desc_top;
         for line in &desc_lines {
             draw_text_f(line, text_x, desc_y, desc_size, Color::new(0.75, 0.75, 0.85, 1.0), font);
-            desc_y += desc_size + 4.0 * scale;
+            desc_y += desc_line_h;
         }
 
         // 备注：玩家自定义，斜体灰色，1 行省略。空视为无备注。
+        let mut note_truncated = false;
         if let Some(note) = m.note.as_deref().filter(|s| !s.is_empty()) {
             let note_size = 14.0 * scale;
             let note_prefix = "📝 ";
             let note_full = format!("{}{}", note_prefix, note);
             let note_display = fit_text(&note_full, font, note_size, text_w);
+            note_truncated = note_display.ends_with('…');
             draw_text_f(
                 &note_display,
                 text_x,
@@ -2496,9 +2532,25 @@ async fn draw_slot_cell(
                 Color::new(0.6, 0.8, 0.6, 1.0),
                 font,
             );
-            // 备注被省略时，hover 显示完整备注。
-            if hover && note_display.ends_with('…') {
-                tooltip = Some(note_full);
+        }
+
+        // hover 时若任一文字被截断，组合完整信息显示 tooltip：
+        // 章节名 / 描述 / 备注，缺省项跳过。
+        if hover && (section_truncated || desc_truncated || note_truncated) {
+            let mut parts: Vec<String> = Vec::new();
+            if section_truncated {
+                parts.push(m.section_name.clone());
+            }
+            if desc_truncated {
+                parts.push(m.description.clone());
+            }
+            if note_truncated {
+                if let Some(note) = m.note.as_deref().filter(|s| !s.is_empty()) {
+                    parts.push(format!("📝 {}", note));
+                }
+            }
+            if !parts.is_empty() {
+                tooltip = Some(parts.join("\n"));
             }
         }
 
@@ -2537,11 +2589,6 @@ async fn draw_slot_cell(
             label: note_label.to_string(),
             action: ButtonAction::EditNote(slot),
         });
-
-        // 描述被省略时，hover 显示完整描述。
-        if hover && tooltip.is_none() {
-            tooltip = Some(m.description.clone());
-        }
     } else {
         // Empty slot: centered "空" + a dimming overlay (visually disabled).
         let empty_size = 29.0 * scale;

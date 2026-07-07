@@ -201,6 +201,25 @@ impl SaveManager {
             .and_then(|content| serde_json::from_str::<SaveSlot>(&content).ok())
     }
 
+    /// 升级旧格式存档：把重建好的 `scene` 快照回写到存档文件。
+    ///
+    /// 旧格式存档没有 `scene` 字段，读档/缩略图渲染时会黑屏。engine 在
+    /// 首次发现某槽位无 `scene` 时，通过 `rebuild_scene_to` 重建场景持久态，
+    /// 然后调用本方法把 `scene` 写回存档文件，完成一次性升级。后续读档/
+    /// 缩略图渲染即可直接使用 `scene` 字段，无需再重建。
+    ///
+    /// 保留存档原有的 `metadata` / `vm_state` / `settings` 不变，只补 `scene`。
+    /// 写入失败仅返回 `Err`，不影响读档流程（读档方会忽略升级失败）。
+    pub fn upgrade_scene(&self, slot: usize, scene: SceneSnapshot) -> Result<(), String> {
+        let mut save = self.load(slot)?;
+        save.scene = Some(scene);
+        let json = serde_json::to_string_pretty(&save)
+            .map_err(|e| format!("failed to serialize upgraded save: {}", e))?;
+        std::fs::write(self.slot_path(slot), json)
+            .map_err(|e| format!("failed to write upgraded save: {}", e))?;
+        Ok(())
+    }
+
     /// Get the save directory path.
     pub fn save_dir(&self) -> &Path {
         &self.save_dir
