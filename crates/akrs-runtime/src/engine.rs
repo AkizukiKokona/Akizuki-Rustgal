@@ -719,30 +719,51 @@ impl Engine {
     /// （背景/立绘/音乐），以便读档时恢复，避免读档后背景黑屏、
     /// 音乐中断。对话/选项/过渡等"瞬时态"不在此快照中，它们会由
     /// 读档后 `process_events_into` 从 ip 继续执行时重新产生。
+    ///
+    /// 关键：若过渡处于 Out 阶段（pending 尚未应用到现场 scene），必须
+    /// 把 pending 变更应用到快照上。因为 VM 指针已越过触发过渡的指令
+    /// （入场/下场/换背景），读档后不会重放该指令；若快照仍是过渡前的
+    /// 旧状态，本该下场的立绘就会残留在屏幕上"下不去"。
     fn scene_snapshot(&self) -> Option<SceneSnapshot> {
-        Some(SceneSnapshot {
-            background: self.scene.background.clone(),
-            characters: self.scene.characters.clone(),
-            music: self.scene.music.clone(),
-        })
+        if self.transition.has_pending() {
+            // 克隆现场并把 pending 应用上去，构造与 VM ip 一致的快照。
+            let mut snap_scene = self.scene.clone();
+            self.transition.apply_pending_to(&mut snap_scene);
+            Some(SceneSnapshot {
+                background: snap_scene.background,
+                characters: snap_scene.characters,
+                music: snap_scene.music,
+            })
+        } else {
+            Some(SceneSnapshot {
+                background: self.scene.background.clone(),
+                characters: self.scene.characters.clone(),
+                music: self.scene.music.clone(),
+            })
+        }
+    }
+
+    /// 构造存档描述：对话取 "说话人: 文本" 前 30 字符；无对话时用章节名。
+    ///
+    /// 用 `char_indices().nth(30)` 取第 31 个字符的起始字节位置截取，
+    /// 不足 30 字符时取全长。旧实现 `take(30).last().unwrap_or(0)` 在
+    /// 不足 30 字符时会截取到字节 0 得到空串，且即便够 30 字符也会丢掉
+    /// 第 30 个字符本身。
+    fn save_description(&self) -> String {
+        self.scene.dialogue.as_ref()
+            .map(|d| {
+                let head = format!("{}: {}", d.speaker, d.full_text);
+                let cut = head.char_indices().nth(30).map(|(i, _)| i).unwrap_or(head.len());
+                head[..cut].to_string()
+            })
+            .unwrap_or_else(|| self.current_section_name.clone())
     }
 
     /// Save the current game state.
     pub fn save(&mut self, slot: usize) -> Vec<EngineEvent> {
         let mut events = Vec::new();
         let vm_state = self.vm.save_state();
-        // 截取对话前 30 个字符作为存档描述。
-        // 旧实现 `char_indices().take(30).last()` 在对话不足 30 字符时
-        // 返回 None → unwrap_or(0) → 截取到字节 0 得到空串，且即便够 30
-        // 字符也会丢掉第 30 个字符本身。改用 nth(30) 取第 31 个字符的
-        // 起始字节，None 时取全长。
-        let description = self.scene.dialogue.as_ref()
-            .map(|d| {
-                let head = format!("{}: {}", d.speaker, d.full_text);
-                let cut = head.char_indices().nth(30).map(|(i, _)| i).unwrap_or(head.len());
-                head[..cut].to_string()
-            })
-            .unwrap_or_else(|| self.current_section_name.clone());
+        let description = self.save_description();
 
         match self.saves.save(
             slot,
@@ -768,6 +789,11 @@ impl Engine {
                 self.scene.show_title = false;
                 self.phase = EnginePhase::Running;
                 self.scene.clear_text();
+                // 读档后从 VM 指针继续执行，存档不保存过渡状态，
+                // 任何残留的过渡（含 pending 变更与叠层）都是过时的，必须清空，
+                // 否则残留 pending 会在 swap point 错误应用到刚恢复的场景。
+                self.transition.reset();
+                self.scene.transition = None;
                 // 恢复存档时保存的场景快照（背景/立绘/音乐），
                 // 避免读档/崩溃恢复后背景黑屏、音乐中断。背景每帧按名字
                 // 查纹理，恢复 state 后渲染层自动正确绘制；音乐是事件
@@ -808,23 +834,7 @@ impl Engine {
         }
 
         let vm_state = self.vm.save_state();
-        let description = self
-            .scene
-            .dialogue
-            .as_ref()
-            .map(|d| {
-                format!(
-                    "{}: {}",
-                    d.speaker,
-                    &d.full_text[..d.full_text
-                        .char_indices()
-                        .take(30)
-                        .last()
-                        .map(|(i, _)| i)
-                        .unwrap_or(0)]
-                )
-            })
-            .unwrap_or_else(|| self.current_section_name.clone());
+        let description = self.save_description();
 
         match self.saves.save_autosave(
             vm_state,
@@ -849,6 +859,11 @@ impl Engine {
                 self.scene.show_title = false;
                 self.phase = EnginePhase::Running;
                 self.scene.clear_text();
+                // 读档后从 VM 指针继续执行，存档不保存过渡状态，
+                // 任何残留的过渡（含 pending 变更与叠层）都是过时的，必须清空，
+                // 否则残留 pending 会在 swap point 错误应用到刚恢复的场景。
+                self.transition.reset();
+                self.scene.transition = None;
                 // 恢复存档时保存的场景快照（背景/立绘/音乐），
                 // 避免读档/崩溃恢复后背景黑屏、音乐中断。背景每帧按名字
                 // 查纹理，恢复 state 后渲染层自动正确绘制；音乐是事件
@@ -904,23 +919,7 @@ impl Engine {
         }
 
         let vm_state = self.vm.save_state();
-        let description = self
-            .scene
-            .dialogue
-            .as_ref()
-            .map(|d| {
-                format!(
-                    "{}: {}",
-                    d.speaker,
-                    &d.full_text[..d.full_text
-                        .char_indices()
-                        .take(30)
-                        .last()
-                        .map(|(i, _)| i)
-                        .unwrap_or(0)]
-                )
-            })
-            .unwrap_or_else(|| self.current_section_name.clone());
+        let description = self.save_description();
 
         match self.saves.save_continue(
             vm_state,
@@ -945,6 +944,11 @@ impl Engine {
                 self.scene.show_title = false;
                 self.phase = EnginePhase::Running;
                 self.scene.clear_text();
+                // 读档后从 VM 指针继续执行，存档不保存过渡状态，
+                // 任何残留的过渡（含 pending 变更与叠层）都是过时的，必须清空，
+                // 否则残留 pending 会在 swap point 错误应用到刚恢复的场景。
+                self.transition.reset();
+                self.scene.transition = None;
                 // 恢复存档时保存的场景快照（背景/立绘/音乐），
                 // 避免读档/崩溃恢复后背景黑屏、音乐中断。背景每帧按名字
                 // 查纹理，恢复 state 后渲染层自动正确绘制；音乐是事件
@@ -991,9 +995,7 @@ impl Engine {
     pub fn save_quicksave(&mut self) -> Vec<EngineEvent> {
         let mut events = Vec::new();
         let vm_state = self.vm.save_state();
-        let description = self.scene.dialogue.as_ref()
-            .map(|d| format!("{}: {}", d.speaker, &d.full_text[..d.full_text.char_indices().take(30).last().map(|(i, _)| i).unwrap_or(0)]))
-            .unwrap_or_else(|| self.current_section_name.clone());
+        let description = self.save_description();
 
         match self.saves.save_quicksave(
             vm_state,
@@ -1018,6 +1020,11 @@ impl Engine {
                 self.scene.show_title = false;
                 self.phase = EnginePhase::Running;
                 self.scene.clear_text();
+                // 读档后从 VM 指针继续执行，存档不保存过渡状态，
+                // 任何残留的过渡（含 pending 变更与叠层）都是过时的，必须清空，
+                // 否则残留 pending 会在 swap point 错误应用到刚恢复的场景。
+                self.transition.reset();
+                self.scene.transition = None;
                 // 恢复存档时保存的场景快照（背景/立绘/音乐），
                 // 避免读档/崩溃恢复后背景黑屏、音乐中断。背景每帧按名字
                 // 查纹理，恢复 state 后渲染层自动正确绘制；音乐是事件
