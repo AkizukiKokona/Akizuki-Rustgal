@@ -731,8 +731,17 @@ impl Engine {
     pub fn save(&mut self, slot: usize) -> Vec<EngineEvent> {
         let mut events = Vec::new();
         let vm_state = self.vm.save_state();
+        // 截取对话前 30 个字符作为存档描述。
+        // 旧实现 `char_indices().take(30).last()` 在对话不足 30 字符时
+        // 返回 None → unwrap_or(0) → 截取到字节 0 得到空串，且即便够 30
+        // 字符也会丢掉第 30 个字符本身。改用 nth(30) 取第 31 个字符的
+        // 起始字节，None 时取全长。
         let description = self.scene.dialogue.as_ref()
-            .map(|d| format!("{}: {}", d.speaker, &d.full_text[..d.full_text.char_indices().take(30).last().map(|(i, _)| i).unwrap_or(0)]))
+            .map(|d| {
+                let head = format!("{}: {}", d.speaker, d.full_text);
+                let cut = head.char_indices().nth(30).map(|(i, _)| i).unwrap_or(head.len());
+                head[..cut].to_string()
+            })
             .unwrap_or_else(|| self.current_section_name.clone());
 
         match self.saves.save(

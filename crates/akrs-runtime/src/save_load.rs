@@ -17,6 +17,10 @@ pub struct SaveMetadata {
     pub section_name: String,
     pub play_time_secs: u64,
     pub description: String,
+    /// 玩家自定义备注。旧版存档没有此字段，反序列化时默认为 `None`。
+    /// 空字符串视为无备注（显示时 `note.as_deref().filter(|s| !s.is_empty())`）。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub note: Option<String>,
 }
 
 /// A complete save slot.
@@ -110,6 +114,7 @@ impl SaveManager {
             section_name: section_name.to_string(),
             play_time_secs,
             description: description.to_string(),
+            note: None,
         };
 
         let save = SaveSlot {
@@ -180,6 +185,22 @@ impl SaveManager {
             .collect()
     }
 
+    /// 读取某个编号槽位的完整存档（含场景快照），用于存档页绘制缩略图。
+    ///
+    /// 与 `list_saves` 不同，此方法返回完整的 `SaveSlot`（含 `scene` 字段），
+    /// 供渲染层根据场景快照重绘缩略图。槽位不存在时返回 `None`。
+    /// 每次调用都会读文件并解析 JSON，存档页每帧仅对当前页的 8 个槽位调用，
+    /// 开销可接受。
+    pub fn load_slot_full(&self, slot: usize) -> Option<SaveSlot> {
+        let path = self.slot_path(slot);
+        if !path.exists() {
+            return None;
+        }
+        std::fs::read_to_string(&path)
+            .ok()
+            .and_then(|content| serde_json::from_str::<SaveSlot>(&content).ok())
+    }
+
     /// Get the save directory path.
     pub fn save_dir(&self) -> &Path {
         &self.save_dir
@@ -188,6 +209,26 @@ impl SaveManager {
     /// Maximum number of slots.
     pub fn max_slots(&self) -> usize {
         self.max_slots
+    }
+
+    /// 设置某个编号槽位的玩家备注。
+    ///
+    /// 读取整份存档、修改 metadata.note 后回写。空字符串会转为 `None`，
+    /// 这样序列化时不会写出 `note` 字段（与默认无备注的存档一致）。
+    /// 槽位不存在时返回错误。
+    pub fn set_note(&self, slot: usize, note: &str) -> Result<(), String> {
+        let path = self.slot_path(slot);
+        let content = std::fs::read_to_string(&path)
+            .map_err(|e| format!("failed to read save for set_note: {}", e))?;
+        let mut save: SaveSlot = serde_json::from_str(&content)
+            .map_err(|e| format!("failed to parse save for set_note: {}", e))?;
+        let trimmed = note.trim();
+        save.metadata.note = if trimmed.is_empty() { None } else { Some(trimmed.to_string()) };
+        let json = serde_json::to_string_pretty(&save)
+            .map_err(|e| format!("failed to serialize save for set_note: {}", e))?;
+        std::fs::write(&path, json)
+            .map_err(|e| format!("failed to write save for set_note: {}", e))?;
+        Ok(())
     }
 
     // ─── Autosave (crash-recovery) ───
@@ -223,6 +264,7 @@ impl SaveManager {
             section_name: section_name.to_string(),
             play_time_secs,
             description: description.to_string(),
+            note: None,
         };
 
         let save = SaveSlot {
@@ -307,6 +349,7 @@ impl SaveManager {
             section_name: section_name.to_string(),
             play_time_secs,
             description: description.to_string(),
+            note: None,
         };
 
         let save = SaveSlot {
@@ -393,6 +436,7 @@ impl SaveManager {
             section_name: section_name.to_string(),
             play_time_secs,
             description: description.to_string(),
+            note: None,
         };
 
         let save = SaveSlot {
