@@ -1441,8 +1441,14 @@ impl Engine {
                 let kind = transition.unwrap_or(Transition::Fade);
 
                 if self.transition.is_active() {
-                    // Apply instantly if transition in progress
-                    self.scene.set_background(name.clone());
+                    // 过渡进行中：合并到 pending，不直接改现场 scene。
+                    // 直接改现场会被 swap point 的旧 pending 覆盖，bg 指令丢失。
+                    self.transition.merge_into_pending(
+                        Some(Some(name.clone())),
+                        vec![],
+                        vec![],
+                        None,
+                    );
                 } else {
                     self.transition.start(
                         kind,
@@ -1504,19 +1510,16 @@ impl Engine {
                 let position = action.position;
                 let transform = action.transform;
                 if self.transition.is_active() {
-                    match position {
-                        Some(pos) => self.scene.character_enter_at_with(
-                            action.character.clone(),
-                            pose,
-                            pos,
-                            transform,
-                        ),
-                        None => self.scene.character_enter_with(
-                            action.character.clone(),
-                            pose,
-                            transform,
-                        ),
-                    }
+                    // 过渡进行中：合并到 pending，不直接改现场 scene。
+                    // 直接改现场会导致指令丢失（现场是过渡前旧状态，新角色
+                    // 可能不存在；且 swap point 会用旧 pending 覆盖），
+                    // 表现为立绘"下不去"的叠叠乐问题。
+                    self.transition.merge_into_pending(
+                        None,
+                        vec![(action.character.clone(), pose, position, transform)],
+                        vec![],
+                        None,
+                    );
                 } else {
                     self.transition.start(
                         kind,
@@ -1534,7 +1537,15 @@ impl Engine {
             }
             DirectionKind::Exit => {
                 if self.transition.is_active() {
-                    self.scene.character_exit(&action.character);
+                    // 过渡进行中：合并到 pending，不直接改现场 scene。
+                    // 直接 character_exit 在现场是旧状态时可能是 no-op
+                    // （角色尚未入场），导致 exit 指令丢失、立绘残留。
+                    self.transition.merge_into_pending(
+                        None,
+                        vec![],
+                        vec![action.character.clone()],
+                        None,
+                    );
                 } else {
                     self.transition.start(
                         kind,

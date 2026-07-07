@@ -2686,38 +2686,37 @@ async fn draw_slot_thumbnail(
         }
     };
 
-    // 绘制背景（contain 模式：完整显示在缩略图内，不超出边框）。
-    // 对于 16:9 背景图 + 16:9 缩略图，contain 等价于 cover，刚好填满；
-    // 对于非 16:9 的背景图，会有黑边但不超出，比 cover 裁切更安全。
+    // 绘制背景（cover 模式：填满缩略图区域，超出部分裁剪）。
+    // 与主场景 draw_background 一致，让缩略图"和用户看到的一样"。
+    // 用 draw_texture_clipped 把绘制限定在缩略图矩形 (x, y, w, h) 内。
     if let Some(bg) = &scene.background {
         if let Some(tex) = assets.get_texture(AssetKind::Bg, &bg.name).await {
             let tex_w = tex.width();
             let tex_h = tex.height();
             if tex_w > 0.0 && tex_h > 0.0 {
-                let s = (w / tex_w).min(h / tex_h);
+                // cover：取较大的缩放比，填满缩略图区域。
+                let s = (w / tex_w).max(h / tex_h);
                 let dw = tex_w * s;
                 let dh = tex_h * s;
                 let dx = x + (w - dw) / 2.0 + bg.offset_x * w;
                 let dy = y + (h - dh) / 2.0 + bg.offset_y * h;
-                draw_texture_ex(
-                    tex.clone(),
-                    dx,
-                    dy,
+                draw_texture_clipped(
+                    &tex, dx, dy, dw, dh, tex_w, tex_h,
                     Color::new(1.0, 1.0, 1.0, bg.alpha),
-                    DrawTextureParams {
-                        dest_size: Some(Vec2::new(dw, dh)),
-                        ..Default::default()
-                    },
+                    x, y, w, h,
                 );
             }
         } else {
-            // 背景纹理缺失：用资源名哈希色占位。
+            // 背景纹理缺失：用资源名哈希色占位（已限定在缩略图区域内）。
             let c = name_to_color(&bg.name);
             draw_rectangle(x, y, w, h, Color::new(c.0, c.1, c.2, bg.alpha));
         }
     }
 
-    // 绘制立绘（按缩略图高度等比缩小）。
+    // 绘制立绘（按缩略图高度等比缩小，超出部分裁剪到缩略图区域内）。
+    // 与主场景 draw_characters 逻辑一致，但所有坐标基于缩略图尺寸，
+    // 并用 draw_texture_clipped 裁掉超出 16:9 区域的部分，避免立绘
+    // 突出到缩略图边框外。
     for char_state in &scene.characters {
         let x_frac = char_state.custom_x.unwrap_or_else(|| char_state.position.x_fraction());
         let y_frac = char_state.custom_y.unwrap_or(1.0);
@@ -2731,20 +2730,82 @@ async fn draw_slot_thumbnail(
                 let dw = tex_w * scale_factor;
                 let dh = tex_h * scale_factor;
                 let dx = w * x_frac - dw / 2.0 + char_state.offset_x * (w / 1920.0);
-                let dy = h * y_frac - dh / 2.0;
-                draw_texture_ex(
-                    tex.clone(),
-                    x + dx,
-                    y + dy,
-                    WHITE,
-                    DrawTextureParams {
-                        dest_size: Some(Vec2::new(dw, dh)),
-                        ..Default::default()
-                    },
+                // y_frac=1.0（底部）时贴齐缩略图底部；否则中心点对齐。
+                let dy = if (y_frac - 1.0).abs() < 0.001 {
+                    h - dh - 50.0 * (h / 1080.0)
+                } else {
+                    h * y_frac - dh / 2.0
+                };
+                draw_texture_clipped(
+                    &tex, x + dx, y + dy, dw, dh, tex_w, tex_h,
+                    Color::new(1.0, 1.0, 1.0, char_state.alpha),
+                    x, y, w, h,
                 );
             }
         }
     }
+}
+
+/// 绘制纹理并裁剪到指定矩形区域内（超出部分不显示）。
+///
+/// 用于存档缩略图：背景用 cover 模式会超出 16:9 缩略图区域，立绘按位置
+/// 定位也可能超出，必须裁剪避免突出到缩略图边框外污染相邻格子。
+///
+/// # 实现
+///
+/// macroquad 0.3 的 `DrawTextureParams.source` 接受源纹理像素坐标的 `Rect`，
+/// 表示只绘制源纹理的这一部分。本函数计算目标矩形 `(dx, dy, dw, dh)` 与
+/// 裁剪矩形 `(clip_x, clip_y, clip_w, clip_h)` 的交集，把交集映射回源纹理
+/// 坐标，用 `source` 只绘制可见部分，`dest_size` 设为交集大小。
+///
+/// 参数：
+/// - `tex`：纹理。
+/// - `dx, dy, dw, dh`：目标绘制矩形（屏幕坐标）。
+/// - `tex_w, tex_h`：源纹理原始尺寸（像素）。
+/// - `tint`：着色（含 alpha）。
+/// - `clip_x, clip_y, clip_w, clip_h`：裁剪矩形（屏幕坐标），只绘制此区域内的部分。
+fn draw_texture_clipped(
+    tex: &Texture2D,
+    dx: f32, dy: f32, dw: f32, dh: f32,
+    tex_w: f32, tex_h: f32,
+    tint: Color,
+    clip_x: f32, clip_y: f32, clip_w: f32, clip_h: f32,
+) {
+    // 目标矩形与裁剪矩形的交集（屏幕坐标）。
+    let ix0 = dx.max(clip_x);
+    let iy0 = dy.max(clip_y);
+    let ix1 = (dx + dw).min(clip_x + clip_w);
+    let iy1 = (dy + dh).min(clip_y + clip_h);
+    let iw = ix1 - ix0;
+    let ih = iy1 - iy0;
+    if iw <= 0.0 || ih <= 0.0 {
+        return; // 无交集，不绘制。
+    }
+    // 交集在目标矩形内的偏移比例，映射回源纹理坐标。
+    let u0 = (ix0 - dx) / dw;
+    let v0 = (iy0 - dy) / dh;
+    let u1 = (ix1 - dx) / dw;
+    let v1 = (iy1 - dy) / dh;
+    // 源纹理像素坐标（macroquad 的 source 用像素坐标）。
+    let src_x = u0 * tex_w;
+    let src_y = v0 * tex_h;
+    let src_w = (u1 - u0) * tex_w;
+    let src_h = (v1 - v0) * tex_h;
+    draw_texture_ex(
+        tex.clone(),
+        ix0, iy0,
+        tint,
+        DrawTextureParams {
+            dest_size: Some(Vec2::new(iw, ih)),
+            source: Some(Rect {
+                x: src_x,
+                y: src_y,
+                w: src_w,
+                h: src_h,
+            }),
+            ..Default::default()
+        },
+    );
 }
 
 /// Draw the page navigation control anchored to the bottom-right corner:
