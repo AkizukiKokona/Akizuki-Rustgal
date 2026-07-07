@@ -916,6 +916,56 @@ impl Engine {
         events
     }
 
+    // ─── Quick save (快速存档/读档) ───
+    //
+    // 快速存档使用独立的 `quicksave.json`，不占用编号槽位，也不出现在
+    // 存档列表中。玩家可随时快速存读档而不影响存档页中的手动存档。
+
+    /// Save the current game state to the dedicated quick-save slot.
+    pub fn save_quicksave(&mut self) -> Vec<EngineEvent> {
+        let mut events = Vec::new();
+        let vm_state = self.vm.save_state();
+        let description = self.scene.dialogue.as_ref()
+            .map(|d| format!("{}: {}", d.speaker, &d.full_text[..d.full_text.char_indices().take(30).last().map(|(i, _)| i).unwrap_or(0)]))
+            .unwrap_or_else(|| self.current_section_name.clone());
+
+        match self.saves.save_quicksave(
+            vm_state,
+            &self.current_section_name,
+            self.play_time as u64,
+            &description,
+        ) {
+            Ok(_) => events.push(EngineEvent::Saved { slot: usize::MAX - 2 }),
+            Err(e) => events.push(EngineEvent::Error { message: e }),
+        }
+        events
+    }
+
+    /// Load the quick-save slot and resume the game.
+    pub fn load_quicksave(&mut self) -> Vec<EngineEvent> {
+        let mut events = Vec::new();
+
+        match self.saves.load_quicksave() {
+            Ok(save) => {
+                self.vm.load_state(save.vm_state);
+                self.scene.show_title = false;
+                self.phase = EnginePhase::Running;
+                self.scene.clear_text();
+                self.process_events_into(&mut events);
+                events.push(EngineEvent::Loaded { slot: usize::MAX - 2 });
+            }
+            Err(e) => {
+                events.push(EngineEvent::Error { message: e });
+            }
+        }
+        events
+    }
+
+    /// Check whether a quick-save exists.
+    pub fn has_quicksave(&self) -> bool {
+        self.saves.has_quicksave()
+    }
+
     /// Reload the script from new source text (hot reload).
     pub fn reload_script(&mut self, source: &str) -> Result<(), Vec<String>> {
         self.reload_script_internal(source)

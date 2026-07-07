@@ -446,9 +446,10 @@ enum ButtonAction {
     /// Discard the crash-recovery autosave and stay on the title screen.
     DiscardAutosave,
     // ── In-game HUD quick actions ───
-    /// Quick-save to the dedicated quick-save slot (slot 0).
+    /// Quick-save to the dedicated quick-save slot (`quicksave.json`).
+    /// 独立于编号槽位，不覆盖存档页中的手动存档。
     QuickSave,
-    /// Quick-load from the dedicated quick-save slot (slot 0).
+    /// Quick-load from the dedicated quick-save slot (`quicksave.json`).
     QuickLoad,
     /// Open the save menu from the HUD.
     OpenSaveMenu,
@@ -1195,11 +1196,13 @@ pub async fn run(mut engine: Engine, project_config: &ProjectConfig) {
                     // Handle non-transition actions immediately.
                     match action {
                         ButtonAction::QuickSave => {
-                            engine.save(0);
+                            // 快速存档写入独立的 quicksave.json，不占用编号槽位，
+                            // 也不会覆盖存档页中的任何手动存档。
+                            engine.save_quicksave();
                         }
                         ButtonAction::QuickLoad => {
-                            if engine.saves().has_save(0) {
-                                engine.load(0);
+                            if engine.has_quicksave() {
+                                engine.load_quicksave();
                                 hud_hidden = false;
                             }
                         }

@@ -324,6 +324,92 @@ impl SaveManager {
         }
         Ok(())
     }
+
+    // ─── Quick save (快速存档/读档) ───
+    //
+    // 快速存档使用独立文件 `quicksave.json`，与编号槽位完全隔离。
+    // 它不会出现在 `list_saves` 返回的存档列表中（对玩家不可见），
+    // 因此不会覆盖任何常规存档位。玩家可在游戏内随时快速存档/读档，
+    // 而不影响存档页中的手动存档。
+
+    /// Path to the quick-save file.
+    fn quicksave_path(&self) -> PathBuf {
+        self.save_dir.join("quicksave.json")
+    }
+
+    /// Save the current game state to the dedicated quick-save slot.
+    ///
+    /// This does not occupy a regular slot and is not listed by `list_saves`,
+    /// so it never overwrites a manual save.
+    pub fn save_quicksave(
+        &self,
+        vm_state: VmState,
+        section_name: &str,
+        play_time_secs: u64,
+        description: &str,
+    ) -> Result<SaveMetadata, String> {
+        const QUICKSAVE_SLOT_MARKER: usize = usize::MAX - 2;
+
+        let timestamp = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or(0);
+
+        let metadata = SaveMetadata {
+            slot: QUICKSAVE_SLOT_MARKER,
+            timestamp,
+            section_name: section_name.to_string(),
+            play_time_secs,
+            description: description.to_string(),
+        };
+
+        let save = SaveSlot {
+            metadata: metadata.clone(),
+            vm_state,
+            settings: SettingsSnapshot {
+                text_speed: 30.0,
+                bgm_volume: 0.8,
+                sfx_volume: 1.0,
+            },
+        };
+
+        let json = serde_json::to_string_pretty(&save)
+            .map_err(|e| format!("failed to serialize quick-save: {}", e))?;
+
+        std::fs::write(self.quicksave_path(), json)
+            .map_err(|e| format!("failed to write quick-save file: {}", e))?;
+
+        Ok(metadata)
+    }
+
+    /// Load the quick-save slot.
+    pub fn load_quicksave(&self) -> Result<SaveSlot, String> {
+        let path = self.quicksave_path();
+        let content = std::fs::read_to_string(&path)
+            .map_err(|e| format!("failed to read quick-save file: {}", e))?;
+
+        let save: SaveSlot = serde_json::from_str(&content)
+            .map_err(|e| format!("failed to parse quick-save file: {}", e))?;
+
+        Ok(save)
+    }
+
+    /// Check whether a quick-save exists.
+    pub fn has_quicksave(&self) -> bool {
+        self.quicksave_path().exists()
+    }
+
+    /// Delete the quick-save (e.g., after it has been loaded, or on demand).
+    ///
+    /// Succeeds (no-op) when no quick-save is present.
+    pub fn delete_quicksave(&self) -> Result<(), String> {
+        let path = self.quicksave_path();
+        if path.exists() {
+            std::fs::remove_file(&path)
+                .map_err(|e| format!("failed to delete quick-save: {}", e))?;
+        }
+        Ok(())
+    }
 }
 
 /// Format a Unix timestamp as a human-readable string.
@@ -523,6 +609,81 @@ mod tests {
         let auto2 = manager.load_autosave().unwrap();
         assert_eq!(auto2.metadata.section_name, "Auto2");
         assert_eq!(auto2.metadata.play_time_secs, 300);
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn test_quicksave_independent_from_normal_saves() {
+        let dir = std::env::temp_dir().join("akrs_test_quicksave_independent");
+        let _ = std::fs::remove_dir_all(&dir);
+        let manager = SaveManager::new(&dir, 10);
+
+        let normal_state = VmState {
+            ip: 3,
+            section: 0,
+            variables: HashMap::new(),
+            call_stack: vec![],
+        };
+        let quick_state = VmState {
+            ip: 42,
+            section: 2,
+            variables: HashMap::new(),
+            call_stack: vec![(1, 1)],
+        };
+
+        // 在 0 号位写一个常规存档，再写一个快速存档。
+        manager
+            .save(0, normal_state.clone(), "Normal", 100, "Normal save")
+            .unwrap();
+        manager
+            .save_quicksave(quick_state.clone(), "Quick", 200, "Quick save")
+            .unwrap();
+
+        // 两者独立存在。
+        assert!(manager.has_save(0));
+        assert!(manager.has_quicksave());
+
+        // list_saves 不得把快速存档列出来（对玩家不可见）。
+        let saves = manager.list_saves();
+        assert_eq!(saves.len(), 10);
+        assert!(saves[0].is_some());
+        assert_eq!(saves[0].as_ref().unwrap().section_name, "Normal");
+        for slot in 1..10 {
+            assert!(saves[slot].is_none());
+        }
+
+        // 读取 0 号位得到的是常规存档，而非快速存档。
+        let normal = manager.load(0).unwrap();
+        assert_eq!(normal.metadata.section_name, "Normal");
+        assert_eq!(normal.vm_state.ip, 3);
+
+        // 读取快速存档得到的是快速存档，而非常规存档。
+        let quick = manager.load_quicksave().unwrap();
+        assert_eq!(quick.metadata.section_name, "Quick");
+        assert_eq!(quick.metadata.play_time_secs, 200);
+        assert_eq!(quick.vm_state.ip, 42);
+
+        // 删除快速存档不影响常规存档。
+        manager.delete_quicksave().unwrap();
+        assert!(!manager.has_quicksave());
+        assert!(manager.has_save(0));
+        assert_eq!(manager.load(0).unwrap().metadata.section_name, "Normal");
+
+        // 删除常规存档不影响新建的快速存档。
+        manager
+            .save_quicksave(quick_state.clone(), "Quick2", 300, "Quick2")
+            .unwrap();
+        manager.delete(0).unwrap();
+        assert!(!manager.has_save(0));
+        assert!(manager.has_quicksave());
+        let quick2 = manager.load_quicksave().unwrap();
+        assert_eq!(quick2.metadata.section_name, "Quick2");
+        assert_eq!(quick2.metadata.play_time_secs, 300);
+
+        // 重复删除快速存档是 no-op。
+        manager.delete_quicksave().unwrap();
+        assert!(manager.delete_quicksave().is_ok());
 
         let _ = std::fs::remove_dir_all(&dir);
     }
