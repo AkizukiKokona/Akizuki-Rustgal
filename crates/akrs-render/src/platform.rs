@@ -31,6 +31,13 @@ pub fn get_screen_size_physical() -> (i32, i32) {
         }
     }
 
+    #[cfg(target_os = "macos")]
+    {
+        if let Some(size) = macos_screen_size() {
+            return size;
+        }
+    }
+
     #[cfg(target_os = "linux")]
     {
         if let Some(size) = linux_screen_size() {
@@ -155,6 +162,38 @@ use windows_impl::{
     alloc_console as windows_alloc_console, center_window as windows_center_window,
     screen_size as windows_screen_size,
 };
+
+// ─── macOS 实现（CoreGraphics FFI） ─────────────────────────────────────────
+
+#[cfg(target_os = "macos")]
+mod macos_impl {
+    // 通过 FFI 调用 CoreGraphics 获取主显示器分辨率。
+    // macOS 上无需额外 crate 依赖，CoreGraphics 是系统框架，
+    // 链接时通过 #[link(name = "CoreGraphics", kind = "framework")] 指定。
+    #[link(name = "CoreGraphics", kind = "framework")]
+    extern "C" {
+        fn CGMainDisplayID() -> u32;
+        fn CGDisplayPixelsWide(display: u32) -> usize;
+        fn CGDisplayPixelsHigh(display: u32) -> usize;
+    }
+
+    /// 调用 CoreGraphics 获取主显示器像素尺寸。
+    pub fn screen_size() -> Option<(i32, i32)> {
+        unsafe {
+            let display = CGMainDisplayID();
+            let w = CGDisplayPixelsWide(display);
+            let h = CGDisplayPixelsHigh(display);
+            if w > 0 && h > 0 {
+                Some((w as i32, h as i32))
+            } else {
+                None
+            }
+        }
+    }
+}
+
+#[cfg(target_os = "macos")]
+use macos_impl::screen_size as macos_screen_size;
 
 // ─── Linux 实现（尽力而为） ─────────────────────────────────────────────────
 
