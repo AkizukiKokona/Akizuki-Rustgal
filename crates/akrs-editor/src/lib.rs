@@ -279,6 +279,16 @@ pub struct EditorApp {
     translation_file: Option<akrs_runtime::Translator>,
     /// 可翻译行列表（从剧本解析得到），每项为 (类型, 原文)。
     translatable_lines: Vec<TranslatableLine>,
+    /// 是否显示快捷键帮助窗口。
+    show_shortcuts: bool,
+    /// 是否显示 rpy 导入窗口。
+    show_rpy_import: bool,
+    /// rpy 导入：选中的源文件路径。
+    rpy_import_source: Option<PathBuf>,
+    /// rpy 导入：目标保存路径。
+    rpy_import_target: PathBuf,
+    /// rpy 导入：转换警告信息。
+    rpy_import_warnings: Vec<String>,
 }
 
 /// 可翻译行的类型。
@@ -484,6 +494,11 @@ impl Default for EditorApp {
             translation_target_lang: "en-US".to_string(),
             translation_file: None,
             translatable_lines: Vec::new(),
+            show_shortcuts: false,
+            show_rpy_import: false,
+            rpy_import_source: None,
+            rpy_import_target: PathBuf::new(),
+            rpy_import_warnings: Vec::new(),
         };
         app.refresh_file_list();
         app
@@ -1511,7 +1526,7 @@ impl EditorApp {
                         );
                     });
 
-                    // 原文（只读，灰色背景）
+                    // 原文（只读，灰色背景，带格式前缀）
                     ui.horizontal(|ui| {
                         ui.add_space(8.0);
                         ui.vertical(|ui| {
@@ -1520,13 +1535,25 @@ impl EditorApp {
                                     .color(egui::Color32::from_rgb(180, 180, 180))
                                     .size(11.0),
                             );
+                            // 根据类型添加格式前缀显示
+                            let formatted_original = match line.kind {
+                                TranslatableKind::Section => format!("# {}", line.original),
+                                TranslatableKind::Dialogue => {
+                                    // 对话格式需要说话人，这里简化只显示引号内容
+                                    format!("\"{}\"", line.original)
+                                }
+                                TranslatableKind::Narration => format!("\"{}\"", line.original),
+                                TranslatableKind::Choice => format!("| \"{}\"", line.original),
+                                TranslatableKind::ChoicePrompt => format!("? \"{}\"", line.original),
+                                TranslatableKind::Character => line.original.clone(),
+                            };
                             let bg = egui::Frame::none()
                                 .fill(egui::Color32::from_rgba_unmultiplied(40, 40, 50, 180))
                                 .rounding(4.0)
                                 .inner_margin(egui::Vec2::new(8.0, 4.0));
                             bg.show(ui, |ui| {
                                 ui.add(
-                                    egui::TextEdit::multiline(&mut line.original.as_str())
+                                    egui::TextEdit::multiline(&mut formatted_original.as_str())
                                         .desired_width(f32::MAX)
                                         .desired_rows(1)
                                         .text_color(egui::Color32::from_rgb(220, 220, 220))
@@ -1536,7 +1563,7 @@ impl EditorApp {
                         });
                     });
 
-                    // 译文输入框
+                    // 译文输入框（默认带同样的格式前缀）
                     if let Some(translator) = self.translation_file.as_mut() {
                         let current_translation = match line.kind {
                             TranslatableKind::Section => translator.t_section(&line.original).to_string(),
@@ -1546,7 +1573,28 @@ impl EditorApp {
                             TranslatableKind::ChoicePrompt => translator.t_choice_prompt(&line.original).to_string(),
                             TranslatableKind::Character => translator.t_character(&line.original).to_string(),
                         };
-                        let mut translation_buf = current_translation.clone();
+                        // 根据类型添加格式前缀（如果译文尚未填写，使用原格式）
+                        let mut translation_buf = if current_translation == line.original {
+                            // 未翻译时，使用格式前缀作为默认值
+                            match line.kind {
+                                TranslatableKind::Section => format!("# {}", line.original),
+                                TranslatableKind::Dialogue => format!("\"{}\"", line.original),
+                                TranslatableKind::Narration => format!("\"{}\"", line.original),
+                                TranslatableKind::Choice => format!("| \"{}\"", line.original),
+                                TranslatableKind::ChoicePrompt => format!("? \"{}\"", line.original),
+                                TranslatableKind::Character => line.original.clone(),
+                            }
+                        } else {
+                            // 已翻译时，也需要带格式前缀
+                            match line.kind {
+                                TranslatableKind::Section => format!("# {}", current_translation),
+                                TranslatableKind::Dialogue => format!("\"{}\"", current_translation),
+                                TranslatableKind::Narration => format!("\"{}\"", current_translation),
+                                TranslatableKind::Choice => format!("| \"{}\"", current_translation),
+                                TranslatableKind::ChoicePrompt => format!("? \"{}\"", current_translation),
+                                TranslatableKind::Character => current_translation.clone(),
+                            }
+                        };
 
                         ui.horizontal(|ui| {
                             ui.add_space(8.0);
@@ -1570,13 +1618,30 @@ impl EditorApp {
                                     )
                                 });
                                 if response.inner.changed() {
+                                    // 从译文输入中提取纯文本（去掉格式前缀）
+                                    let pure_translation = match line.kind {
+                                        TranslatableKind::Section => {
+                                            translation_buf.strip_prefix('#').map(|s| s.trim().to_string()).unwrap_or(translation_buf.clone())
+                                        }
+                                        TranslatableKind::Dialogue | TranslatableKind::Narration => {
+                                            // 去掉引号
+                                            translation_buf.trim_matches('"').to_string()
+                                        }
+                                        TranslatableKind::Choice => {
+                                            translation_buf.strip_prefix('|').map(|s| s.trim().trim_matches('"').to_string()).unwrap_or(translation_buf.clone())
+                                        }
+                                        TranslatableKind::ChoicePrompt => {
+                                            translation_buf.strip_prefix('?').map(|s| s.trim().trim_matches('"').to_string()).unwrap_or(translation_buf.clone())
+                                        }
+                                        TranslatableKind::Character => translation_buf.clone(),
+                                    };
                                     match line.kind {
-                                        TranslatableKind::Section => translator.set_section(&line.original, &translation_buf),
-                                        TranslatableKind::Dialogue => translator.set_dialogue(&line.original, &translation_buf),
-                                        TranslatableKind::Narration => translator.set_narration(&line.original, &translation_buf),
-                                        TranslatableKind::Choice => translator.set_choice(&line.original, &translation_buf),
-                                        TranslatableKind::ChoicePrompt => translator.set_choice_prompt(&line.original, &translation_buf),
-                                        TranslatableKind::Character => translator.set_character(&line.original, &translation_buf),
+                                        TranslatableKind::Section => translator.set_section(&line.original, &pure_translation),
+                                        TranslatableKind::Dialogue => translator.set_dialogue(&line.original, &pure_translation),
+                                        TranslatableKind::Narration => translator.set_narration(&line.original, &pure_translation),
+                                        TranslatableKind::Choice => translator.set_choice(&line.original, &pure_translation),
+                                        TranslatableKind::ChoicePrompt => translator.set_choice_prompt(&line.original, &pure_translation),
+                                        TranslatableKind::Character => translator.set_character(&line.original, &pure_translation),
                                     }
                                 }
                             });
@@ -2219,6 +2284,236 @@ impl EditorApp {
             }
         });
     }
+
+    // -- Ren'Py 剧本导入 -------------------------------------------------------
+
+    /// 从 Ren'Py .rpy 文件转换为 .akrs 格式并保存。
+    /// 仅转换可直接映射的语法，不支持的功能会产生警告。
+    fn convert_rpy_to_akrs(&mut self, source: &Path, target: &Path) {
+        // 读取源文件
+        let content = match std::fs::read_to_string(source) {
+            Ok(c) => c,
+            Err(e) => {
+                self.status = format!("无法读取源文件：{}", e);
+                return;
+            }
+        };
+
+        let mut akrs_lines: Vec<String> = Vec::new();
+        let mut warnings: Vec<String> = Vec::new();
+
+        // 检测剧本主题（label/start）
+        let has_label = content.contains("label start:") || content.contains("label start:");
+        if !has_label {
+            warnings.push("未检测到 'label start:'，可能不是标准的 Ren'Py 剧本文件".to_string());
+        }
+
+        // 逐行转换
+        for line in content.lines() {
+            let trimmed = line.trim();
+
+            // 跳过空行和 Python 代码块
+            if trimmed.is_empty() || trimmed.starts_with("python:") || trimmed.starts_with("$ ") {
+                continue;
+            }
+
+            // label -> # 章节
+            if trimmed.starts_with("label ") {
+                let label_name = trimmed
+                    .strip_prefix("label ")
+                    .unwrap_or("")
+                    .trim_end_matches(':');
+                akrs_lines.push(format!("# {}", label_name));
+                continue;
+            }
+
+            // scene -> @bg
+            if trimmed.starts_with("scene ") {
+                let bg_name = trimmed
+                    .strip_prefix("scene ")
+                    .unwrap_or("")
+                    .split_whitespace()
+                    .next()
+                    .unwrap_or("");
+                // Ren'Py 的 with 过渡（如 "with fade"）可尝试映射
+                if trimmed.contains("with fade") {
+                    akrs_lines.push(format!("@bg {} with fade", bg_name));
+                } else if trimmed.contains("with dissolve") {
+                    akrs_lines.push(format!("@bg {} with dissolve", bg_name));
+                } else {
+                    akrs_lines.push(format!("@bg {}", bg_name));
+                }
+                continue;
+            }
+
+            // show -> + 立绘上场（简化映射）
+            if trimmed.starts_with("show ") {
+                let rest = trimmed.strip_prefix("show ").unwrap_or("");
+                // 简化：取第一个词作为角色名
+                let char_name = rest.split_whitespace().next().unwrap_or("");
+                // Ren'Py 的 at 位置（如 "at left"）可映射
+                if trimmed.contains("at left") {
+                    akrs_lines.push(format!("+ {} at left", char_name));
+                } else if trimmed.contains("at right") {
+                    akrs_lines.push(format!("+ {} at right", char_name));
+                } else if trimmed.contains("at center") {
+                    akrs_lines.push(format!("+ {}", char_name));
+                } else {
+                    akrs_lines.push(format!("+ {}", char_name));
+                }
+                continue;
+            }
+
+            // hide -> - 立绘下场
+            if trimmed.starts_with("hide ") {
+                let char_name = trimmed
+                    .strip_prefix("hide ")
+                    .unwrap_or("")
+                    .split_whitespace()
+                    .next()
+                    .unwrap_or("");
+                akrs_lines.push(format!("- {}", char_name));
+                continue;
+            }
+
+            // 对话 "说话人 \"对话内容\""
+            if trimmed.starts_with('"') && trimmed.contains('" "') {
+                // 格式如: "说话人 \"对话\""
+                // 简化处理：提取说话人和对话
+                let parts: Vec<&str> = trimmed.splitn(2, '" "').collect();
+                if parts.len() == 2 {
+                    let speaker = parts[0].trim_start_matches('"').trim();
+                    let dialogue = parts[1].trim_end_matches('"').trim();
+                    akrs_lines.push(format!("{}: \"{}\"", speaker, dialogue));
+                    continue;
+                }
+            }
+
+            // narrate 旁白（无说话人的字符串）
+            if trimmed.starts_with('"') && trimmed.ends_with('"') {
+                let narration = trimmed.trim_matches('"');
+                akrs_lines.push(format!("\"{}\"", narration));
+                continue;
+            }
+
+            // menu -> ? 选择分支
+            if trimmed.starts_with("menu:") {
+                akrs_lines.push("? \"\"".to_string());
+                continue;
+            }
+
+            // 菜单选项（以字符串开头后冒号）-> | 选项
+            if trimmed.starts_with('"') && trimmed.contains(':') && !trimmed.contains('" "') {
+                // 格式如: "选项文本":（后接 jump）
+                let parts: Vec<&str> = trimmed.splitn(2, ':').collect();
+                if parts.len() == 2 {
+                    let option_text = parts[0].trim_matches('"').trim();
+                    akrs_lines.push(format!("| \"{}\"", option_text));
+                    // 如果有 jump，映射为 ->
+                    let rest = parts[1].trim();
+                    if rest.starts_with("jump ") {
+                        let target_label = rest.strip_prefix("jump ").unwrap_or("").trim();
+                        akrs_lines.push(format!("    -> {}", target_label));
+                    }
+                    continue;
+                }
+            }
+
+            // return / jump -> -> 或结束
+            if trimmed.starts_with("return") {
+                akrs_lines.push("~~".to_string());
+                continue;
+            }
+            if trimmed.starts_with("jump ") {
+                let target = trimmed.strip_prefix("jump ").unwrap_or("").trim();
+                akrs_lines.push(format!("-> {}", target));
+                continue;
+            }
+
+            // 不支持的 Ren'Py 特性产生警告
+            if trimmed.starts_with("play music")
+                || trimmed.starts_with("play sound")
+                || trimmed.starts_with("stop music")
+                || trimmed.starts_with("stop sound")
+            {
+                warnings.push(format!("音频播放指令未转换：{}", trimmed));
+                continue;
+            }
+            if trimmed.starts_with("with ") {
+                warnings.push(format!("独立过渡指令未转换：{}", trimmed));
+                continue;
+            }
+            if trimmed.starts_with("call ")
+                || trimmed.starts_with("if ")
+                || trimmed.starts_with("while ")
+                || trimmed.starts_with("for ")
+            {
+                warnings.push(format!("复杂流程控制未转换：{}", trimmed));
+                continue;
+            }
+            if trimmed.starts_with("define ")
+                || trimmed.starts_with("default ")
+                || trimmed.starts_with("init ")
+            {
+                warnings.push(format!("定义/初始化块未转换：{}", trimmed));
+                continue;
+            }
+            if trimmed.starts_with("image ")
+                || trimmed.starts_with("transform ")
+                || trimmed.starts_with("animation ")
+            {
+                warnings.push(format!("图像/动画定义未转换：{}", trimmed));
+                continue;
+            }
+            if trimmed.contains("renpy.")
+                || trimmed.contains("Ren'Py")
+            {
+                warnings.push(format!("Ren'Py 内置函数/变量未转换：{}", trimmed));
+                continue;
+            }
+            // 注释行保留
+            if trimmed.starts_with('#') {
+                akrs_lines.push(format!("-- {}", trimmed.trim_start_matches('#').trim()));
+                continue;
+            }
+
+            // 未识别的行保留为注释
+            if !trimmed.is_empty() {
+                akrs_lines.push(format!("-- 未转换: {}", trimmed));
+                warnings.push(format!("未识别的行：{}", trimmed));
+            }
+        }
+
+        // 构建结果
+        let akrs_content = akrs_lines.join("\n");
+
+        // 确保目标目录存在
+        if let Some(parent) = target.parent() {
+            let _ = std::fs::create_dir_all(parent);
+        }
+
+        // 写入目标文件
+        match std::fs::write(target, &akrs_content) {
+            Ok(_) => {
+                self.status = format!("已导入 {} -> {}", source.display(), target.display());
+                self.editor_content = akrs_content;
+                self.current_file = Some(target.clone());
+                self.file_name_input = target
+                    .file_name()
+                    .map(|n| n.to_string_lossy().into_owned())
+                    .unwrap_or_else(|| "imported.akrs".to_string());
+            }
+            Err(e) => {
+                self.status = format!("写入失败：{}", e);
+            }
+        }
+
+        // 保存警告
+        self.rpy_import_warnings = warnings.clone();
+        if warnings.is_empty() {
+            self.rpy_import_warnings.push("转换完成，无警告".to_string());
+        }
+    }
 }
 
 impl eframe::App for EditorApp {
@@ -2256,6 +2551,27 @@ impl eframe::App for EditorApp {
                 }
                 if i.key_pressed(egui::Key::R) {
                     self.run_script();
+                }
+                // Ctrl+1/2/3/4：快速插入语法
+                if i.key_pressed(egui::Key::Num1) {
+                    self.editor_content.push_str("+ 角色\n");
+                    self.status = "已插入：+ 角色（立绘上场）";
+                }
+                if i.key_pressed(egui::Key::Num2) {
+                    self.editor_content.push_str("- 角色\n");
+                    self.status = "已插入：- 角色（立绘下场）";
+                }
+                if i.key_pressed(egui::Key::Num3) {
+                    self.editor_content.push_str("# 章节\n");
+                    self.status = "已插入：# 章节（章节标题）";
+                }
+                if i.key_pressed(egui::Key::Num4) {
+                    self.editor_content.push_str("@bg 背景\n");
+                    self.status = "已插入：@bg 背景（背景指令）";
+                }
+                // Ctrl+H：显示帮助窗口
+                if i.key_pressed(egui::Key::H) {
+                    self.show_shortcuts = true;
                 }
             }
         });
@@ -2306,6 +2622,28 @@ impl eframe::App for EditorApp {
                     self.save_file();
                 }
                 ui.separator();
+                // 快速插入语法按钮（鼠标悬停显示提示）
+                ui.label("插入:");
+                let insert_buttons = [
+                    ("+", "+ 角色", "立绘上场 (Ctrl+1)"),
+                    ("-", "- 角色", "立绘下场 (Ctrl+2)"),
+                    ("#", "# 章节", "章节标题 (Ctrl+3)"),
+                    ("@", "@bg 背景", "背景指令 (Ctrl+4)"),
+                    ("?", "? 选项", "选择分支"),
+                    ("$", "$变量", "变量操作"),
+                ];
+                for (icon, syntax, tooltip) in &insert_buttons {
+                    let btn = ui.add(
+                        egui::Button::new(egui::RichText::new(icon).monospace().strong())
+                            .small()
+                    );
+                    btn.on_hover_text(tooltip);
+                    if btn.clicked() {
+                        self.editor_content.push_str(&format!("{}\n", syntax));
+                        self.status = format!("已插入：{}", syntax);
+                    }
+                }
+                ui.separator();
                 if ui.button("运行 (Ctrl+R)").clicked() {
                     self.run_script();
                 }
@@ -2323,10 +2661,25 @@ impl eframe::App for EditorApp {
                     self.build.show = true;
                 }
                 ui.separator();
+                if ui.button("导入rpy").clicked() {
+                    self.show_rpy_import = true;
+                    self.rpy_import_warnings.clear();
+                    self.rpy_import_source = None;
+                    // 默认保存到项目的 scripts 目录，或工作目录
+                    if self.project_loaded {
+                        self.rpy_import_target = self.work_dir.join("scripts").join("imported.akrs");
+                    } else {
+                        self.rpy_import_target = self.work_dir.join("imported.akrs");
+                    }
+                }
+                ui.separator();
                 if ui.button("首页").clicked() {
                     self.show_welcome = true;
                     self.engine = None;
                     self.status = "就绪".to_string();
+                }
+                if ui.button("帮助").clicked() {
+                    self.show_shortcuts = true;
                 }
                 if ui.button("关于").clicked() {
                     self.show_about = true;
@@ -2501,6 +2854,149 @@ impl eframe::App for EditorApp {
                         ui.hyperlink_to("AkizukiKokona/Akizuki-Rustgal", GITHUB_URL);
                     });
                 });
+        }
+
+        // ---- 快捷键帮助窗口 --------------------------------------------------
+        if self.show_shortcuts {
+            egui::Window::new("快捷键帮助")
+                .open(&mut self.show_shortcuts)
+                .resizable(false)
+                .collapsible(false)
+                .default_width(450.0)
+                .show(ctx, |ui| {
+                    ui.heading("键盘快捷键");
+                    ui.add_space(12.0);
+                    ui.label(egui::RichText::new("文件操作").strong());
+                    ui.separator();
+                    let file_shortcuts = [
+                        ("Ctrl+N", "新建剧本"),
+                        ("Ctrl+O", "打开文件"),
+                        ("Ctrl+S", "保存文件"),
+                        ("Ctrl+R", "运行剧本"),
+                        ("Ctrl+H", "显示此帮助窗口"),
+                    ];
+                    for (key, desc) in &file_shortcuts {
+                        ui.horizontal(|ui| {
+                            ui.add_space(8.0);
+                            ui.label(egui::RichText::new(*key).monospace().color(egui::Color32::from_rgb(200, 180, 255)));
+                            ui.label("—");
+                            ui.label(*desc);
+                        });
+                    }
+                    ui.add_space(8.0);
+                    ui.label(egui::RichText::new("快速插入语法").strong());
+                    ui.separator();
+                    let insert_shortcuts = [
+                        ("Ctrl+1", "+ 角色", "立绘上场"),
+                        ("Ctrl+2", "- 角色", "立绘下场"),
+                        ("Ctrl+3", "# 章节", "章节标题"),
+                        ("Ctrl+4", "@bg 背景", "背景指令"),
+                    ];
+                    for (key, syntax, desc) in &insert_shortcuts {
+                        ui.horizontal(|ui| {
+                            ui.add_space(8.0);
+                            ui.label(egui::RichText::new(*key).monospace().color(egui::Color32::from_rgb(180, 220, 255)));
+                            ui.label("—");
+                            ui.label(egui::RichText::new(*syntax).monospace().strong());
+                            ui.label(format!("（{}）", desc));
+                        });
+                    }
+                    ui.add_space(12.0);
+                    ui.label("也可在顶部工具栏的「插入」按钮区域点击插入语法。");
+                });
+        }
+
+        // ---- rpy 导入窗口 --------------------------------------------------
+        if self.show_rpy_import {
+            let mut close_window = false;
+            egui::Window::new("导入 Ren'Py 剧本")
+                .open(&mut self.show_rpy_import)
+                .resizable(true)
+                .collapsible(false)
+                .default_width(500.0)
+                .default_height(400.0)
+                .show(ctx, |ui| {
+                    ui.heading("从 .rpy 文件导入");
+                    ui.add_space(8.0);
+                    ui.label("选择 Ren'Py 剧本文件（.rpy），转换后保存为 .akrs 格式。");
+                    ui.add_space(12.0);
+
+                    // 源文件选择
+                    ui.label(egui::RichText::new("源文件：").strong());
+                    ui.horizontal(|ui| {
+                        let source_text = self.rpy_import_source
+                            .as_ref()
+                            .map(|p| p.display().to_string())
+                            .unwrap_or_else(|| "（未选择）".to_string());
+                        ui.label(&source_text);
+                        if ui.button("选择文件...").clicked() {
+                            // 打开文件选择对话框
+                            let start_dir = self.work_dir.clone();
+                            if let Ok(entries) = std::fs::read_dir(&start_dir) {
+                                let mut picked_entries: Vec<_> = entries
+                                    .filter_map(|e| e.ok())
+                                    .filter_map(|e| {
+                                        let p = e.path();
+                                        let name = p.file_name()?.to_string_lossy().into_owned();
+                                        Some(PickerEntry { name, is_dir: p.is_dir() })
+                                    })
+                                    .collect();
+                                picked_entries.sort_by(|a, b| {
+                                    b.is_dir.cmp(&a.is_dir).then_with(|| a.name.cmp(&b.name))
+                                });
+                                self.file_picker = Some(FilePickerState {
+                                    mode: FilePickerMode::Open,
+                                    current_dir: start_dir,
+                                    entries: picked_entries,
+                                    selected: None,
+                                    filter: "rpy".to_string(),
+                                });
+                            }
+                        }
+                    });
+                    ui.add_space(8.0);
+
+                    // 目标路径
+                    ui.label(egui::RichText::new("保存位置：").strong());
+                    ui.horizontal(|ui| {
+                        ui.text_edit_singleline(&mut self.rpy_import_target.display().to_string());
+                        if ui.button("选择路径...").clicked() {
+                            // 简化：直接使用工作目录
+                            self.rpy_import_target = self.work_dir.join("scripts").join("imported.akrs");
+                        }
+                    });
+                    ui.label(egui::RichText::new("提示：默认保存到项目的 scripts 目录，或桌面").color(egui::Color32::GRAY));
+                    ui.add_space(12.0);
+
+                    // 警告显示
+                    if !self.rpy_import_warnings.is_empty() {
+                        ui.label(egui::RichText::new("转换警告：").strong().color(egui::Color32::from_rgb(220, 180, 120)));
+                        ui.separator();
+                        for warn in &self.rpy_import_warnings {
+                            ui.label(egui::RichText::new(warn).color(egui::Color32::from_rgb(200, 160, 100)));
+                        }
+                        ui.add_space(8.0);
+                    }
+
+                    // 导入按钮
+                    ui.horizontal(|ui| {
+                        if ui.button("导入").clicked() {
+                            if let Some(ref source) = self.rpy_import_source {
+                                // 执行转换
+                                self.convert_rpy_to_akrs(source, &self.rpy_import_target.clone());
+                                close_window = true;
+                            } else {
+                                self.status = "请先选择 .rpy 文件".to_string();
+                            }
+                        }
+                        if ui.button("取消").clicked() {
+                            close_window = true;
+                        }
+                    });
+                });
+            if close_window {
+                self.show_rpy_import = false;
+            }
         }
 
         // ---- 文件选择对话框 ----------------------------------------------
