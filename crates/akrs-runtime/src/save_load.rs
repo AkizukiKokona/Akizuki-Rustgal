@@ -4,6 +4,7 @@
 //! Saves are serialized as JSON for portability and debuggability.
 
 use akrs_core::VmState;
+use crate::game_state::{BackgroundState, CharacterState};
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -24,6 +25,10 @@ pub struct SaveSlot {
     pub metadata: SaveMetadata,
     pub vm_state: VmState,
     pub settings: SettingsSnapshot,
+    /// 场景快照。旧版存档没有此字段，反序列化时默认为 `None`，
+    /// 读档后保持旧行为（背景/音乐不恢复）。
+    #[serde(default)]
+    pub scene: Option<SceneSnapshot>,
 }
 
 /// Settings snapshot stored in save (subset of full Settings).
@@ -32,6 +37,26 @@ pub struct SettingsSnapshot {
     pub text_speed: f32,
     pub bgm_volume: f32,
     pub sfx_volume: f32,
+}
+
+/// 场景快照：存档时保存的"持久态"场景数据。
+///
+/// 之所以只快照背景、立绘、音乐这三类，是因为它们是由 `@bg` / `+角色` /
+/// `@music` 等**指令**设置的，存档时这些指令已经执行过、VM 的 ip 已越过
+/// 它们。读档时只恢复 VM 状态并从 ip 继续执行，不会重新执行这些指令，导致
+/// 存档时的当前背景/立绘/音乐丢失（表现为读档后背景黑屏、音乐中断）。
+///
+/// 对话（`dialogue`）、选项（`choices`）、过渡（`transition`）等"瞬时态"
+/// 不需要快照——它们会由读档后 `process_events_into` 从 ip 继续执行时
+/// 重新产生。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SceneSnapshot {
+    /// 当前背景（存档时已显示的背景图）。
+    pub background: Option<BackgroundState>,
+    /// 当前舞台上的立绘列表。
+    pub characters: Vec<CharacterState>,
+    /// 当前正在播放的 BGM 名称。
+    pub music: Option<String>,
 }
 
 /// Special slot number recorded in the autosave's metadata.
@@ -68,6 +93,7 @@ impl SaveManager {
         section_name: &str,
         play_time_secs: u64,
         description: &str,
+        scene: Option<SceneSnapshot>,
     ) -> Result<SaveMetadata, String> {
         if slot >= self.max_slots {
             return Err(format!("slot {} out of range (max {})", slot, self.max_slots));
@@ -94,6 +120,7 @@ impl SaveManager {
                 bgm_volume: 0.8,
                 sfx_volume: 1.0,
             },
+            scene,
         };
 
         let json = serde_json::to_string_pretty(&save)
@@ -183,6 +210,7 @@ impl SaveManager {
         section_name: &str,
         play_time_secs: u64,
         description: &str,
+        scene: Option<SceneSnapshot>,
     ) -> Result<SaveMetadata, String> {
         let timestamp = SystemTime::now()
             .duration_since(UNIX_EPOCH)
@@ -205,6 +233,7 @@ impl SaveManager {
                 bgm_volume: 0.8,
                 sfx_volume: 1.0,
             },
+            scene,
         };
 
         let json = serde_json::to_string_pretty(&save)
@@ -262,6 +291,7 @@ impl SaveManager {
         section_name: &str,
         play_time_secs: u64,
         description: &str,
+        scene: Option<SceneSnapshot>,
     ) -> Result<SaveMetadata, String> {
         let timestamp = SystemTime::now()
             .duration_since(UNIX_EPOCH)
@@ -287,6 +317,7 @@ impl SaveManager {
                 bgm_volume: 0.8,
                 sfx_volume: 1.0,
             },
+            scene,
         };
 
         let json = serde_json::to_string_pretty(&save)
@@ -347,6 +378,7 @@ impl SaveManager {
         section_name: &str,
         play_time_secs: u64,
         description: &str,
+        scene: Option<SceneSnapshot>,
     ) -> Result<SaveMetadata, String> {
         const QUICKSAVE_SLOT_MARKER: usize = usize::MAX - 2;
 
@@ -371,6 +403,7 @@ impl SaveManager {
                 bgm_volume: 0.8,
                 sfx_volume: 1.0,
             },
+            scene,
         };
 
         let json = serde_json::to_string_pretty(&save)
@@ -457,7 +490,7 @@ mod tests {
         };
 
         // Save
-        let metadata = manager.save(3, vm_state.clone(), "Chapter2", 3600, "Test save")
+        let metadata = manager.save(3, vm_state.clone(), "Chapter2", 3600, "Test save", None)
             .unwrap();
         assert_eq!(metadata.slot, 3);
         assert_eq!(metadata.section_name, "Chapter2");
@@ -511,7 +544,7 @@ mod tests {
 
         // Save the autosave.
         let metadata = manager
-            .save_autosave(vm_state.clone(), "Chapter3", 7200, "Autosave progress")
+            .save_autosave(vm_state.clone(), "Chapter3", 7200, "Autosave progress", None)
             .unwrap();
         assert_eq!(metadata.section_name, "Chapter3");
         assert_eq!(metadata.play_time_secs, 7200);
@@ -562,10 +595,10 @@ mod tests {
 
         // Write a normal save in slot 0 and an autosave.
         manager
-            .save(0, normal_state.clone(), "Normal", 100, "Normal save")
+            .save(0, normal_state.clone(), "Normal", 100, "Normal save", None)
             .unwrap();
         manager
-            .save_autosave(auto_state.clone(), "Auto", 200, "Autosave")
+            .save_autosave(auto_state.clone(), "Auto", 200, "Autosave", None)
             .unwrap();
 
         // Both exist independently.
@@ -601,7 +634,7 @@ mod tests {
 
         // Deleting a normal save leaves a fresh autosave intact.
         manager
-            .save_autosave(auto_state.clone(), "Auto2", 300, "Autosave2")
+            .save_autosave(auto_state.clone(), "Auto2", 300, "Autosave2", None)
             .unwrap();
         manager.delete(0).unwrap();
         assert!(!manager.has_save(0));
@@ -634,10 +667,10 @@ mod tests {
 
         // 在 0 号位写一个常规存档，再写一个快速存档。
         manager
-            .save(0, normal_state.clone(), "Normal", 100, "Normal save")
+            .save(0, normal_state.clone(), "Normal", 100, "Normal save", None)
             .unwrap();
         manager
-            .save_quicksave(quick_state.clone(), "Quick", 200, "Quick save")
+            .save_quicksave(quick_state.clone(), "Quick", 200, "Quick save", None)
             .unwrap();
 
         // 两者独立存在。
@@ -672,7 +705,7 @@ mod tests {
 
         // 删除常规存档不影响新建的快速存档。
         manager
-            .save_quicksave(quick_state.clone(), "Quick2", 300, "Quick2")
+            .save_quicksave(quick_state.clone(), "Quick2", 300, "Quick2", None)
             .unwrap();
         manager.delete(0).unwrap();
         assert!(!manager.has_save(0));

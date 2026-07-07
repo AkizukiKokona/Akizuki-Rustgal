@@ -30,7 +30,7 @@
 //! - VM step is a match on a flat instruction array
 
 use crate::game_state::{SceneState, ChoiceOptionState};
-use crate::save_load::SaveManager;
+use crate::save_load::{SaveManager, SceneSnapshot};
 use crate::settings::{Settings, SkipMode};
 use crate::translator::{Translator, UiTranslator};
 use crate::transition::TransitionManager;
@@ -715,6 +715,18 @@ impl Engine {
         events
     }
 
+    /// 构造当前场景的快照，用于存档时保存"持久态"场景数据
+    /// （背景/立绘/音乐），以便读档时恢复，避免读档后背景黑屏、
+    /// 音乐中断。对话/选项/过渡等"瞬时态"不在此快照中，它们会由
+    /// 读档后 `process_events_into` 从 ip 继续执行时重新产生。
+    fn scene_snapshot(&self) -> Option<SceneSnapshot> {
+        Some(SceneSnapshot {
+            background: self.scene.background.clone(),
+            characters: self.scene.characters.clone(),
+            music: self.scene.music.clone(),
+        })
+    }
+
     /// Save the current game state.
     pub fn save(&mut self, slot: usize) -> Vec<EngineEvent> {
         let mut events = Vec::new();
@@ -729,6 +741,7 @@ impl Engine {
             &self.current_section_name,
             self.play_time as u64,
             &description,
+            self.scene_snapshot(),
         ) {
             Ok(_) => events.push(EngineEvent::Saved { slot }),
             Err(e) => events.push(EngineEvent::Error { message: e }),
@@ -746,6 +759,20 @@ impl Engine {
                 self.scene.show_title = false;
                 self.phase = EnginePhase::Running;
                 self.scene.clear_text();
+                // 恢复存档时保存的场景快照（背景/立绘/音乐），
+                // 避免读档/崩溃恢复后背景黑屏、音乐中断。背景每帧按名字
+                // 查纹理，恢复 state 后渲染层自动正确绘制；音乐是事件
+                // 驱动的，需额外发 MusicChanged 事件让渲染层重新播放。
+                if let Some(snap) = save.scene {
+                    self.scene.background = snap.background;
+                    self.scene.characters = snap.characters;
+                    self.scene.music = snap.music.clone();
+                    if let Some(name) = &self.scene.music {
+                        if !name.is_empty() {
+                            events.push(EngineEvent::MusicChanged { name: name.clone() });
+                        }
+                    }
+                }
                 self.process_events_into(&mut events);
                 events.push(EngineEvent::Loaded { slot });
             }
@@ -795,6 +822,7 @@ impl Engine {
             &self.current_section_name,
             self.play_time as u64,
             &description,
+            self.scene_snapshot(),
         ) {
             Ok(_) => {}
             Err(e) => events.push(EngineEvent::Error { message: e }),
@@ -812,6 +840,20 @@ impl Engine {
                 self.scene.show_title = false;
                 self.phase = EnginePhase::Running;
                 self.scene.clear_text();
+                // 恢复存档时保存的场景快照（背景/立绘/音乐），
+                // 避免读档/崩溃恢复后背景黑屏、音乐中断。背景每帧按名字
+                // 查纹理，恢复 state 后渲染层自动正确绘制；音乐是事件
+                // 驱动的，需额外发 MusicChanged 事件让渲染层重新播放。
+                if let Some(snap) = save.scene {
+                    self.scene.background = snap.background;
+                    self.scene.characters = snap.characters;
+                    self.scene.music = snap.music.clone();
+                    if let Some(name) = &self.scene.music {
+                        if !name.is_empty() {
+                            events.push(EngineEvent::MusicChanged { name: name.clone() });
+                        }
+                    }
+                }
                 self.process_events_into(&mut events);
             }
             Err(e) => {
@@ -876,6 +918,7 @@ impl Engine {
             &self.current_section_name,
             self.play_time as u64,
             &description,
+            self.scene_snapshot(),
         ) {
             Ok(_) => {}
             Err(e) => events.push(EngineEvent::Error { message: e }),
@@ -893,6 +936,20 @@ impl Engine {
                 self.scene.show_title = false;
                 self.phase = EnginePhase::Running;
                 self.scene.clear_text();
+                // 恢复存档时保存的场景快照（背景/立绘/音乐），
+                // 避免读档/崩溃恢复后背景黑屏、音乐中断。背景每帧按名字
+                // 查纹理，恢复 state 后渲染层自动正确绘制；音乐是事件
+                // 驱动的，需额外发 MusicChanged 事件让渲染层重新播放。
+                if let Some(snap) = save.scene {
+                    self.scene.background = snap.background;
+                    self.scene.characters = snap.characters;
+                    self.scene.music = snap.music.clone();
+                    if let Some(name) = &self.scene.music {
+                        if !name.is_empty() {
+                            events.push(EngineEvent::MusicChanged { name: name.clone() });
+                        }
+                    }
+                }
                 self.process_events_into(&mut events);
             }
             Err(e) => {
@@ -934,6 +991,7 @@ impl Engine {
             &self.current_section_name,
             self.play_time as u64,
             &description,
+            self.scene_snapshot(),
         ) {
             Ok(_) => events.push(EngineEvent::Saved { slot: usize::MAX - 2 }),
             Err(e) => events.push(EngineEvent::Error { message: e }),
@@ -951,6 +1009,20 @@ impl Engine {
                 self.scene.show_title = false;
                 self.phase = EnginePhase::Running;
                 self.scene.clear_text();
+                // 恢复存档时保存的场景快照（背景/立绘/音乐），
+                // 避免读档/崩溃恢复后背景黑屏、音乐中断。背景每帧按名字
+                // 查纹理，恢复 state 后渲染层自动正确绘制；音乐是事件
+                // 驱动的，需额外发 MusicChanged 事件让渲染层重新播放。
+                if let Some(snap) = save.scene {
+                    self.scene.background = snap.background;
+                    self.scene.characters = snap.characters;
+                    self.scene.music = snap.music.clone();
+                    if let Some(name) = &self.scene.music {
+                        if !name.is_empty() {
+                            events.push(EngineEvent::MusicChanged { name: name.clone() });
+                        }
+                    }
+                }
                 self.process_events_into(&mut events);
                 events.push(EngineEvent::Loaded { slot: usize::MAX - 2 });
             }
