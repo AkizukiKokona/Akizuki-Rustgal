@@ -6,7 +6,7 @@ use akrs_runtime::{
     Engine, EngineEvent, EnginePhase, SceneState, Settings, SettingsTab, SkipMode,
     TransitionPhase,
     format_play_time, format_timestamp,
-    SaveMetadata,
+    SaveMetadata, SaveSlot,
 };
 use macroquad::audio::{play_sound, set_sound_volume, stop_sound, PlaySoundParams, Sound};
 use macroquad::prelude::*;
@@ -308,6 +308,8 @@ enum UiMode {
     AutoSavePrompt,
     /// 确认对话框（用于返回标题、未应用设置退出等）。
     ConfirmDialog,
+    /// 备注编辑弹窗（在存档页编辑某个槽位的玩家备注）。
+    NoteEditDialog,
 }
 
 /// Actions deferred to the swap point of a UI transition.
@@ -476,6 +478,13 @@ enum ButtonAction {
     ConfirmYes,
     /// 取消确认对话框。
     ConfirmNo,
+    // ── Note edit dialog actions ───
+    /// 打开备注编辑弹窗（针对某个存档槽位）。
+    EditNote(usize),
+    /// 确认保存备注。
+    NoteConfirm,
+    /// 取消备注编辑。
+    NoteCancel,
 }
 
 /// 窗口配置 for macroquad。
@@ -756,6 +765,12 @@ pub async fn run(mut engine: Engine, project_config: &ProjectConfig) {
     let mut has_continue_save: bool = engine.has_continue_save();
     // 进入设置菜单前的 UI 模式（用于返回时恢复）。
     let mut settings_prev_mode: UiMode = UiMode::Normal;
+    // 备注编辑弹窗状态：正在编辑的槽位号 + 当前输入缓冲区。
+    // 进入弹窗时从存档读取已有备注作为初始值，确认时写回。
+    let mut note_edit_slot: Option<usize> = None;
+    let mut note_edit_buffer: String = String::new();
+    // 备注编辑弹窗返回后应切换到的 UI 模式（SaveMenu 或 LoadMenu）。
+    let mut note_return_mode: UiMode = UiMode::SaveMenu;
 
     // Check title music
     if !assets.check_music("title_bgm.mp3") {
@@ -1093,12 +1108,26 @@ pub async fn run(mut engine: Engine, project_config: &ProjectConfig) {
             draw_rectangle(0.0, 0.0, sw, sh, Color::new(0.0, 0.0, 0.0, 0.10));
             // 居中确认对话框
             draw_confirm_dialog(&engine, &mut buttons, sw, sh, &font, scale, confirm_type);
+        } else if ui_mode == UiMode::NoteEditDialog {
+            // 备注编辑弹窗：先绘制底层存档页（保持上下文可见），再叠加
+            // 40% 黑色遮罩 + 居中输入框 + 确认/取消按钮。
+            draw_rectangle(0.0, 0.0, sw, sh, Color::new(0.05, 0.05, 0.1, 1.0));
+            match note_return_mode {
+                UiMode::SaveMenu => draw_save_menu(&engine, &mut buttons, sw, sh, &font, scale, save_page, save_displayed_slots, &mut assets).await,
+                UiMode::LoadMenu => draw_load_menu(&engine, &mut buttons, sw, sh, &font, scale, load_page, load_displayed_slots, &mut assets).await,
+                _ => {}
+            }
+            // 40% 黑色遮罩（比确认对话框更深，突出输入框）。
+            draw_rectangle(0.0, 0.0, sw, sh, Color::new(0.0, 0.0, 0.0, 0.40));
+            // 居中备注编辑弹窗。buttons 在上面已注册了存档页的按钮，
+            // 弹窗按钮在此函数内追加到 buttons 末尾。
+            draw_note_edit_dialog(&engine, &mut buttons, sw, sh, &font, scale, &note_edit_buffer, note_edit_slot);
         } else if ui_mode != UiMode::Normal {
             // Save/Load menus: full-screen opaque background + full-screen grid.
             draw_rectangle(0.0, 0.0, sw, sh, Color::new(0.05, 0.05, 0.1, 1.0));
             match ui_mode {
-                UiMode::SaveMenu => draw_save_menu(&engine, &mut buttons, sw, sh, &font, scale, save_page, save_displayed_slots),
-                UiMode::LoadMenu => draw_load_menu(&engine, &mut buttons, sw, sh, &font, scale, load_page, load_displayed_slots),
+                UiMode::SaveMenu => draw_save_menu(&engine, &mut buttons, sw, sh, &font, scale, save_page, save_displayed_slots, &mut assets).await,
+                UiMode::LoadMenu => draw_load_menu(&engine, &mut buttons, sw, sh, &font, scale, load_page, load_displayed_slots, &mut assets).await,
                 _ => {}
             }
         } else if engine.phase() == EnginePhase::Title {
@@ -1187,6 +1216,34 @@ pub async fn run(mut engine: Engine, project_config: &ProjectConfig) {
                         }
                     }
                 }
+            } else if ui_mode == UiMode::NoteEditDialog {
+                // 备注编辑弹窗：仅响应 NoteConfirm/NoteCancel，
+                // 忽略底层存档页的按钮（避免重复触发 EditNote 等）。
+                if is_mouse_button_pressed(MouseButton::Left) {
+                    let (mx, my) = mouse_position();
+                    if let Some(action) = handle_click(
+                        mx, my, &buttons, &mut engine, &ui_mode, &mut hud_hidden,
+                        sw, sh, scale,
+                    ) {
+                        match action {
+                            ButtonAction::NoteConfirm => {
+                                if let Some(slot) = note_edit_slot.take() {
+                                    if let Err(e) = engine.saves().set_note(slot, &note_edit_buffer) {
+                                        eprintln!("[Error] 保存备注失败: {}", e);
+                                    }
+                                }
+                                note_edit_buffer.clear();
+                                ui_mode = note_return_mode;
+                            }
+                            ButtonAction::NoteCancel => {
+                                note_edit_slot = None;
+                                note_edit_buffer.clear();
+                                ui_mode = note_return_mode;
+                            }
+                            _ => {}
+                        }
+                    }
+                }
             } else if is_mouse_button_pressed(MouseButton::Left) {
                 let (mx, my) = mouse_position();
                 if let Some(action) = handle_click(
@@ -1253,6 +1310,32 @@ pub async fn run(mut engine: Engine, project_config: &ProjectConfig) {
                             confirm_return_mode = ui_mode;
                             ui_mode = UiMode::ConfirmDialog;
                         }
+                        ButtonAction::EditNote(slot) => {
+                            // 打开备注编辑弹窗：读取已有备注作为初始值。
+                            note_edit_slot = Some(slot);
+                            note_edit_buffer = engine.saves()
+                                .load_slot_full(slot)
+                                .and_then(|s| s.metadata.note)
+                                .unwrap_or_default();
+                            note_return_mode = ui_mode;
+                            ui_mode = UiMode::NoteEditDialog;
+                        }
+                        ButtonAction::NoteConfirm => {
+                            // 确认保存备注：写回存档文件，返回存档页。
+                            if let Some(slot) = note_edit_slot.take() {
+                                if let Err(e) = engine.saves().set_note(slot, &note_edit_buffer) {
+                                    eprintln!("[Error] 保存备注失败: {}", e);
+                                }
+                            }
+                            note_edit_buffer.clear();
+                            ui_mode = note_return_mode;
+                        }
+                        ButtonAction::NoteCancel => {
+                            // 取消编辑：丢弃缓冲区，返回存档页。
+                            note_edit_slot = None;
+                            note_edit_buffer.clear();
+                            ui_mode = note_return_mode;
+                        }
                         ButtonAction::StartGame => {
                             ui_transition.start(UiMode::Normal, PendingUiAction::StartGame);
                         }
@@ -1290,6 +1373,11 @@ pub async fn run(mut engine: Engine, project_config: &ProjectConfig) {
                 // 确认对话框按 Esc 取消，返回之前的模式
                 ui_mode = confirm_return_mode;
                 confirm_type = None;
+            } else if ui_mode == UiMode::NoteEditDialog {
+                // 备注编辑弹窗按 Esc 取消，丢弃缓冲区，返回存档页。
+                note_edit_slot = None;
+                note_edit_buffer.clear();
+                ui_mode = note_return_mode;
             } else if ui_mode == UiMode::SettingsMenu {
                 // 设置菜单按 Esc：检测是否有未应用的更改
                 dragging_slider = None;
@@ -1332,6 +1420,35 @@ pub async fn run(mut engine: Engine, project_config: &ProjectConfig) {
         if !ui_transition.active && ui_mode == UiMode::Normal && !hud_hidden && engine.phase() != EnginePhase::Title {
             if is_key_pressed(KeyCode::Space) || is_key_pressed(KeyCode::Enter) {
                 engine.advance();
+            }
+        }
+
+        // 备注编辑弹窗的键盘输入：收集字符、Backspace 删除、Enter 确认。
+        // Esc 已在上面处理。此处仅处理 NoteEditDialog 模式。
+        if ui_mode == UiMode::NoteEditDialog && !ui_transition.active {
+            // Backspace：删除最后一个字符。
+            if is_key_pressed(KeyCode::Backspace) {
+                note_edit_buffer.pop();
+            }
+            // Enter：确认保存（与点击「确认」按钮等价）。
+            if is_key_pressed(KeyCode::Enter) {
+                if let Some(slot) = note_edit_slot.take() {
+                    if let Err(e) = engine.saves().set_note(slot, &note_edit_buffer) {
+                        eprintln!("[Error] 保存备注失败: {}", e);
+                    }
+                }
+                note_edit_buffer.clear();
+                ui_mode = note_return_mode;
+            }
+            // 字符输入：收集本帧所有按键字符。限制备注最大 60 字符。
+            while let Some(c) = get_char_pressed() {
+                if c.is_control() {
+                    continue;
+                }
+                let cur_len = note_edit_buffer.chars().count();
+                if cur_len < 60 {
+                    note_edit_buffer.push(c);
+                }
             }
         }
 
@@ -1926,6 +2043,92 @@ fn draw_autosave_prompt(engine: &Engine, buttons: &mut Vec<ButtonRect>, sw: f32,
     draw_button(btn2_x, btn_y, btn_w, btn_h, engine.t_ui("autosave.restart"), buttons, ButtonAction::DiscardAutosave, font, scale);
 }
 
+/// 绘制备注编辑弹窗：居中对话框 + 单行输入框（含光标）+ 确认/取消按钮。
+///
+/// 字符输入由主循环在 `ui_mode == NoteEditDialog` 时收集到 `buffer`，
+/// 此函数只负责绘制当前 buffer 内容。40% 黑色遮罩已由调用方绘制。
+fn draw_note_edit_dialog(
+    _engine: &Engine,
+    buttons: &mut Vec<ButtonRect>,
+    sw: f32,
+    sh: f32,
+    font: &Option<Font>,
+    scale: f32,
+    buffer: &str,
+    slot: Option<usize>,
+) {
+    let dialog_w = (560.0 * scale).min(sw - 80.0 * scale);
+    let dialog_h = (240.0 * scale).min(sh - 80.0 * scale);
+    let dialog_x = (sw - dialog_w) / 2.0;
+    let dialog_y = (sh - dialog_h) / 2.0;
+
+    // 面板背景 + 边框。
+    draw_rectangle(dialog_x, dialog_y, dialog_w, dialog_h, Color::new(0.08, 0.06, 0.15, 0.97));
+    draw_rectangle_lines(dialog_x, dialog_y, dialog_w, dialog_h, 2.0 * scale, Color::new(0.29, 0.62, 1.0, 0.9));
+
+    let pad = 28.0 * scale;
+    // 标题。
+    let title = if let Some(s) = slot {
+        format!("编辑存档 {} 的备注", s + 1)
+    } else {
+        "编辑备注".to_string()
+    };
+    let title_size = 24.0 * scale;
+    draw_text_f(&title, dialog_x + pad, dialog_y + pad + title_size, title_size, WHITE, font);
+    // 提示。
+    let hint_size = 14.0 * scale;
+    draw_text_f(
+        "Enter 确认 · Esc 取消 · Backspace 删除",
+        dialog_x + pad,
+        dialog_y + pad + title_size + 22.0 * scale,
+        hint_size,
+        Color::new(0.6, 0.65, 0.75, 1.0),
+        font,
+    );
+
+    // 输入框。
+    let input_x = dialog_x + pad;
+    let input_y = dialog_y + pad + title_size + 40.0 * scale;
+    let input_w = dialog_w - 2.0 * pad;
+    let input_h = 48.0 * scale;
+    draw_rectangle(input_x, input_y, input_w, input_h, Color::new(0.12, 0.14, 0.22, 1.0));
+    draw_rectangle_lines(input_x, input_y, input_w, input_h, 1.5 * scale, Color::new(0.4, 0.55, 0.8, 0.8));
+
+    // 输入框文本 + 光标。光标以闪烁的竖线表示，周期约 1s。
+    let text_size = 20.0 * scale;
+    let text_pad = 10.0 * scale;
+    // 限制显示宽度，超出部分尾部截断（简单处理，不做滚动）。
+    let max_text_w = input_w - 2.0 * text_pad;
+    let display_text = fit_text(buffer, font, text_size, max_text_w - 8.0 * scale);
+    draw_text_f(
+        &display_text,
+        input_x + text_pad,
+        input_y + input_h / 2.0 + text_size / 2.5,
+        text_size,
+        Color::new(0.9, 0.92, 0.98, 1.0),
+        font,
+    );
+    // 光标：在显示文本末尾画一条竖线，每秒闪烁。
+    let cursor_blink = (get_time() * 2.0).floor() as i64 % 2 == 0;
+    if cursor_blink {
+        let cursor_x = input_x + text_pad
+            + measure_text_f(&display_text, font, text_size as u16, 1.0).width
+            + 2.0 * scale;
+        draw_rectangle(cursor_x, input_y + 10.0 * scale, 2.0 * scale, input_h - 20.0 * scale, WHITE);
+    }
+
+    // 确认/取消按钮。
+    let btn_w = 160.0 * scale;
+    let btn_h = 48.0 * scale;
+    let gap = 32.0 * scale;
+    let total_w = btn_w * 2.0 + gap;
+    let btn1_x = dialog_x + (dialog_w - total_w) / 2.0;
+    let btn2_x = btn1_x + btn_w + gap;
+    let btn_y = dialog_y + dialog_h - btn_h - 24.0 * scale;
+    draw_button(btn1_x, btn_y, btn_w, btn_h, "确认", buttons, ButtonAction::NoteConfirm, font, scale);
+    draw_button(btn2_x, btn_y, btn_w, btn_h, "取消", buttons, ButtonAction::NoteCancel, font, scale);
+}
+
 /// Draw a confirmation dialog for returning to title or discarding settings.
 /// 注意：全屏 10% 黑色叠层已由调用方绘制，此函数只绘制居中的对话框面板。
 fn draw_confirm_dialog(engine: &Engine, buttons: &mut Vec<ButtonRect>, sw: f32, sh: f32, font: &Option<Font>, scale: f32, confirm_type: Option<ConfirmType>) {
@@ -2027,14 +2230,14 @@ fn draw_panel(sw: f32, sh: f32, title: &str, font: &Option<Font>, scale: f32) {
     draw_text_f(title, (sw - tw) / 2.0, sh * 0.09, title_size, WHITE, font);
 }
 
-fn draw_save_menu(engine: &Engine, buttons: &mut Vec<ButtonRect>, sw: f32, sh: f32, font: &Option<Font>, scale: f32, page: usize, displayed_slots: usize) {
+async fn draw_save_menu(engine: &Engine, buttons: &mut Vec<ButtonRect>, sw: f32, sh: f32, font: &Option<Font>, scale: f32, page: usize, displayed_slots: usize, assets: &mut AssetManager) {
     draw_panel(sw, sh, engine.t_ui("save.save_title"), font, scale);
 
     let saves = engine.saves();
     let max_slots = saves.max_slots();
     let all_saves = saves.list_saves();
 
-    draw_slot_grid(engine, sw, sh, font, scale, page, displayed_slots, max_slots, &all_saves, buttons, true);
+    draw_slot_grid(engine, sw, sh, font, scale, page, displayed_slots, max_slots, &all_saves, buttons, true, assets).await;
 
     // Back button (bottom-left).
     let back_w = 240.0 * scale;
@@ -2052,14 +2255,14 @@ fn draw_save_menu(engine: &Engine, buttons: &mut Vec<ButtonRect>, sw: f32, sh: f
     );
 }
 
-fn draw_load_menu(engine: &Engine, buttons: &mut Vec<ButtonRect>, sw: f32, sh: f32, font: &Option<Font>, scale: f32, page: usize, displayed_slots: usize) {
+async fn draw_load_menu(engine: &Engine, buttons: &mut Vec<ButtonRect>, sw: f32, sh: f32, font: &Option<Font>, scale: f32, page: usize, displayed_slots: usize, assets: &mut AssetManager) {
     draw_panel(sw, sh, engine.t_ui("save.load_title"), font, scale);
 
     let saves = engine.saves();
     let max_slots = saves.max_slots();
     let all_saves = saves.list_saves();
 
-    draw_slot_grid(engine, sw, sh, font, scale, page, displayed_slots, max_slots, &all_saves, buttons, false);
+    draw_slot_grid(engine, sw, sh, font, scale, page, displayed_slots, max_slots, &all_saves, buttons, false, assets).await;
 
     // Back button (bottom-left).
     let back_w = 240.0 * scale;
@@ -2084,7 +2287,7 @@ fn draw_load_menu(engine: &Engine, buttons: &mut Vec<ButtonRect>, sw: f32, sh: f
 /// iterates over `displayed_slots` (the number of slots currently surfaced to
 /// the player) rather than the hard `max_slots` cap, so the player can grow
 /// the visible range one page at a time via the "+" button.
-fn draw_slot_grid(
+async fn draw_slot_grid(
     engine: &Engine,
     sw: f32,
     sh: f32,
@@ -2096,6 +2299,7 @@ fn draw_slot_grid(
     all_saves: &[Option<SaveMetadata>],
     buttons: &mut Vec<ButtonRect>,
     is_save: bool,
+    assets: &mut AssetManager,
 ) {
     let cols = 4; // 2 rows × 4 columns = SLOTS_PER_PAGE
     let cell_w = 408.0 * scale;
@@ -2129,7 +2333,7 @@ fn draw_slot_grid(
         } else {
             ButtonAction::LoadSlot(slot)
         };
-        if let Some(t) = draw_slot_cell(engine, x, y, cell_w, cell_h, slot, meta_clone.as_ref(), buttons, font, scale, action) {
+        if let Some(t) = draw_slot_cell(engine, x, y, cell_w, cell_h, slot, meta_clone.as_ref(), buttons, font, scale, action, assets).await {
             hovered_tooltip = Some(t);
         }
     }
@@ -2152,10 +2356,14 @@ fn draw_slot_grid(
 /// show "空" with a semi-transparent overlay and are still registered as
 /// clickable (the save menu writes to them; the load menu no-ops on them).
 ///
+/// 单元格布局：左侧缩略图（按场景快照重绘）+ 右侧文字栏（章节名/描述/备注）。
+/// 缩略图通过读取存档的 `SceneSnapshot`，按比例缩小重绘背景与立绘，无需
+/// macroquad 截图 API，跨平台稳定。备注以斜体灰色显示在底部，1 行省略。
+///
 /// Returns `Some(text)` containing the full save description when the mouse
 /// hovers over a populated cell, so the caller can render a tooltip with the
 /// untruncated text on top of every other element.
-fn draw_slot_cell(
+async fn draw_slot_cell(
     engine: &Engine,
     x: f32,
     y: f32,
@@ -2167,6 +2375,7 @@ fn draw_slot_cell(
     font: &Option<Font>,
     scale: f32,
     action: ButtonAction,
+    assets: &mut AssetManager,
 ) -> Option<String> {
     let (mx, my) = mouse_position();
     let hover = mx >= x && mx <= x + w && my >= y && my <= y + h;
@@ -2177,6 +2386,23 @@ fn draw_slot_cell(
 
     let pad = 14.0 * scale;
     let slot_label = format!("{} {}", engine.t_ui("save.slot"), slot + 1);
+
+    // 布局尺寸（均基于 scale，多分辨率自适应）。
+    // 左侧缩略图区：宽 150*scale × 高 150*scale，约占单元格宽 37%。
+    let thumb_w = 150.0 * scale;
+    let thumb_h = 150.0 * scale;
+    let thumb_x = x + pad;
+    let thumb_y = y + 44.0 * scale;
+    // 右侧文字栏起点。
+    let text_x = thumb_x + thumb_w + 12.0 * scale;
+    let text_w = x + w - pad - text_x;
+    // 「编辑备注」小按钮：缩略图下方，仅在有存档时显示。
+    let note_btn_w = thumb_w;
+    let note_btn_h = 24.0 * scale;
+    let note_btn_x = thumb_x;
+    let note_btn_y = thumb_y + thumb_h + 6.0 * scale;
+
+    // 顶部：槽位号 + 时间戳（横排）。
     draw_text_f(
         &slot_label,
         x + pad,
@@ -2190,31 +2416,93 @@ fn draw_slot_cell(
 
     if let Some(m) = meta {
         let ts = format_timestamp(m.timestamp);
+        // 时间戳右对齐到单元格右边。
+        let ts_w = measure_text_f(&ts, font, (16.0 * scale) as u16, 1.0).width;
         draw_text_f(
             &ts,
-            x + pad,
-            y + 55.0 * scale,
-            17.0 * scale,
+            x + w - pad - ts_w,
+            y + 29.0 * scale,
+            16.0 * scale,
             Color::new(0.7, 0.7, 0.8, 1.0),
             font,
         );
 
-        // Chapter name: 1 line, ellipsized if it overflows.
-        let section_size = 19.0 * scale;
-        let section = fit_text(&m.section_name, font, section_size, w - 2.0 * pad);
-        draw_text_f(&section, x + pad, y + 82.0 * scale, section_size, WHITE, font);
+        // 左侧缩略图：读取存档的完整数据（含场景快照）重绘。
+        let full_save: Option<SaveSlot> = engine.saves().load_slot_full(slot);
+        draw_slot_thumbnail(full_save.as_ref(), assets, thumb_x, thumb_y, thumb_w, thumb_h, scale).await;
 
-        // Description: up to 2 lines, character-wrapped, ellipsized on overflow.
-        let desc_size = 17.0 * scale;
-        let desc_lines = wrap_text_cn(&m.description, font, desc_size, w - 2.0 * pad, 2);
-        let mut desc_y = y + 108.0 * scale;
+        // 右侧文字栏：章节名 + 描述 + 备注。
+        let section_size = 18.0 * scale;
+        let section = fit_text(&m.section_name, font, section_size, text_w);
+        draw_text_f(&section, text_x, thumb_y + section_size, section_size, WHITE, font);
+
+        // 描述：最多 3 行，字符换行 + 省略。
+        let desc_size = 15.0 * scale;
+        let desc_lines = wrap_text_cn(&m.description, font, desc_size, text_w, 3);
+        let mut desc_y = thumb_y + section_size + 8.0 * scale;
         for line in &desc_lines {
-            draw_text_f(line, x + pad, desc_y, desc_size, Color::new(0.75, 0.75, 0.85, 1.0), font);
-            desc_y += desc_size + 5.0 * scale;
+            draw_text_f(line, text_x, desc_y, desc_size, Color::new(0.75, 0.75, 0.85, 1.0), font);
+            desc_y += desc_size + 4.0 * scale;
         }
 
-        // On hover, surface the full description as a tooltip.
-        if hover {
+        // 备注：玩家自定义，斜体灰色，1 行省略。空视为无备注。
+        if let Some(note) = m.note.as_deref().filter(|s| !s.is_empty()) {
+            let note_size = 14.0 * scale;
+            let note_prefix = "📝 ";
+            let note_full = format!("{}{}", note_prefix, note);
+            let note_display = fit_text(&note_full, font, note_size, text_w);
+            draw_text_f(
+                &note_display,
+                text_x,
+                thumb_y + thumb_h - 2.0 * scale,
+                note_size,
+                Color::new(0.6, 0.8, 0.6, 1.0),
+                font,
+            );
+            // 备注被省略时，hover 显示完整备注。
+            if hover && note_display.ends_with('…') {
+                tooltip = Some(note_full);
+            }
+        }
+
+        // 「编辑备注」小按钮：缩略图下方，点击弹出输入框。
+        let note_label = if m.note.as_deref().filter(|s| !s.is_empty()).is_some() {
+            "✎ 改备注"
+        } else {
+            "✎ 加备注"
+        };
+        let note_label_size = 13.0 * scale;
+        let (nmx, nmy) = mouse_position();
+        let note_hover = nmx >= note_btn_x && nmx <= note_btn_x + note_btn_w
+            && nmy >= note_btn_y && nmy <= note_btn_y + note_btn_h;
+        draw_rectangle(
+            note_btn_x,
+            note_btn_y,
+            note_btn_w,
+            note_btn_h,
+            if note_hover { Color::new(0.25, 0.45, 0.7, 1.0) } else { Color::new(0.18, 0.32, 0.55, 1.0) },
+        );
+        draw_rectangle_lines(note_btn_x, note_btn_y, note_btn_w, note_btn_h, 1.0 * scale, Color::new(0.45, 0.7, 0.95, 0.6));
+        let nlw = measure_text_f(note_label, font, note_label_size as u16, 1.0).width;
+        draw_text_f(
+            note_label,
+            note_btn_x + (note_btn_w - nlw) / 2.0,
+            note_btn_y + note_btn_h - 7.0 * scale,
+            note_label_size,
+            Color::new(0.85, 0.9, 1.0, 1.0),
+            font,
+        );
+        buttons.push(ButtonRect {
+            x: note_btn_x,
+            y: note_btn_y,
+            w: note_btn_w,
+            h: note_btn_h,
+            label: note_label.to_string(),
+            action: ButtonAction::EditNote(slot),
+        });
+
+        // 描述被省略时，hover 显示完整描述。
+        if hover && tooltip.is_none() {
             tooltip = Some(m.description.clone());
         }
     } else {
@@ -2243,6 +2531,91 @@ fn draw_slot_cell(
     });
 
     tooltip
+}
+
+/// 绘制存档缩略图：根据存档的场景快照，按比例缩小重绘背景与立绘。
+///
+/// 缩略图区域为 `thumb_w × thumb_h`（逻辑像素），内部按 16:9 计算实际
+/// 绘制区，居中放置。背景按 cover 模式缩放（填满区域），立绘按原比例
+/// 缩小到缩略图高度。无场景快照时绘制占位符。
+async fn draw_slot_thumbnail(
+    save: Option<&SaveSlot>,
+    assets: &mut AssetManager,
+    x: f32,
+    y: f32,
+    w: f32,
+    h: f32,
+    _scale: f32,
+) {
+    // 缩略图背景框。
+    draw_rectangle(x, y, w, h, Color::new(0.05, 0.05, 0.08, 1.0));
+    draw_rectangle_lines(x, y, w, h, 1.0, Color::new(0.3, 0.4, 0.55, 0.6));
+
+    let scene = match save.and_then(|s| s.scene.as_ref()) {
+        Some(s) => s,
+        None => {
+            // 无场景快照（旧存档或空描述）：绘制占位符文字。
+            return;
+        }
+    };
+
+    // 绘制背景（cover 模式：填满缩略图区域）。
+    if let Some(bg) = &scene.background {
+        if let Some(tex) = assets.get_texture(AssetKind::Bg, &bg.name).await {
+            let tex_w = tex.width();
+            let tex_h = tex.height();
+            if tex_w > 0.0 && tex_h > 0.0 {
+                let s = (w / tex_w).max(h / tex_h);
+                let dw = tex_w * s;
+                let dh = tex_h * s;
+                let dx = x + (w - dw) / 2.0 + bg.offset_x * w;
+                let dy = y + (h - dh) / 2.0 + bg.offset_y * h;
+                draw_texture_ex(
+                    tex.clone(),
+                    dx,
+                    dy,
+                    Color::new(1.0, 1.0, 1.0, bg.alpha),
+                    DrawTextureParams {
+                        dest_size: Some(Vec2::new(dw, dh)),
+                        ..Default::default()
+                    },
+                );
+            }
+        } else {
+            // 背景纹理缺失：用资源名哈希色占位。
+            let c = name_to_color(&bg.name);
+            draw_rectangle(x, y, w, h, Color::new(c.0, c.1, c.2, bg.alpha));
+        }
+    }
+
+    // 绘制立绘（按缩略图高度等比缩小）。
+    for char_state in &scene.characters {
+        let x_frac = char_state.custom_x.unwrap_or_else(|| char_state.position.x_fraction());
+        let y_frac = char_state.custom_y.unwrap_or(1.0);
+        let sprite_name = char_state.pose.clone().unwrap_or_else(|| char_state.name.clone());
+        if let Some(tex) = assets.get_texture(AssetKind::Character, &sprite_name).await {
+            let tex_w = tex.width();
+            let tex_h = tex.height();
+            if tex_w > 0.0 && tex_h > 0.0 {
+                // 立绘高度为缩略图高度的 80%，再乘以 char_state.scale。
+                let scale_factor = (h * 0.8) / tex_h * char_state.scale;
+                let dw = tex_w * scale_factor;
+                let dh = tex_h * scale_factor;
+                let dx = w * x_frac - dw / 2.0 + char_state.offset_x * (w / 1920.0);
+                let dy = h * y_frac - dh / 2.0;
+                draw_texture_ex(
+                    tex.clone(),
+                    x + dx,
+                    y + dy,
+                    WHITE,
+                    DrawTextureParams {
+                        dest_size: Some(Vec2::new(dw, dh)),
+                        ..Default::default()
+                    },
+                );
+            }
+        }
+    }
 }
 
 /// Draw the page navigation control anchored to the bottom-right corner:
@@ -3494,6 +3867,8 @@ fn handle_button_action(action: ButtonAction) -> Option<(UiMode, PendingUiAction
         | ButtonAction::AddPage => None,
         ButtonAction::ConfirmYes => Some((UiMode::Normal, PendingUiAction::None)), // 由调用者处理具体确认逻辑
         ButtonAction::ConfirmNo => Some((UiMode::Normal, PendingUiAction::None)),  // 返回上一个模式
+        // 备注编辑相关动作由主循环直接处理，不触发 UI transition。
+        ButtonAction::EditNote(_) | ButtonAction::NoteConfirm | ButtonAction::NoteCancel => None,
     }
 }
 
