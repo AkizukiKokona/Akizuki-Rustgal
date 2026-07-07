@@ -2387,9 +2387,9 @@ async fn draw_slot_cell(
     let slot_label = format!("{} {}", engine.t_ui("save.slot"), slot + 1);
 
     // 布局尺寸（均基于 scale，多分辨率自适应）。
-    // 左侧缩略图区：宽 150*scale × 高 150*scale，约占单元格宽 37%。
-    let thumb_w = 150.0 * scale;
-    let thumb_h = 150.0 * scale;
+    // 左侧缩略图区：16:9 长方形（与游戏画面比例一致），避免背景图被裁切或超出边框。
+    let thumb_w = 192.0 * scale;
+    let thumb_h = 108.0 * scale;
     let thumb_x = x + pad;
     let thumb_y = y + 44.0 * scale;
     // 右侧文字栏起点。
@@ -2428,7 +2428,7 @@ async fn draw_slot_cell(
 
         // 左侧缩略图：读取存档的完整数据（含场景快照）重绘。
         let full_save: Option<SaveSlot> = engine.saves().load_slot_full(slot);
-        draw_slot_thumbnail(full_save.as_ref(), assets, thumb_x, thumb_y, thumb_w, thumb_h, scale).await;
+        draw_slot_thumbnail(full_save.as_ref(), assets, thumb_x, thumb_y, thumb_w, thumb_h, scale, font).await;
 
         // 右侧文字栏：章节名 + 描述 + 备注。
         let section_size = 18.0 * scale;
@@ -2534,9 +2534,9 @@ async fn draw_slot_cell(
 
 /// 绘制存档缩略图：根据存档的场景快照，按比例缩小重绘背景与立绘。
 ///
-/// 缩略图区域为 `thumb_w × thumb_h`（逻辑像素），内部按 16:9 计算实际
-/// 绘制区，居中放置。背景按 cover 模式缩放（填满区域），立绘按原比例
-/// 缩小到缩略图高度。无场景快照时绘制占位符。
+/// 缩略图区域为 `thumb_w × thumb_h`（逻辑像素），采用 16:9 比例（与游戏
+/// 画面一致）。背景按 contain 模式缩放（完整显示在区域内，不超出边框），
+/// 立绘按原比例缩小到缩略图高度。无场景快照时绘制占位符文字。
 async fn draw_slot_thumbnail(
     save: Option<&SaveSlot>,
     assets: &mut AssetManager,
@@ -2545,6 +2545,7 @@ async fn draw_slot_thumbnail(
     w: f32,
     h: f32,
     _scale: f32,
+    font: &Option<Font>,
 ) {
     // 缩略图背景框。
     draw_rectangle(x, y, w, h, Color::new(0.05, 0.05, 0.08, 1.0));
@@ -2553,18 +2554,31 @@ async fn draw_slot_thumbnail(
     let scene = match save.and_then(|s| s.scene.as_ref()) {
         Some(s) => s,
         None => {
-            // 无场景快照（旧存档或空描述）：绘制占位符文字。
+            // 无场景快照（旧存档或空槽位）：居中绘制占位符文字。
+            let label = "无预览";
+            let size = 16.0;
+            let tw = measure_text_f(label, font, size as u16, 1.0).width;
+            draw_text_f(
+                label,
+                x + (w - tw) / 2.0,
+                y + h / 2.0 + size / 2.5,
+                size,
+                Color::new(0.4, 0.45, 0.55, 0.8),
+                font,
+            );
             return;
         }
     };
 
-    // 绘制背景（cover 模式：填满缩略图区域）。
+    // 绘制背景（contain 模式：完整显示在缩略图内，不超出边框）。
+    // 对于 16:9 背景图 + 16:9 缩略图，contain 等价于 cover，刚好填满；
+    // 对于非 16:9 的背景图，会有黑边但不超出，比 cover 裁切更安全。
     if let Some(bg) = &scene.background {
         if let Some(tex) = assets.get_texture(AssetKind::Bg, &bg.name).await {
             let tex_w = tex.width();
             let tex_h = tex.height();
             if tex_w > 0.0 && tex_h > 0.0 {
-                let s = (w / tex_w).max(h / tex_h);
+                let s = (w / tex_w).min(h / tex_h);
                 let dw = tex_w * s;
                 let dh = tex_h * s;
                 let dx = x + (w - dw) / 2.0 + bg.offset_x * w;
