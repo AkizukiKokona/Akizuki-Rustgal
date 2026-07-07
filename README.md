@@ -14,6 +14,65 @@
 
 ---
 
+## 独有特色
+
+> **语言 / Language:** 简体中文 | [English](#unique-highlights) | [日本語](#独自の特徴) | [繁體中文](#獨有特色)
+
+对比 Ren'Py（Python 运行时）、KiriKiri/KAG（TJS 解释器）等主流视觉小说引擎，Akizuki\*Rustgal 凭借纯 Rust + 自定义 DSL 实现了以下独有能力：
+
+- **编译时剧本纠错** — 未定义跳转、重复节名、缺失资源、舞台角色超限在 `cargo build` 阶段即报错，无需运行即可发现（Ren'Py / KiriKiri 均为运行时检查）
+- **内置可视化编辑器** — egui 驱动的 GUI 编辑器：语法高亮 + 立绘/背景/音乐实时预览 + 便携查找替换插入，告别纯文本编辑（Ren'Py 仅 Launcher 文本编辑，KiriKiri 依赖外部编辑器）
+- **对照翻译模式** — 编辑器内原文-译文并排，原文只读、译文实时写入；翻译文件以原文为 key，仅改动的行需重译（Ren'Py 用哈希 ID 翻译块，与脚本结构耦合）
+- **过程宏编译期嵌入** — `.akrs` 脚本通过过程宏在编译时嵌入 Rust 代码，类型检查延伸至剧本层（其他引擎均为运行时解析）
+- **满血 Rust 零运行时** — 无 Python、无 TJS、无 GC 停顿，单二进制分发，帧率稳定可预测
+
+<details>
+<summary><b>English</b></summary>
+
+### Unique Highlights
+
+Compared to Ren'Py (Python runtime) and KiriKiri/KAG (TJS interpreter), Akizuki\*Rustgal leverages pure Rust plus a custom DSL to deliver capabilities no other VN engine offers:
+
+- **Compile-time script checking** — Undefined jumps, duplicate section names, missing assets, and stage character overflow are caught at `cargo build` time, before the game ever runs (Ren'Py and KiriKiri only detect these at runtime)
+- **Built-in visual editor** — An egui-powered GUI editor with syntax highlighting, live sprite/background/music preview, and find-and-replace insertion — no more plain-text editing (Ren'Py ships only a launcher text editor; KiriKiri relies on external editors)
+- **Side-by-side translation mode** — The editor shows original and translation columns; the original is read-only and the translation writes back live. Translation files key on the original text, so only edited lines need retranslation (Ren'Py uses hash-ID translate blocks coupled to script structure)
+- **Compile-time script embedding via proc macros** — `.akrs` scripts are embedded into Rust code at compile time via procedural macros, extending type checking into the script layer (other engines parse scripts at runtime)
+- **Full Rust, zero runtime** — No Python, no TJS, no GC pauses; a single binary ships with stable, predictable frame rates
+
+</details>
+
+<details>
+<summary><b>日本語</b></summary>
+
+### 独自の特徴
+
+Ren'Py（Python ランタイム）や KiriKiri/KAG（TJS インタプリタ）などの主要ノベルエンジンと比較し、Akizuki\*Rustgal は純 Rust + カスタム DSL により他にない機能を実現しています：
+
+- **コンパイル時スクリプト検査** — 未定義ジャンプ、重複セクション名、欠落アセット、ステージキャラ超過は `cargo build` 段階で検出され、実行せずに問題を発見（Ren'Py / KiriKiri は実行時検査のみ）
+- **内蔵ビジュアルエディタ** — egui 駆動の GUI エディタ。シンタックスハイライト + 立絵/背景/音楽のライブプレビュー + 検索置換挿入。プレーンテキスト編集から解放（Ren'Py はランチャーのテキストエディタのみ、KiriKiri は外部エディタ依存）
+- **対照翻訳モード** — エディタ内で原文-訳文を並列表示。原文は読み取り専用、訳文はリアルタイム反映。翻訳ファイルは原文をキーとするため、変更した行のみ再翻訳（Ren'Py はハッシュ ID 翻訳ブロックでスクリプト構造と結合）
+- **プロシージャルマクロによるコンパイル時埋め込み** — `.akrs` スクリプトはプロシージャルマクロでコンパイル時に Rust コードへ埋め込まれ、型検査がスクリプト層まで及ぶ（他エンジンは実行時解析）
+- **完全 Rust・ランタイムゼロ** — Python なし、TJS なし、GC 停止なし。シングルバイナリで配布、安定した予測可能なフレームレート
+
+</details>
+
+<details>
+<summary><b>繁體中文</b></summary>
+
+### 獨有特色
+
+相較於 Ren'Py（Python 執行時期）與 KiriKiri/KAG（TJS 直譯器）等主流視覺小說引擎，Akizuki\*Rustgal 藉由純 Rust + 自訂 DSL 實現了以下獨有能力：
+
+- **編譯時劇本檢查** — 未定義跳轉、重複章節名、缺失資源、舞台角色超限在 `cargo build` 階段即報錯，無需執行即可發現（Ren'Py / KiriKiri 皆為執行時期檢查）
+- **內建視覺化編輯器** — egui 驅動的 GUI 編輯器：語法高亮 + 立繪/背景/音樂即時預覽 + 查找取代插入，告別純文字編輯（Ren'Py 僅 Launcher 文字編輯器，KiriKiri 依賴外部編輯器）
+- **對照翻譯模式** — 編輯器內原文-譯文並排，原文唯讀、譯文即時寫入；翻譯檔案以原文為鍵，僅改動的行需重譯（Ren'Py 使用雜湊 ID 翻譯區塊，與腳本結構耦合）
+- **過程巨集編譯期嵌入** — `.akrs` 腳本透過過程巨集在編譯時嵌入 Rust 程式碼，型別檢查延伸至劇本層（其他引擎皆為執行時期解析）
+- **滿血 Rust 零執行時期** — 無 Python、無 TJS、無 GC 停頓，單一二進位散布，幀率穩定可預測
+
+</details>
+
+---
+
 Akizuki\*Rustgal 是一个从零开始、**100% 纯 Rust** 实现的视觉小说引擎。从词法分析器、语法解析器、类型检查器到虚拟机、渲染器、编辑器——每一行代码都是 Rust。不依赖 Lua、不依赖 Python、不依赖任何脚本运行时。
 
 引擎配备了一套自定义剧本语言（`.akrs`），支持编译时资源检查、分支选择、变量系统、过渡动画等视觉小说核心功能，同时附带可视化编辑器和三平台自动构建流水线。
