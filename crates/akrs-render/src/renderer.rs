@@ -674,8 +674,9 @@ pub async fn run(mut engine: Engine, project_config: &ProjectConfig) {
     }
 
     let mut assets = AssetManager::new();
-    // 预加载软件图标（关于页使用），加载失败时为 None，关于页画占位框。
-    let about_icon_texture = assets.get_texture(AssetKind::Title, "./icon.png").await;
+    // 预加载关于页头像（kokona.png，位于项目根目录），加载失败时为 None，关于页画占位框。
+    // 路径 ../kokona.png 相对 assets/ 基目录解析为项目根目录的 kokona.png。
+    let about_icon_texture = assets.get_texture(AssetKind::Title, "../kokona.png").await;
     // Load Chinese font for proper CJK text rendering, with system-font fallback.
     let (font, fallback_font) = load_font_with_fallback();
     set_fallback_font(fallback_font);
@@ -2573,7 +2574,8 @@ async fn draw_slot_cell(
 ///
 /// 缩略图区域为 `thumb_w × thumb_h`（逻辑像素），采用 16:9 比例（与游戏
 /// 画面一致）。背景按 contain 模式缩放（完整显示在区域内，不超出边框），
-/// 立绘按原比例缩小到缩略图高度。无场景快照时绘制占位符文字。
+/// 立绘按原比例缩小到缩略图高度。无场景快照时：存档存在则用标题图（title.png）
+/// 作为兜底画面，确保每个有存档的槽位都有预览图；无存档则绘制占位符文字。
 async fn draw_slot_thumbnail(
     save: Option<&SaveSlot>,
     assets: &mut AssetManager,
@@ -2591,7 +2593,37 @@ async fn draw_slot_thumbnail(
     let scene = match save.and_then(|s| s.scene.as_ref()) {
         Some(s) => s,
         None => {
-            // 无场景快照（旧存档或空槽位）：居中绘制占位符文字。
+            // 无场景快照：旧格式存档未保存场景数据。有存档的槽位必须出画面，
+            // 因此用标题图（title.png，始终可用）作 contain 模式兜底绘制。
+            // 仅当 save 为 None（理论上不会发生，调用方仅在有存档时调用本函数）
+            // 才回退到占位符文字。
+            if save.is_some() {
+                if let Some(tex) = assets.get_texture(AssetKind::Title, "./title.png").await {
+                    let tex_w = tex.width();
+                    let tex_h = tex.height();
+                    if tex_w > 0.0 && tex_h > 0.0 {
+                        let s = (w / tex_w).min(h / tex_h);
+                        let dw = tex_w * s;
+                        let dh = tex_h * s;
+                        let dx = x + (w - dw) / 2.0;
+                        let dy = y + (h - dh) / 2.0;
+                        draw_texture_ex(
+                            tex.clone(),
+                            dx,
+                            dy,
+                            WHITE,
+                            DrawTextureParams {
+                                dest_size: Some(Vec2::new(dw, dh)),
+                                ..Default::default()
+                            },
+                        );
+                        return;
+                    }
+                }
+                // 标题图加载失败：用深色底占位，避免空白。
+                draw_rectangle(x, y, w, h, Color::new(0.12, 0.15, 0.22, 1.0));
+                return;
+            }
             let label = "无预览";
             let size = 16.0;
             let tw = measure_text_f(label, font, size as u16, 1.0).width;
@@ -3229,10 +3261,12 @@ fn draw_about_tab(engine: &Engine, layout: &SettingsLayout, font: &Option<Font>,
         Color::new(0.8, 0.85, 0.95, 1.0), font);
 
     // ── 第 3 行：版本 1.0 Build XX ──
-    let build_str = format!("{} 1.0   {} {}",
+    // build 号取自 git 提交数（build.rs 注入 BUILD_NUMBER），按四位数格式补零显示。
+    let build_num: u64 = env!("BUILD_NUMBER").parse().unwrap_or(0);
+    let build_str = format!("{} 1.0   {} {:04}",
         engine.t_ui("about.version_label"),
         engine.t_ui("about.build_label"),
-        env!("BUILD_NUMBER"));
+        build_num);
     draw_text_f(&build_str, text_x, line3_y, text_size,
         Color::new(0.7, 0.8, 0.95, 1.0), font);
 
