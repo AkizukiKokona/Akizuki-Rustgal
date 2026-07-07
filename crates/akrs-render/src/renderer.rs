@@ -1217,14 +1217,30 @@ pub async fn run(mut engine: Engine, project_config: &ProjectConfig) {
                     }
                 }
             } else if ui_mode == UiMode::NoteEditDialog {
-                // 备注编辑弹窗：仅响应 NoteConfirm/NoteCancel，
-                // 忽略底层存档页的按钮（避免重复触发 EditNote 等）。
+                // 备注编辑弹窗：仅响应 NoteConfirm/NoteCancel 两个按钮。
+                // 注意：底层存档页的按钮（SaveSlot/LoadSlot/EditNote 等）已被
+                // draw_save_menu/draw_load_menu 注册到 buttons 列表前面，且其
+                // 命中区域可能与弹窗按钮重叠。若调用 handle_click 会按注册顺序
+                // 命中底层按钮并返回非弹窗动作，导致弹窗按钮点击被忽略（_ => {}
+                // 分支吞掉）。因此这里直接遍历 buttons，只匹配弹窗按钮动作。
                 if is_mouse_button_pressed(MouseButton::Left) {
                     let (mx, my) = mouse_position();
-                    if let Some(action) = handle_click(
-                        mx, my, &buttons, &mut engine, &ui_mode, &mut hud_hidden,
-                        sw, sh, scale,
-                    ) {
+                    // 仅查找 NoteConfirm/NoteCancel 命中，跳过其它按钮。
+                    let mut hit: Option<ButtonAction> = None;
+                    for btn in buttons.iter() {
+                        if mx >= btn.x && mx <= btn.x + btn.w
+                            && my >= btn.y && my <= btn.y + btn.h
+                        {
+                            match btn.action {
+                                ButtonAction::NoteConfirm | ButtonAction::NoteCancel => {
+                                    hit = Some(btn.action);
+                                    break;
+                                }
+                                _ => {} // 忽略底层存档页按钮
+                            }
+                        }
+                    }
+                    if let Some(action) = hit {
                         match action {
                             ButtonAction::NoteConfirm => {
                                 if let Some(slot) = note_edit_slot.take() {
