@@ -14,6 +14,10 @@ use serde::{Deserialize, Serialize};
 pub struct SceneState {
     /// Current background image (name/identifier).
     pub background: Option<BackgroundState>,
+    /// 背景交叉淡入期间的旧背景（淡出层）。
+    /// 仅在 `transition.bg_crossfade` 为 true 时存在；过渡完成后清空。
+    /// 不参与存档快照（SceneSnapshot 只取 `background`）。
+    pub prev_background: Option<BackgroundState>,
     /// Characters currently on stage.
     pub characters: Vec<CharacterState>,
     /// Active dialogue box (None if no dialogue).
@@ -125,6 +129,11 @@ pub struct TransitionOverlay {
     pub phase: TransitionPhase,
     /// 0.0 to 1.0.
     pub progress: f32,
+    /// 是否为"背景交叉淡入"过渡。
+    /// 为 true 时渲染层不画全屏遮罩，改由 `draw_background` 同时绘制
+    /// `prev_background`（淡出）与 `background`（淡入），对话框等 UI 不被遮挡。
+    /// 仅对纯背景切换的 Fade/Dissolve 生效。
+    pub bg_crossfade: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]

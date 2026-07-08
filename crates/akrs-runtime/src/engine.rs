@@ -833,6 +833,8 @@ impl Engine {
                 // 否则残留 pending 会在 swap point 错误应用到刚恢复的场景。
                 self.transition.reset();
                 self.scene.transition = None;
+                // 读档清空交叉淡入的旧背景（快照不含该字段，避免残留淡出层）。
+                self.scene.prev_background = None;
                 // 恢复存档时保存的场景快照（背景/立绘/音乐），
                 // 避免读档/崩溃恢复后背景黑屏、音乐中断。背景每帧按名字
                 // 查纹理，恢复 state 后渲染层自动正确绘制；音乐是事件
@@ -1060,6 +1062,8 @@ impl Engine {
                 // 否则残留 pending 会在 swap point 错误应用到刚恢复的场景。
                 self.transition.reset();
                 self.scene.transition = None;
+                // 读档清空交叉淡入的旧背景（快照不含该字段，避免残留淡出层）。
+                self.scene.prev_background = None;
                 // 恢复存档时保存的场景快照（背景/立绘/音乐），
                 // 避免读档/崩溃恢复后背景黑屏、音乐中断。背景每帧按名字
                 // 查纹理，恢复 state 后渲染层自动正确绘制；音乐是事件
@@ -1145,6 +1149,8 @@ impl Engine {
                 // 否则残留 pending 会在 swap point 错误应用到刚恢复的场景。
                 self.transition.reset();
                 self.scene.transition = None;
+                // 读档清空交叉淡入的旧背景（快照不含该字段，避免残留淡出层）。
+                self.scene.prev_background = None;
                 // 恢复存档时保存的场景快照（背景/立绘/音乐），
                 // 避免读档/崩溃恢复后背景黑屏、音乐中断。背景每帧按名字
                 // 查纹理，恢复 state 后渲染层自动正确绘制；音乐是事件
@@ -1221,6 +1227,8 @@ impl Engine {
                 // 否则残留 pending 会在 swap point 错误应用到刚恢复的场景。
                 self.transition.reset();
                 self.scene.transition = None;
+                // 读档清空交叉淡入的旧背景（快照不含该字段，避免残留淡出层）。
+                self.scene.prev_background = None;
                 // 恢复存档时保存的场景快照（背景/立绘/音乐），
                 // 避免读档/崩溃恢复后背景黑屏、音乐中断。背景每帧按名字
                 // 查纹理，恢复 state 后渲染层自动正确绘制；音乐是事件

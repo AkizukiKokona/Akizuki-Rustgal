@@ -3,7 +3,7 @@
 use crate::assets::{AssetKind, AssetManager};
 use akrs_core::ProjectConfig;
 use akrs_runtime::{
-    Engine, EngineEvent, EnginePhase, SceneState, Settings, SettingsTab, SkipMode,
+    Engine, EngineEvent, EnginePhase, SceneState, BackgroundState, Settings, SettingsTab, SkipMode,
     TransitionPhase,
     format_play_time, format_timestamp,
     SaveMetadata, SaveSlot,
@@ -1935,39 +1935,73 @@ fn draw_chapter_toast(anim: &ChapterAnimation, sw: f32, sh: f32, font: &Option<F
 }
 
 async fn draw_background(scene: &SceneState, assets: &mut AssetManager, sw: f32, sh: f32) {
-    if let Some(bg) = &scene.background {
-        if let Some(tex) = assets.get_texture(AssetKind::Bg, &bg.name).await {
-            // Draw texture scaled to screen
-            let tex_w = tex.width();
-            let tex_h = tex.height();
-            let scale = (sw / tex_w).max(sh / tex_h);
-            let draw_w = tex_w * scale;
-            let draw_h = tex_h * scale;
-            let offset_x = (sw - draw_w) / 2.0 + bg.offset_x * sw;
-            let offset_y = (sh - draw_h) / 2.0 + bg.offset_y * sh;
-            draw_texture_ex(
-                tex.clone(),
-                offset_x,
-                offset_y,
-                Color::new(1.0, 1.0, 1.0, bg.alpha),
-                DrawTextureParams {
-                    dest_size: Some(Vec2::new(draw_w, draw_h)),
-                    ..Default::default()
-                },
-            );
-        } else {
-            // Placeholder: colored rectangle based on resource name hash
-            let placeholder_color = name_to_color(&bg.name);
-            draw_rectangle(0.0, 0.0, sw, sh, Color::new(
-                placeholder_color.0,
-                placeholder_color.1,
-                placeholder_color.2,
-                bg.alpha,
-            ));
+    // 背景交叉淡入：当处于 bg_crossfade 过渡时，同时绘制旧背景（淡出）与新背景（淡入）。
+    // 不画全屏遮罩，对话框等 UI 在背景之上正常绘制、不被遮挡。
+    if let Some(overlay) = &scene.transition {
+        if overlay.bg_crossfade {
+            // 合并进度 t（0→1）：Out 阶段 0→0.5，In 阶段 0.5→1.0。
+            // overlay.progress 已做 ease_in_out，跨阶段在 0.5 处连续。
+            let t = match overlay.phase {
+                TransitionPhase::Out => overlay.progress * 0.5,
+                TransitionPhase::In => 0.5 + overlay.progress * 0.5,
+            };
+            // 先画旧背景（淡出）。
+            if let Some(prev) = &scene.prev_background {
+                draw_single_background(prev, assets, sw, sh, 1.0 - t).await;
+            } else {
+                // 无旧背景：用黑底淡出。
+                draw_rectangle(0.0, 0.0, sw, sh, Color::new(0.0, 0.0, 0.0, 1.0 - t));
+            }
+            // 再画新背景（淡入）。
+            if let Some(bg) = &scene.background {
+                draw_single_background(bg, assets, sw, sh, t).await;
+            } else {
+                draw_rectangle(0.0, 0.0, sw, sh, Color::new(0.0, 0.0, 0.0, t));
+            }
+            return;
         }
+    }
+
+    // 普通模式：只画当前背景。
+    if let Some(bg) = &scene.background {
+        draw_single_background(bg, assets, sw, sh, bg.alpha).await;
     } else {
         // Default: black background
         draw_rectangle(0.0, 0.0, sw, sh, BLACK);
+    }
+}
+
+/// 绘制单个背景图层（按 cover 模式缩放铺满屏幕），alpha 由调用方指定。
+/// 交叉淡入时分别以互补 alpha 调用两次绘制新旧背景。
+async fn draw_single_background(bg: &BackgroundState, assets: &mut AssetManager, sw: f32, sh: f32, alpha: f32) {
+    if let Some(tex) = assets.get_texture(AssetKind::Bg, &bg.name).await {
+        // Draw texture scaled to screen
+        let tex_w = tex.width();
+        let tex_h = tex.height();
+        let scale = (sw / tex_w).max(sh / tex_h);
+        let draw_w = tex_w * scale;
+        let draw_h = tex_h * scale;
+        let offset_x = (sw - draw_w) / 2.0 + bg.offset_x * sw;
+        let offset_y = (sh - draw_h) / 2.0 + bg.offset_y * sh;
+        draw_texture_ex(
+            tex.clone(),
+            offset_x,
+            offset_y,
+            Color::new(1.0, 1.0, 1.0, alpha),
+            DrawTextureParams {
+                dest_size: Some(Vec2::new(draw_w, draw_h)),
+                ..Default::default()
+            },
+        );
+    } else {
+        // Placeholder: colored rectangle based on resource name hash
+        let placeholder_color = name_to_color(&bg.name);
+        draw_rectangle(0.0, 0.0, sw, sh, Color::new(
+            placeholder_color.0,
+            placeholder_color.1,
+            placeholder_color.2,
+            alpha,
+        ));
     }
 }
 
@@ -2178,6 +2212,12 @@ fn draw_choices(choices: &akrs_runtime::ChoicesState, sw: f32, sh: f32, font: &O
 fn draw_transition(scene: &SceneState, sw: f32, sh: f32) {
     if let Some(overlay) = &scene.transition {
         use akrs_core::Transition;
+
+        // 背景交叉淡入由 draw_background 处理（画两层背景互补 alpha），
+        // 这里不画全屏遮罩，对话框等 UI 保持可见。
+        if overlay.bg_crossfade {
+            return;
+        }
 
         // 计算基础透明度（Out 阶段增加，In 阶段减少）
         let base_alpha = match overlay.phase {

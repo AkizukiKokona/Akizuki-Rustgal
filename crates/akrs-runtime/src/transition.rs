@@ -78,16 +78,45 @@ impl TransitionManager {
             return;
         }
 
+        // 纯背景切换的 Fade/Dissolve 走"背景交叉淡入"：
+        // 启动时立即把旧背景移到 prev_background、设置新背景，整个过渡期间
+        // 两层背景都在；渲染层据此做交叉淡入，且不画全屏遮罩（对话框可见）。
+        // 角色上下场等其他过渡仍走原有的 Out→Swap→In 全屏遮罩模型。
+        let crossfade_bg = new_bg.is_some()
+            && chars_enter.is_empty()
+            && chars_exit.is_empty()
+            && matches!(kind, Transition::Fade | Transition::Dissolve);
+
         self.kind = kind;
         self.phase = TransitionPhase::Out;
         self.progress = 0.0;
         self.half_duration = kind.default_duration() / 2.0;
-        self.pending = Some(PendingChange {
-            new_background: new_bg,
-            characters_enter: chars_enter,
-            characters_exit: chars_exit,
-            music: new_music,
-        });
+
+        if crossfade_bg {
+            // 旧背景移到 prev_background（淡出层），立即应用新背景（淡入层）。
+            scene.prev_background = scene.background.take();
+            if let Some(bg) = new_bg {
+                match bg {
+                    Some(name) => scene.set_background(name),
+                    None => scene.background = None,
+                }
+            }
+            // pending 不再含背景变更（已在 start 应用），但保留结构以接纳
+            // 过渡进行中合并进来的角色/音乐变更。
+            self.pending = Some(PendingChange {
+                new_background: None,
+                characters_enter: chars_enter,
+                characters_exit: chars_exit,
+                music: new_music,
+            });
+        } else {
+            self.pending = Some(PendingChange {
+                new_background: new_bg,
+                characters_enter: chars_enter,
+                characters_exit: chars_exit,
+                music: new_music,
+            });
+        }
         self.active = true;
 
         // Set transition overlay on scene
@@ -95,6 +124,7 @@ impl TransitionManager {
             kind,
             phase: TransitionPhase::Out,
             progress: 0.0,
+            bg_crossfade: crossfade_bg,
         });
     }
 
@@ -254,6 +284,8 @@ impl TransitionManager {
                     // Transition complete
                     self.active = false;
                     scene.transition = None;
+                    // 清空交叉淡入的旧背景（若有）。
+                    scene.prev_background = None;
                     true
                 }
             }
@@ -626,5 +658,87 @@ mod tests {
         // 当前行为：enter 在 exit 之后应用，所以 Aki 在场。
         // 完整的"入场后下场"需要两次过渡（第一次入场，第二次下场）。
         assert!(scene.has_character("Aki"));
+    }
+
+    /// 验证：纯背景切换的 Fade 走"背景交叉淡入"——
+    /// 启动时立即把旧背景移到 prev_background、设置新背景，overlay.bg_crossfade=true。
+    /// 整个过渡期间两层背景都在，渲染层据此画交叉淡入。
+    #[test]
+    fn test_bg_crossfade_sets_up_prev_and_new() {
+        let mut tm = TransitionManager::new();
+        let mut scene = SceneState::new();
+        scene.set_background("old_bg".to_string());
+
+        tm.start(
+            Transition::Fade,
+            &mut scene,
+            Some(Some("new_bg".to_string())),
+            vec![],
+            vec![],
+            None,
+        );
+        assert!(tm.is_active());
+        // 启动即应用：当前背景已是新背景，旧背景在 prev_background。
+        assert_eq!(scene.background.as_ref().unwrap().name, "new_bg");
+        assert_eq!(scene.prev_background.as_ref().unwrap().name, "old_bg");
+        // overlay 标记为交叉淡入。
+        assert!(scene.transition.as_ref().unwrap().bg_crossfade);
+
+        // 走完整个过渡（Out + In）。
+        let _ = tm.update(0.3, &mut scene); // Out → swap（crossfade 下 swap 对 bg 是 no-op）
+        assert_eq!(scene.background.as_ref().unwrap().name, "new_bg");
+        assert!(scene.prev_background.is_some()); // In 阶段旧背景仍在
+        let done = tm.update(0.3, &mut scene); // In → 完成
+        assert!(done);
+        assert!(!tm.is_active());
+        assert!(scene.transition.is_none());
+        // 完成后旧背景清空。
+        assert!(scene.prev_background.is_none());
+        assert_eq!(scene.background.as_ref().unwrap().name, "new_bg");
+    }
+
+    /// 验证：角色上下场的 Fade 不走交叉淡入（bg_crossfade=false，不动 prev_background）。
+    #[test]
+    fn test_character_fade_not_crossfade() {
+        let mut tm = TransitionManager::new();
+        let mut scene = SceneState::new();
+        scene.set_background("bg".to_string());
+        scene.character_enter("Aki".to_string(), None);
+
+        tm.start(
+            Transition::Fade,
+            &mut scene,
+            None,
+            vec![("Yuki".to_string(), None, None, SpriteTransform::default())],
+            vec![],
+            None,
+        );
+        // 非纯背景切换：不标记交叉淡入，不产生 prev_background。
+        assert!(!scene.transition.as_ref().unwrap().bg_crossfade);
+        assert!(scene.prev_background.is_none());
+    }
+
+    /// 验证：纯背景切换但用 FadeBlack（非 Fade/Dissolve）不走交叉淡入，
+    /// 仍走全屏遮罩模型（bg 在 swap point 才替换）。
+    #[test]
+    fn test_bg_fadeblack_not_crossfade() {
+        let mut tm = TransitionManager::new();
+        let mut scene = SceneState::new();
+        scene.set_background("old".to_string());
+
+        tm.start(
+            Transition::FadeBlack,
+            &mut scene,
+            Some(Some("new".to_string())),
+            vec![],
+            vec![],
+            None,
+        );
+        assert!(!scene.transition.as_ref().unwrap().bg_crossfade);
+        // 非 crossfade：启动时背景未变（仍是 old），swap point 才替换。
+        assert_eq!(scene.background.as_ref().unwrap().name, "old");
+        assert!(scene.prev_background.is_none());
+        let _ = tm.update(0.4, &mut scene); // 走过 Out → swap
+        assert_eq!(scene.background.as_ref().unwrap().name, "new");
     }
 }
