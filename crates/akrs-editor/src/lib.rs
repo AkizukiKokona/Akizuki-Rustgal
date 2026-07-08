@@ -2377,10 +2377,10 @@ impl EditorApp {
             }
 
             // 对话 "说话人 \"对话内容\""
-            if trimmed.starts_with('"') && trimmed.contains('" "') {
+            if trimmed.starts_with('"') && trimmed.contains("\" \"") {
                 // 格式如: "说话人 \"对话\""
                 // 简化处理：提取说话人和对话
-                let parts: Vec<&str> = trimmed.splitn(2, '" "').collect();
+                let parts: Vec<&str> = trimmed.splitn(2, "\" \"").collect();
                 if parts.len() == 2 {
                     let speaker = parts[0].trim_start_matches('"').trim();
                     let dialogue = parts[1].trim_end_matches('"').trim();
@@ -2403,7 +2403,7 @@ impl EditorApp {
             }
 
             // 菜单选项（以字符串开头后冒号）-> | 选项
-            if trimmed.starts_with('"') && trimmed.contains(':') && !trimmed.contains('" "') {
+            if trimmed.starts_with('"') && trimmed.contains(':') && !trimmed.contains("\" \"") {
                 // 格式如: "选项文本":（后接 jump）
                 let parts: Vec<&str> = trimmed.splitn(2, ':').collect();
                 if parts.len() == 2 {
@@ -2497,7 +2497,7 @@ impl EditorApp {
             Ok(_) => {
                 self.status = format!("已导入 {} -> {}", source.display(), target.display());
                 self.editor_content = akrs_content;
-                self.current_file = Some(target.clone());
+                self.current_file = Some(target.to_path_buf());
                 self.file_name_input = target
                     .file_name()
                     .map(|n| n.to_string_lossy().into_owned())
@@ -2555,19 +2555,19 @@ impl eframe::App for EditorApp {
                 // Ctrl+1/2/3/4：快速插入语法
                 if i.key_pressed(egui::Key::Num1) {
                     self.editor_content.push_str("+ 角色\n");
-                    self.status = "已插入：+ 角色（立绘上场）";
+                    self.status = "已插入：+ 角色（立绘上场）".to_string();
                 }
                 if i.key_pressed(egui::Key::Num2) {
                     self.editor_content.push_str("- 角色\n");
-                    self.status = "已插入：- 角色（立绘下场）";
+                    self.status = "已插入：- 角色（立绘下场）".to_string();
                 }
                 if i.key_pressed(egui::Key::Num3) {
                     self.editor_content.push_str("# 章节\n");
-                    self.status = "已插入：# 章节（章节标题）";
+                    self.status = "已插入：# 章节（章节标题）".to_string();
                 }
                 if i.key_pressed(egui::Key::Num4) {
                     self.editor_content.push_str("@bg 背景\n");
-                    self.status = "已插入：@bg 背景（背景指令）";
+                    self.status = "已插入：@bg 背景（背景指令）".to_string();
                 }
                 // Ctrl+H：显示帮助窗口
                 if i.key_pressed(egui::Key::H) {
@@ -2634,11 +2634,12 @@ impl eframe::App for EditorApp {
                 ];
                 for (icon, syntax, tooltip) in &insert_buttons {
                     let btn = ui.add(
-                        egui::Button::new(egui::RichText::new(icon).monospace().strong())
+                        egui::Button::new(egui::RichText::new(*icon).monospace().strong())
                             .small()
                     );
-                    btn.on_hover_text(tooltip);
-                    if btn.clicked() {
+                    let clicked = btn.clicked();
+                    btn.on_hover_text(*tooltip);
+                    if clicked {
                         self.editor_content.push_str(&format!("{}\n", syntax));
                         self.status = format!("已插入：{}", syntax);
                     }
@@ -2909,8 +2910,9 @@ impl eframe::App for EditorApp {
         // ---- rpy 导入窗口 --------------------------------------------------
         if self.show_rpy_import {
             let mut close_window = false;
+            let mut open = true;
             egui::Window::new("导入 Ren'Py 剧本")
-                .open(&mut self.show_rpy_import)
+                .open(&mut open)
                 .resizable(true)
                 .collapsible(false)
                 .default_width(500.0)
@@ -2981,9 +2983,10 @@ impl eframe::App for EditorApp {
                     // 导入按钮
                     ui.horizontal(|ui| {
                         if ui.button("导入").clicked() {
-                            if let Some(ref source) = self.rpy_import_source {
+                            if let Some(source) = self.rpy_import_source.clone() {
                                 // 执行转换
-                                self.convert_rpy_to_akrs(source, &self.rpy_import_target.clone());
+                                let target = self.rpy_import_target.clone();
+                                self.convert_rpy_to_akrs(&source, &target);
                                 close_window = true;
                             } else {
                                 self.status = "请先选择 .rpy 文件".to_string();
@@ -2997,6 +3000,7 @@ impl eframe::App for EditorApp {
             if close_window {
                 self.show_rpy_import = false;
             }
+            self.show_rpy_import = self.show_rpy_import && open;
         }
 
         // ---- 文件选择对话框 ----------------------------------------------
@@ -3557,8 +3561,9 @@ impl eframe::App for EditorApp {
         // ---- 放大预览弹窗 ------------------------------------------------
         if self.show_enlarged_preview {
             let mut close = false;
+            let mut open = true;
             egui::Window::new("放大预览")
-                .open(&mut self.show_enlarged_preview)
+                .open(&mut open)
                 .collapsible(false)
                 .resizable(true)
                 .default_size(egui::Vec2::new(960.0, 540.0))
@@ -3583,7 +3588,7 @@ impl eframe::App for EditorApp {
                         close = true;
                     }
                 });
-            if close {
+            if close || !open {
                 self.show_enlarged_preview = false;
             }
         }
@@ -3638,11 +3643,12 @@ impl eframe::App for EditorApp {
                 });
 
             if do_replace {
-                if self.find_and_replace(&self.find_replace_target, &syntax) {
-                    self.status = format!("已将「{}」替换为生成的语法", self.find_replace_target);
+                let target = self.find_replace_target.clone();
+                if self.find_and_replace(&target, &syntax) {
+                    self.status = format!("已将「{}」替换为生成的语法", target);
                 } else {
                     self.editor_content.push_str(&format!("{}\n", syntax));
-                    self.status = format!("未找到「{}」，已追加到脚本末尾", self.find_replace_target);
+                    self.status = format!("未找到「{}」，已追加到脚本末尾", target);
                 }
                 close = true;
             }
