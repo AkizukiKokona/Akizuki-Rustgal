@@ -5738,7 +5738,9 @@ fn draw_hud_buttons(
             ButtonAction::AutoPlay => auto_play_active,
             _ => false,
         };
-        draw_small_button(x, start_y, btn_w, btn_h, label, buttons, *action, font, scale, alpha, is_active);
+        // 快读按钮在无快存时禁用（灰色、无操作）。
+        let is_disabled = matches!(action, ButtonAction::QuickLoad) && !engine.has_quicksave();
+        draw_small_button(x, start_y, btn_w, btn_h, label, buttons, *action, font, scale, alpha, is_active, is_disabled);
         x += btn_w + gap;
     }
 }
@@ -5752,6 +5754,8 @@ fn draw_hud_buttons(
 /// - 按下（鼠标按下瞬间）：按压反馈（缩小、颜色加深、下移 1px）
 ///
 /// `alpha` 为整体透明度（来自 HUD 显隐进度），各颜色通道按此缩放。
+/// `disabled` 为 true 时绘制为灰色禁用态：不响应悬停/按下、不注册点击区域
+/// （因此点击不会触发任何操作）。
 fn draw_small_button(
     x: f32,
     y: f32,
@@ -5764,7 +5768,30 @@ fn draw_small_button(
     scale: f32,
     alpha: f32,
     active: bool,
+    disabled: bool,
 ) {
+    // 禁用态：灰色绘制，不注册点击区域（点击自然无操作）。
+    if disabled {
+        let t = theme();
+        let bg = shade(t.secondary, -0.35);
+        let border = shade(t.secondary, -0.20);
+        let bg_color = Color::new(bg.r, bg.g, bg.b, 0.55 * alpha);
+        draw_rectangle(x, y, w, h, bg_color);
+        draw_rectangle_lines(x, y, w, h, 1.5 * scale, Color::new(border.r, border.g, border.b, 0.45 * alpha));
+        let font_size = 20.0 * scale;
+        let tw = measure_text_f(label, font, font_size as u16, 1.0).width;
+        let text_color = Color::new(t.text.r, t.text.g, t.text.b, 0.45 * alpha);
+        draw_text_f(
+            label,
+            x + (w - tw) / 2.0,
+            y + h / 2.0 + font_size / 3.0,
+            font_size,
+            text_color,
+            font,
+        );
+        return;
+    }
+
     let (mx, my) = mouse_position();
     let hover = mx >= x && mx <= x + w && my >= y && my <= y + h;
     let pressed = hover && is_mouse_button_down(MouseButton::Left);
