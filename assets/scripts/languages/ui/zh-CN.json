@@ -116,5 +116,32 @@
 
   "script_error.title": "剧本文件错误",
   "script_error.message": "剧本文件存在错误，无法开始游戏。\n请检查剧本文件后重新启动。",
-  "script_error.ok": "确定"
+  "script_error.ok": "确定",
+
+  "crash.title": "貌似遇到了一些问题",
+  "crash.module_label": "报错的模块：",
+  "crash.code_label": "错误代码：",
+  "crash.reason_label": "原因分析：",
+  "crash.warning": "如果遇到灾难性错误，点击继续运行也有可能退出游戏",
+  "crash.export_log": "导出日志",
+  "crash.continue": "尝试继续运行",
+  "crash.exit": "退出引擎",
+  "crash.dir_picker_title": "选择导出目录",
+  "crash.dir_up": "上级目录",
+  "crash.dir_confirm": "导出到此目录",
+  "crash.dir_cancel": "取消",
+  "crash.dir_empty": "（无子目录）",
+  "crash.export_success": "导出成功",
+  "crash.export_failed": "导出失败",
+
+  "error.module.script_compiler": "剧本编译器",
+  "error.module.runtime": "运行时",
+  "error.module.unknown": "未知",
+  "error.reason.script_compile": "剧本编译失败，存在词法、语法或类型检查错误，请检查剧本文件。",
+  "error.reason.script_runtime": "剧本运行时发生错误，VM 执行期间抛出异常。",
+  "error.reason.script_resource": "剧本引用的资源（背景/立绘/音乐/语音）缺失，请补齐资源文件。",
+  "error.reason.save_load": "存档读取失败，文件可能损坏或与当前版本不兼容。",
+  "error.reason.render": "渲染层出现异常，资源加载或绘制失败。",
+  "error.reason.settings": "设置文件解析失败，配置可能已损坏。",
+  "error.reason.fatal": "发生未知致命错误，建议导出日志并重启引擎。"
 }

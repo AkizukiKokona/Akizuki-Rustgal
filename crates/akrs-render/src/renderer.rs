@@ -7,6 +7,7 @@ use akrs_runtime::{
     TransitionPhase,
     format_play_time, format_timestamp,
     SaveMetadata, SaveSlot,
+    crash,
 };
 use macroquad::audio::{play_sound, set_sound_volume, stop_sound, PlaySoundParams, Sound};
 use macroquad::prelude::*;
@@ -507,6 +508,13 @@ enum UiMode {
     ConfirmDialog,
     /// 备注编辑弹窗（在存档页编辑某个槽位的玩家备注）。
     NoteEditDialog,
+    /// 蓝屏错误界面（仿 Windows BSOD）：剧本编译/运行时错误等不可忽略
+    /// 的错误发生时全屏弹出，显示报错模块/错误代码/原因分析/警告与
+    /// 三个操作按钮（导出日志 / 尝试继续运行 / 退出引擎）。
+    CrashScreen,
+    /// 日志导出目录选择器：从蓝屏界面点击"导出日志"后进入，让玩家
+    /// 选择导出目录。借鉴编辑器的应用内文件浏览器实现（无系统原生弹窗）。
+    DirPicker,
 }
 
 /// Actions deferred to the swap point of a UI transition.
@@ -785,6 +793,22 @@ enum ButtonAction {
     NoteConfirm,
     /// 取消备注编辑。
     NoteCancel,
+    // ── 蓝屏错误界面按钮 ───
+    /// 导出最近日志到玩家选择的目录。
+    CrashExportLog,
+    /// 尝试继续运行（降级到标题页或返回标题）。
+    CrashContinue,
+    /// 退出引擎。
+    CrashExit,
+    // ── 日志导出目录选择器按钮 ───
+    /// 进入上级目录。
+    DirUp,
+    /// 确认导出到当前目录。
+    DirConfirm,
+    /// 取消导出，返回蓝屏界面。
+    DirCancel,
+    /// 进入某个子目录（索引到 dir_picker_entries）。
+    DirEntry(usize),
 }
 
 /// 窗口配置 for macroquad。
@@ -1010,6 +1034,10 @@ pub async fn run(mut engine: Engine, project_config: &ProjectConfig) {
     } else {
         UiMode::Normal
     };
+    // 若启动时已带崩溃信息（如剧本编译失败），蓝屏界面优先于一切。
+    if engine.crash_info().is_some() {
+        ui_mode = UiMode::CrashScreen;
+    }
     let mut buttons: Vec<ButtonRect> = Vec::new();
     // 当前正在循环播放的 BGM 句柄（None 表示无 BGM 在播放）。
     // 切换 BGM 时先 stop 旧的，再 play 新的。
@@ -1090,6 +1118,19 @@ pub async fn run(mut engine: Engine, project_config: &ProjectConfig) {
     // 避免瞬间弹出带来的突兀感。弹窗关闭时直接归零（关闭后切回的页面
     // 若发生切换则由 ui_transition 负责，若回到原页则瞬间消失亦可接受）。
     let mut dialog_fade: f32 = 0.0;
+
+    // ── 蓝屏错误界面 / 日志导出目录选择器状态 ───
+    // 蓝屏界面与目录选择器的淡入进度（0.0 → 1.0，约 0.3 秒）。
+    let mut crash_fade: f32 = 0.0;
+    // 目录选择器：当前所在目录。
+    let mut dir_picker_current: PathBuf =
+        std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+    // 目录选择器：当前目录下的子目录条目（仅目录，文件不列出）。
+    let mut dir_picker_entries: Vec<String> = Vec::new();
+    // 目录选择器：滚动偏移（以"行"为单位，支持鼠标滚轮）。
+    let mut dir_picker_scroll: f32 = 0.0;
+    // 目录选择器：状态提示（导出成功/失败信息），空表示无提示。
+    let mut dir_picker_status: String = String::new();
 
     // 开屏页（标题页）资源：优先使用 project.json 中配置的 title_music /
     // title_background，留空则回退到默认的 title_bgm.mp3 / title.png。
@@ -1247,9 +1288,32 @@ pub async fn run(mut engine: Engine, project_config: &ProjectConfig) {
                 }
                 EngineEvent::Warning { message } => {
                     eprintln!("[Engine Warning] {}", message);
+                    crash::push_log(format!("[Engine Warning] {}", message));
                 }
                 EngineEvent::Error { message } => {
                     eprintln!("[Engine Error] {}", message);
+                    crash::push_log(format!("[Engine Error] {}", message));
+                    // 游戏进行中（非标题/菜单）的运行时错误触发蓝屏界面。
+                    // 标题/菜单阶段（如读档失败）的 Error 不触发蓝屏——
+                    // 那些是可恢复的局部错误，已在各自 UI 中处理。
+                    let in_game = matches!(
+                        engine.phase(),
+                        EnginePhase::Running | EnginePhase::Transitioning
+                            | EnginePhase::Waiting | EnginePhase::ChoicePending
+                    );
+                    if in_game
+                        && ui_mode != UiMode::CrashScreen
+                        && ui_mode != UiMode::DirPicker
+                        && engine.crash_info().is_none()
+                    {
+                        engine.set_crash_info(Some(crash::CrashInfo {
+                            module_key: "error.module.runtime",
+                            code: crash::error_code::SCRIPT_RUNTIME,
+                            can_continue: true,
+                        }));
+                        ui_mode = UiMode::CrashScreen;
+                        crash_fade = 0.0;
+                    }
                 }
                 _ => {}
             }
@@ -1312,6 +1376,12 @@ pub async fn run(mut engine: Engine, project_config: &ProjectConfig) {
             dialog_fade = (dialog_fade + dt / 0.2).min(1.0);
         } else {
             dialog_fade = 0.0;
+        }
+        // 蓝屏界面 / 目录选择器淡入进度更新：0.3 秒内升至 1，否则归零。
+        if ui_mode == UiMode::CrashScreen || ui_mode == UiMode::DirPicker {
+            crash_fade = (crash_fade + dt / 0.3).min(1.0);
+        } else {
+            crash_fade = 0.0;
         }
 
         // 故事结束时自动淡入淡出返回标题（无需任何按钮或提示）。
@@ -1438,7 +1508,17 @@ pub async fn run(mut engine: Engine, project_config: &ProjectConfig) {
         // draw call and the interaction handler below.
         let settings_layout = compute_settings_layout(sw, sh, scale);
 
-        if ui_mode == UiMode::AutoSavePrompt {
+        if ui_mode == UiMode::CrashScreen {
+            // 蓝屏错误界面：全屏蓝底白字，优先级最高，覆盖一切。
+            draw_crash_screen(&engine, &mut buttons, sw, sh, &font, scale, crash_fade);
+        } else if ui_mode == UiMode::DirPicker {
+            // 日志导出目录选择器：蓝底面板 + 子目录列表 + 操作按钮。
+            draw_dir_picker(
+                &engine, &mut buttons, sw, sh, &font, scale,
+                &dir_picker_current, &dir_picker_entries, dir_picker_scroll,
+                &dir_picker_status, crash_fade,
+            );
+        } else if ui_mode == UiMode::AutoSavePrompt {
             // 异常中断恢复提示：以 title.png 为背景 + 10% 黑布遮罩 + 居中对话框
             draw_title_background(sw, sh, &mut assets, &title_bg_name).await;
             draw_rectangle(0.0, 0.0, sw, sh, Color::new(0.0, 0.0, 0.0, 0.10));
@@ -1542,7 +1622,152 @@ pub async fn run(mut engine: Engine, project_config: &ProjectConfig) {
         // drag updates, not just click events), so it runs every frame; all
         // other modes use the generic button/click handler on press only.
         if !ui_transition.active {
-            if ui_mode == UiMode::SettingsMenu {
+            if ui_mode == UiMode::CrashScreen {
+                // 蓝屏界面按钮处理：直接遍历 buttons 匹配 Crash* 动作，
+                // 不走 handle_click / ui_transition 机制（蓝屏不属于页面切换）。
+                if is_mouse_button_pressed(MouseButton::Left) {
+                    let (mx, my) = mouse_position();
+                    let mut hit: Option<ButtonAction> = None;
+                    for btn in buttons.iter() {
+                        if mx >= btn.x && mx <= btn.x + btn.w
+                            && my >= btn.y && my <= btn.y + btn.h
+                        {
+                            match btn.action {
+                                ButtonAction::CrashExportLog
+                                | ButtonAction::CrashContinue
+                                | ButtonAction::CrashExit => {
+                                    hit = Some(btn.action);
+                                    break;
+                                }
+                                _ => {}
+                            }
+                        }
+                    }
+                    if let Some(action) = hit {
+                        match action {
+                            ButtonAction::CrashExportLog => {
+                                // 进入目录选择器，初始化为当前工作目录。
+                                dir_picker_current =
+                                    std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+                                dir_picker_entries = read_subdirs(&dir_picker_current);
+                                dir_picker_scroll = 0.0;
+                                dir_picker_status.clear();
+                                ui_mode = UiMode::DirPicker;
+                                crash_fade = 0.0;
+                            }
+                            ButtonAction::CrashContinue => {
+                                let info = engine.take_crash_info();
+                                let can_continue = info.map(|i| i.can_continue).unwrap_or(false);
+                                if can_continue {
+                                    // 剧本编译失败（script_error）→ 引擎已是降级标题页，
+                                    // 直接进入标题；运行时错误 → 重建引擎回到标题。
+                                    if engine.script_error().is_some() {
+                                        ui_mode = UiMode::Normal;
+                                    } else {
+                                        // 重建引擎回到标题（沿用 BackToTitle 的重建逻辑）。
+                                        let source = engine.source().to_string();
+                                        let saved_settings = engine.settings().clone();
+                                        let saved_translations_dir =
+                                            engine.translations_dir().map(|p| p.to_path_buf());
+                                        if let Ok(mut new_engine) = Engine::new(&source) {
+                                            *new_engine.settings_mut() = saved_settings;
+                                            if let Some(dir) = saved_translations_dir {
+                                                new_engine.restore_translations(dir);
+                                            }
+                                            engine = new_engine;
+                                            title_music_played = false;
+                                        }
+                                        hud_hidden = false;
+                                        settings_snapshot = None;
+                                        ui_mode = UiMode::Normal;
+                                    }
+                                } else {
+                                    // 不可继续：仅清除崩溃信息，仍留在蓝屏界面
+                                    // （理论上不会走到，按钮在不可继续时禁用）。
+                                }
+                            }
+                            ButtonAction::CrashExit => {
+                                let _ = engine.delete_autosave();
+                                let _ = engine.save_settings();
+                                engine.save_read_history();
+                                std::process::exit(0);
+                            }
+                            _ => {}
+                        }
+                    }
+                }
+            } else if ui_mode == UiMode::DirPicker {
+                // 目录选择器：处理滚轮、目录进入、上级、确认、取消。
+                let (_, wheel_y) = mouse_wheel();
+                if wheel_y != 0.0 {
+                    dir_picker_scroll = (dir_picker_scroll - wheel_y * 0.5).max(0.0);
+                }
+                if is_mouse_button_pressed(MouseButton::Left) {
+                    let (mx, my) = mouse_position();
+                    let mut hit: Option<ButtonAction> = None;
+                    for btn in buttons.iter() {
+                        if mx >= btn.x && mx <= btn.x + btn.w
+                            && my >= btn.y && my <= btn.y + btn.h
+                        {
+                            match btn.action {
+                                ButtonAction::DirUp
+                                | ButtonAction::DirConfirm
+                                | ButtonAction::DirCancel
+                                | ButtonAction::DirEntry(_) => {
+                                    hit = Some(btn.action);
+                                    break;
+                                }
+                                _ => {}
+                            }
+                        }
+                    }
+                    if let Some(action) = hit {
+                        match action {
+                            ButtonAction::DirUp => {
+                                if let Some(parent) = dir_picker_current.parent() {
+                                    dir_picker_current = parent.to_path_buf();
+                                    dir_picker_entries = read_subdirs(&dir_picker_current);
+                                    dir_picker_scroll = 0.0;
+                                    dir_picker_status.clear();
+                                }
+                            }
+                            ButtonAction::DirEntry(idx) => {
+                                if let Some(name) = dir_picker_entries.get(idx).cloned() {
+                                    let next = dir_picker_current.join(&name);
+                                    dir_picker_current = next;
+                                    dir_picker_entries = read_subdirs(&dir_picker_current);
+                                    dir_picker_scroll = 0.0;
+                                    dir_picker_status.clear();
+                                }
+                            }
+                            ButtonAction::DirConfirm => {
+                                match crash::export_logs(&dir_picker_current) {
+                                    Ok(path) => {
+                                        dir_picker_status = format!(
+                                            "{}: {}",
+                                            engine.t_ui("crash.export_success"),
+                                            path.display()
+                                        );
+                                    }
+                                    Err(e) => {
+                                        dir_picker_status = format!(
+                                            "{}: {}",
+                                            engine.t_ui("crash.export_failed"),
+                                            e
+                                        );
+                                    }
+                                }
+                            }
+                            ButtonAction::DirCancel => {
+                                // 返回蓝屏界面（保留崩溃信息，玩家可再次操作）。
+                                ui_mode = UiMode::CrashScreen;
+                                crash_fade = 0.0;
+                            }
+                            _ => {}
+                        }
+                    }
+                }
+            } else if ui_mode == UiMode::SettingsMenu {
                 if let Some((target, pending)) = handle_settings_interaction(
                     &mut engine, &settings_layout, &mut dragging_slider, &mut dropdown_open,
                     &mut skip_dropdown_open, &mut ui_lang_dropdown_open, &mut lang_dropdown_open, &mut settings_active_tab, scale,
@@ -2839,6 +3064,252 @@ fn draw_confirm_dialog(engine: &Engine, buttons: &mut Vec<ButtonRect>, sw: f32, 
 }
 
 // ─── Menu drawing ───
+
+/// 读取目录下的子目录名（仅目录，按名称排序）。供日志导出目录选择器使用。
+/// 借鉴编辑器 `read_picker_entries` 的实现思路（无系统原生文件对话框）。
+fn read_subdirs(dir: &std::path::Path) -> Vec<String> {
+    let mut v = Vec::new();
+    if let Ok(rd) = std::fs::read_dir(dir) {
+        for e in rd.flatten() {
+            let p = e.path();
+            if p.is_dir() {
+                if let Some(name) = p.file_name().and_then(|n| n.to_str()) {
+                    v.push(name.to_string());
+                }
+            }
+        }
+    }
+    v.sort_by(|a, b| a.to_lowercase().cmp(&b.to_lowercase()));
+    v
+}
+
+/// 仿 Windows 蓝屏的错误界面。
+///
+/// 全屏蓝底白字，从上到下：表情符号 `:(`、粗体标题、报错模块、错误代码
+/// （16 进制）、原因分析、固定警告行；右下角三个按钮：导出日志 / 尝试继续
+/// 运行 / 退出引擎。`can_continue` 为 false 时"尝试继续运行"按钮置灰且不可点击。
+fn draw_crash_screen(
+    engine: &Engine,
+    buttons: &mut Vec<ButtonRect>,
+    sw: f32,
+    sh: f32,
+    font: &Option<Font>,
+    scale: f32,
+    fade: f32,
+) {
+    // Windows BSOD 蓝（#0078D7）。
+    let bsod_blue = Color::new(0.0, 120.0 / 255.0, 215.0 / 255.0, 1.0);
+    draw_rectangle(0.0, 0.0, sw, sh, bsod_blue);
+
+    // 提取崩溃信息（module_key 为 &'static str，不持有 engine 借用）。
+    let (module_key, code, can_continue) = match engine.crash_info() {
+        Some(i) => (i.module_key, i.code, i.can_continue),
+        None => ("error.module.unknown", crash::error_code::FATAL, false),
+    };
+    let module = engine.t_ui(module_key);
+    let code_str = crash::format_code(code);
+    let reason = engine.t_ui(crash::reason_key(code));
+
+    let margin = 90.0 * scale;
+    let mut y = 130.0 * scale;
+
+    // 表情符号 :( （致敬 Windows 蓝屏）。
+    let emo_size = 72.0 * scale;
+    draw_text_f(":(", margin, y, emo_size, WHITE, font);
+    y += 90.0 * scale;
+
+    // 粗体标题：通过 1px 偏移重绘两次模拟加粗（macroquad 无粗体字重参数）。
+    let title = engine.t_ui("crash.title");
+    let title_size = 48.0 * scale;
+    let draw_bold = |text: &str, x: f32, ly: f32, size: f32| {
+        draw_text_f(text, x + 1.0, ly, size, WHITE, font);
+        draw_text_f(text, x, ly + 1.0, size, WHITE, font);
+        draw_text_f(text, x, ly, size, WHITE, font);
+    };
+    draw_bold(title, margin, y, title_size);
+    y += 90.0 * scale;
+
+    // 报错模块 / 错误代码 / 原因分析。
+    let line_size = 28.0 * scale;
+    let line_gap = 46.0 * scale;
+    let label_module = engine.t_ui("crash.module_label");
+    let label_code = engine.t_ui("crash.code_label");
+    let label_reason = engine.t_ui("crash.reason_label");
+
+    draw_text_f(
+        &format!("{}{}", label_module, module),
+        margin, y, line_size, WHITE, font,
+    );
+    y += line_gap;
+    draw_text_f(
+        &format!("{}{}", label_code, code_str),
+        margin, y, line_size, WHITE, font,
+    );
+    y += line_gap;
+    // 原因分析可能较长，按宽度简单截断显示，避免溢出屏幕。
+    let reason_line = format!("{}{}", label_reason, reason);
+    let max_w = sw - 2.0 * margin;
+    let reason_display = truncate_text_to_width(&reason_line, font, line_size as u16, max_w);
+    draw_text_f(&reason_display, margin, y, line_size, WHITE, font);
+
+    // 固定警告行（黄色，突出）。
+    let warning = engine.t_ui("crash.warning");
+    let warn_size = 26.0 * scale;
+    let warn_y = sh - 150.0 * scale;
+    let warn_display = truncate_text_to_width(warning, font, warn_size as u16, max_w);
+    draw_text_f(&warn_display, margin, warn_y, warn_size, Color::new(1.0, 0.85, 0.2, 1.0), font);
+
+    // 右下角三个按钮：导出日志 / 尝试继续运行 / 退出引擎。
+    let bw = 210.0 * scale;
+    let bh = 56.0 * scale;
+    let gap = 20.0 * scale;
+    let right_margin = 50.0 * scale;
+    let bottom_margin = 60.0 * scale;
+    let total_w = 3.0 * bw + 2.0 * gap;
+    let mut bx = sw - right_margin - total_w;
+    let by = sh - bottom_margin - bh;
+
+    draw_button(bx, by, bw, bh, engine.t_ui("crash.export_log"), buttons, ButtonAction::CrashExportLog, font, scale);
+    bx += bw + gap;
+    if can_continue {
+        draw_button(bx, by, bw, bh, engine.t_ui("crash.continue"), buttons, ButtonAction::CrashContinue, font, scale);
+    } else {
+        // 置灰且不注册（不可点击）。
+        draw_rectangle(bx, by, bw, bh, Color::new(0.13, 0.4, 0.7, 1.0));
+        draw_rectangle_lines(bx, by, bw, bh, 2.0 * scale, Color::new(0.5, 0.7, 0.9, 0.7));
+        let fs = (bh * 0.4).min(28.0 * scale);
+        let lbl = engine.t_ui("crash.continue");
+        let tw = measure_text_f(lbl, font, fs as u16, 1.0).width;
+        draw_text_f(lbl, bx + (bw - tw) / 2.0, by + bh / 2.0 + fs / 3.0, fs, Color::new(0.75, 0.85, 0.95, 0.8), font);
+    }
+    bx += bw + gap;
+    draw_button(bx, by, bw, bh, engine.t_ui("crash.exit"), buttons, ButtonAction::CrashExit, font, scale);
+
+    // 淡入遮罩：以蓝屏底色覆盖全屏，alpha = 1 - fade。
+    if fade < 1.0 {
+        draw_rectangle(0.0, 0.0, sw, sh, Color::new(bsod_blue.r, bsod_blue.g, bsod_blue.b, 1.0 - fade));
+    }
+}
+
+/// 按目标宽度截断文本（保留开头部分，末尾加省略号）。
+fn truncate_text_to_width(text: &str, font: &Option<Font>, font_size: u16, max_w: f32) -> String {
+    if measure_text_f(text, font, font_size, 1.0).width <= max_w {
+        return text.to_string();
+    }
+    let ellipsis = "…";
+    let ell_w = measure_text_f(ellipsis, font, font_size, 1.0).width;
+    let mut s = String::new();
+    for c in text.chars() {
+        let candidate = format!("{}{}", s, c);
+        if measure_text_f(&candidate, font, font_size, 1.0).width + ell_w > max_w {
+            s.push_str(ellipsis);
+            return s;
+        }
+        s = candidate;
+    }
+    s
+}
+
+/// 日志导出目录选择器：蓝底面板，列出当前目录的子目录，支持上级 / 进入 /
+/// 滚轮滚动 / 确认导出 / 取消。借鉴编辑器应用内文件浏览器实现。
+fn draw_dir_picker(
+    engine: &Engine,
+    buttons: &mut Vec<ButtonRect>,
+    sw: f32,
+    sh: f32,
+    font: &Option<Font>,
+    scale: f32,
+    current_dir: &std::path::Path,
+    entries: &[String],
+    scroll: f32,
+    status: &str,
+    fade: f32,
+) {
+    let bsod_blue = Color::new(0.0, 120.0 / 255.0, 215.0 / 255.0, 1.0);
+    draw_rectangle(0.0, 0.0, sw, sh, bsod_blue);
+
+    let margin = 80.0 * scale;
+    let mut y = 70.0 * scale;
+
+    // 标题。
+    let title = engine.t_ui("crash.dir_picker_title");
+    let title_size = 40.0 * scale;
+    draw_text_f(title, margin, y, title_size, WHITE, font);
+    y += 60.0 * scale;
+
+    // 当前路径。
+    let path_str = current_dir.display().to_string();
+    let path_display = truncate_text_to_width(&path_str, font, 22, sw - 2.0 * margin);
+    draw_text_f(&path_display, margin, y, 22.0 * scale, Color::new(0.85, 0.95, 1.0, 1.0), font);
+    y += 40.0 * scale;
+
+    // 上级目录按钮。
+    let up_w = 180.0 * scale;
+    let up_h = 44.0 * scale;
+    draw_button(margin, y, up_w, up_h, engine.t_ui("crash.dir_up"), buttons, ButtonAction::DirUp, font, scale);
+    y += up_h + 20.0 * scale;
+
+    // 列表区域。
+    let list_x = margin;
+    let list_w = sw - 2.0 * margin;
+    let list_bottom = sh - 180.0 * scale;
+    let list_h = (list_bottom - y).max(100.0 * scale);
+    // 列表背景。
+    draw_rectangle(list_x, y, list_w, list_h, Color::new(0.0, 0.45, 0.8, 0.5));
+    draw_rectangle_lines(list_x, y, list_w, list_h, 2.0 * scale, Color::new(1.0, 1.0, 1.0, 0.6));
+
+    let row_h = 42.0 * scale;
+    let visible_count = ((list_h / row_h) as usize).max(1);
+    let total = entries.len();
+    let start_idx = (scroll.floor() as usize).min(total.saturating_sub(visible_count));
+
+    // 绘制可见条目（裁剪到列表区域）。
+    // macroquad 无内置裁剪，这里靠只绘制可见行 + 坐标落在列表内来实现。
+    for i in 0..visible_count {
+        let idx = start_idx + i;
+        if idx >= total {
+            break;
+        }
+        let row_y = y + i as f32 * row_h;
+        let name = &entries[idx];
+        // 条目按钮（占列表行宽，留小内边距）。
+        let entry_x = list_x + 6.0 * scale;
+        let entry_w = list_w - 12.0 * scale;
+        draw_button(entry_x, row_y + 3.0, entry_w, row_h - 6.0, name, buttons, ButtonAction::DirEntry(idx), font, scale);
+    }
+
+    // 空目录提示。
+    if total == 0 {
+        let hint = engine.t_ui("crash.dir_empty");
+        let hw = measure_text_f(hint, font, 22, 1.0).width;
+        draw_text_f(hint, list_x + (list_w - hw) / 2.0, y + list_h / 2.0, 22.0 * scale, Color::new(0.9, 0.9, 0.9, 0.9), font);
+    }
+
+    // 状态提示（导出成功/失败）。
+    if !status.is_empty() {
+        let status_y = sh - 130.0 * scale;
+        let status_display = truncate_text_to_width(status, font, 22, sw - 2.0 * margin);
+        draw_text_f(&status_display, margin, status_y, 22.0 * scale, Color::new(1.0, 0.92, 0.4, 1.0), font);
+    }
+
+    // 底部按钮：确认导出到此目录 / 取消。
+    let bw = 240.0 * scale;
+    let bh = 52.0 * scale;
+    let gap = 24.0 * scale;
+    let right_margin = 60.0 * scale;
+    let bottom_margin = 50.0 * scale;
+    let total_bw = 2.0 * bw + gap;
+    let mut bx = sw - right_margin - total_bw;
+    let by = sh - bottom_margin - bh;
+    draw_button(bx, by, bw, bh, engine.t_ui("crash.dir_confirm"), buttons, ButtonAction::DirConfirm, font, scale);
+    bx += bw + gap;
+    draw_button(bx, by, bw, bh, engine.t_ui("crash.dir_cancel"), buttons, ButtonAction::DirCancel, font, scale);
+
+    // 淡入遮罩。
+    if fade < 1.0 {
+        draw_rectangle(0.0, 0.0, sw, sh, Color::new(bsod_blue.r, bsod_blue.g, bsod_blue.b, 1.0 - fade));
+    }
+}
 
 /// Draw the full-screen panel background + title for the save/load menus.
 fn draw_panel(sw: f32, sh: f32, title: &str, font: &Option<Font>, scale: f32) {
@@ -5141,6 +5612,10 @@ fn handle_button_action(action: ButtonAction) -> Option<(UiMode, PendingUiAction
         ButtonAction::ConfirmNo => Some((UiMode::Normal, PendingUiAction::None)),  // 返回上一个模式
         // 备注编辑相关动作由主循环直接处理，不触发 UI transition。
         ButtonAction::EditNote(_) | ButtonAction::NoteConfirm | ButtonAction::NoteCancel => None,
+        // 蓝屏界面 / 目录选择器动作由主循环直接处理，不触发 UI transition。
+        ButtonAction::CrashExportLog | ButtonAction::CrashContinue | ButtonAction::CrashExit
+        | ButtonAction::DirUp | ButtonAction::DirConfirm | ButtonAction::DirCancel
+        | ButtonAction::DirEntry(_) => None,
     }
 }
 

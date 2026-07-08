@@ -43,6 +43,7 @@
 //! }
 //! ```
 
+pub mod crash;
 pub mod engine;
 pub mod game_state;
 pub mod save_load;
@@ -54,6 +55,7 @@ pub mod transition;
 pub mod hot_reload;
 
 // Re-export key types
+pub use crash::{CrashInfo, error_code, push_log, recent_logs, export_logs, reason_key, format_code};
 pub use engine::{Engine, EngineEvent, EnginePhase, ChapterNotify};
 pub use game_state::{
     SceneState, BackgroundState, CharacterState, DialogueState,

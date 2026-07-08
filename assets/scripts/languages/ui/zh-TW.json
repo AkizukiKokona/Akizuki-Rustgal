@@ -116,5 +116,32 @@
 
   "script_error.title": "劇本檔案錯誤",
   "script_error.message": "劇本檔案存在錯誤，無法開始遊戲。\n請檢查劇本檔案後重新啟動。",
-  "script_error.ok": "確定"
+  "script_error.ok": "確定",
+
+  "crash.title": "貌似遇到了一些問題",
+  "crash.module_label": "報錯的模組：",
+  "crash.code_label": "錯誤代碼：",
+  "crash.reason_label": "原因分析：",
+  "crash.warning": "如果遇到災難性錯誤，點擊繼續執行也有可能離開遊戲",
+  "crash.export_log": "匯出日誌",
+  "crash.continue": "嘗試繼續執行",
+  "crash.exit": "離開引擎",
+  "crash.dir_picker_title": "選擇匯出目錄",
+  "crash.dir_up": "上層目錄",
+  "crash.dir_confirm": "匯出至此目錄",
+  "crash.dir_cancel": "取消",
+  "crash.dir_empty": "（無子目錄）",
+  "crash.export_success": "匯出成功",
+  "crash.export_failed": "匯出失敗",
+
+  "error.module.script_compiler": "劇本編譯器",
+  "error.module.runtime": "執行階段",
+  "error.module.unknown": "未知",
+  "error.reason.script_compile": "劇本編譯失敗，存在詞法、語法或型別檢查錯誤，請檢查劇本檔案。",
+  "error.reason.script_runtime": "劇本執行階段發生錯誤，VM 執行期間擲出例外。",
+  "error.reason.script_resource": "劇本引用的資源（背景/立繪/音樂/語音）缺失，請補齊資源檔案。",
+  "error.reason.save_load": "存檔讀取失敗，檔案可能損毀或與目前版本不相容。",
+  "error.reason.render": "渲染層出現異常，資源載入或繪製失敗。",
+  "error.reason.settings": "設定檔案解析失敗，設定可能已損毀。",
+  "error.reason.fatal": "發生未知致命錯誤，建議匯出日誌並重新啟動引擎。"
 }

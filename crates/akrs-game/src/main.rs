@@ -12,7 +12,7 @@
 
 use akrs_core::ProjectConfig;
 use akrs_render::window_conf;
-use akrs_runtime::Engine;
+use akrs_runtime::{Engine, crash::{self, CrashInfo, error_code}};
 use std::path::PathBuf;
 
 /// Default script path if no argument is given.
@@ -91,10 +91,14 @@ async fn main() {
         Ok(engine) => engine,
         Err(errors) => {
             eprintln!("[akrs-game] Script compilation failed:");
+            crash::push_log("[akrs-game] 剧本编译失败：");
             for err in &errors {
-                eprintln!("  - {:?}", err);
+                let line = format!("  - {:?}", err);
+                eprintln!("{}", line);
+                crash::push_log(line);
             }
-            eprintln!("[akrs-game] 进入仅标题页降级模式。");
+            eprintln!("[akrs-game] 进入仅标题页降级模式（将先弹出蓝屏错误界面）。");
+            crash::push_log("[akrs-game] 进入仅标题页降级模式（将先弹出蓝屏错误界面）。");
             // 收集错误摘要供标题页警告对话框显示。
             let error_summary = errors
                 .iter()
@@ -107,7 +111,14 @@ async fn main() {
                 })
                 .collect::<Vec<_>>()
                 .join("\n");
-            Engine::new_title_only(error_summary)
+            let mut eng = Engine::new_title_only(error_summary);
+            // 设置蓝屏崩溃信息：剧本编译错误，可继续（继续后进入降级标题页）。
+            eng.set_crash_info(Some(CrashInfo {
+                module_key: "error.module.script_compiler",
+                code: error_code::SCRIPT_COMPILE,
+                can_continue: true,
+            }));
+            eng
         }
     };
 

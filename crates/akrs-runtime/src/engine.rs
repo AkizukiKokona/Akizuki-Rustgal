@@ -227,6 +227,14 @@ pub struct Engine {
     ///
     /// None 表示剧本正常，引擎处于完整可用状态。
     script_error: Option<String>,
+    /// 蓝屏崩溃信息。
+    ///
+    /// 当遇到不可忽略的错误（剧本编译失败、剧本运行时错误等）时，渲染层
+    /// 会弹出仿 Windows 蓝屏的错误界面，此字段保存错误模块/代码/是否可继续。
+    /// 渲染层在启动时与运行时检查此字段，Some 时进入蓝屏界面。
+    ///
+    /// None 表示无未处理的崩溃信息。
+    crash_info: Option<crate::crash::CrashInfo>,
 }
 
 impl Engine {
@@ -260,6 +268,7 @@ impl Engine {
             translations_dir: None,
             pending_chapter_notify: None,
             script_error: None,
+            crash_info: None,
         })
     }
 
@@ -304,6 +313,7 @@ impl Engine {
             translations_dir: None,
             pending_chapter_notify: None,
             script_error: Some(error_msg),
+            crash_info: None,
         }
     }
 
@@ -313,6 +323,25 @@ impl Engine {
     /// 返回 `None` 表示剧本正常。
     pub fn script_error(&self) -> Option<&str> {
         self.script_error.as_deref()
+    }
+
+    /// 查询蓝屏崩溃信息。
+    ///
+    /// 返回 `Some(&CrashInfo)` 表示渲染层应弹出蓝屏错误界面；
+    /// 返回 `None` 表示无未处理的崩溃信息。
+    pub fn crash_info(&self) -> Option<&crate::crash::CrashInfo> {
+        self.crash_info.as_ref()
+    }
+
+    /// 设置蓝屏崩溃信息（`Some` 触发蓝屏界面，`None` 清除）。
+    pub fn set_crash_info(&mut self, info: Option<crate::crash::CrashInfo>) {
+        self.crash_info = info;
+    }
+
+    /// 取走（移除）蓝屏崩溃信息，返回之前的值。
+    /// 渲染层在玩家点击"尝试继续运行"或"退出引擎"后调用以清除。
+    pub fn take_crash_info(&mut self) -> Option<crate::crash::CrashInfo> {
+        self.crash_info.take()
     }
 
     /// Create an engine and immediately start the game (skip title screen).

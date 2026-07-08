@@ -6,7 +6,7 @@
 
 [![License](https://img.shields.io/badge/license-MIT-blue.svg)](#许可证)
 [![Rust](https://img.shields.io/badge/rust-1.96+-orange.svg)](https://www.rust-lang.org)
-[![Version](https://img.shields.io/badge/version-1.0.58-success.svg)](#)
+[![Version](https://img.shields.io/badge/version-1.0.59-success.svg)](#)
 [![Platform](https://img.shields.io/badge/platform-Windows%20%7C%20Linux%20%7C%20macOS-lightgrey.svg)](#下载与安装)
 [![PRs Welcome](https://img.shields.io/badge/PRs-welcome-brightgreen.svg)](#贡献)
 
@@ -238,6 +238,7 @@ akrs-game      游戏启动器：读取剧本并启动图形界面
 | [立绘摆放语法](docs/立绘摆放语法.md) | 立绘位置、大小、过渡效果的详细说明与编辑器预览指南 |
 | [翻译功能使用说明](docs/翻译功能使用说明.md)（[EN](docs/translation-guide.en.md) / [JA](docs/translation-guide.ja.md) / [ZH-TW](docs/translation-guide.zh-TW.md)） | 多语言翻译系统完整指南：翻译文件格式、CLI 骨架生成、编辑器对照翻译模式、运行时语言切换 |
 | [快捷键说明](docs/快捷键说明.md) | 游戏与编辑器的全部键盘 / 鼠标快捷键对照表，含三平台差异说明 |
+| [错误代码说明](docs/错误代码说明.md) | 仿 Windows 蓝屏错误界面的 16 进制错误代码对照表、蓝屏按钮操作与日志导出格式说明 |
 | [DSL 规范（交互式 HTML）](docs/dsl-specification.html) | 带语法高亮和侧边导航的网页版语法文档 |
 
 ## 编辑器功能

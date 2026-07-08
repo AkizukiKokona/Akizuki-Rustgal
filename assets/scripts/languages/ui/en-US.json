@@ -116,5 +116,32 @@
 
   "script_error.title": "Script Error",
   "script_error.message": "The script file contains errors and the game cannot be started.\nPlease check the script file and restart.",
-  "script_error.ok": "OK"
+  "script_error.ok": "OK",
+
+  "crash.title": "Looks like a problem occurred",
+  "crash.module_label": "Faulting module: ",
+  "crash.code_label": "Error code: ",
+  "crash.reason_label": "Cause analysis: ",
+  "crash.warning": "In the event of a catastrophic error, clicking Continue may still exit the game.",
+  "crash.export_log": "Export Log",
+  "crash.continue": "Try to Continue",
+  "crash.exit": "Exit Engine",
+  "crash.dir_picker_title": "Select Export Directory",
+  "crash.dir_up": "Parent Directory",
+  "crash.dir_confirm": "Export Here",
+  "crash.dir_cancel": "Cancel",
+  "crash.dir_empty": "(No subdirectories)",
+  "crash.export_success": "Export succeeded",
+  "crash.export_failed": "Export failed",
+
+  "error.module.script_compiler": "Script Compiler",
+  "error.module.runtime": "Runtime",
+  "error.module.unknown": "Unknown",
+  "error.reason.script_compile": "Script compilation failed due to lexical, syntax, or type-check errors. Please check the script file.",
+  "error.reason.script_runtime": "A runtime error occurred while executing the script (the VM threw an exception).",
+  "error.reason.script_resource": "A resource referenced by the script (background/character/music/voice) is missing. Please provide the missing files.",
+  "error.reason.save_load": "Failed to load the save file; it may be corrupted or incompatible with the current version.",
+  "error.reason.render": "The renderer encountered an anomaly (resource loading or drawing failed).",
+  "error.reason.settings": "Failed to parse the settings file; the configuration may be corrupted.",
+  "error.reason.fatal": "An unknown fatal error occurred. Please export the log and restart the engine."
 }
