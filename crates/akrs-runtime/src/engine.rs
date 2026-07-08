@@ -59,6 +59,8 @@ pub enum EngineEvent {
     CharacterEntered { name: String },
     /// A character exited the stage.
     CharacterExited { name: String },
+    /// 文本框被脚本隐藏（`- hide`）。渲染层据此隐藏对话框与 HUD 按钮。
+    TextboxHidden,
     /// Music changed.
     MusicChanged { name: String },
     /// A sound effect was played.
@@ -835,6 +837,8 @@ impl Engine {
                 self.scene.transition = None;
                 // 读档清空交叉淡入的旧背景（快照不含该字段，避免残留淡出层）。
                 self.scene.prev_background = None;
+                // 读档清空脚本驱动的文本框隐藏（瞬时 UI 状态，不应跨存档残留）。
+                self.scene.hide_textbox = false;
                 // 恢复存档时保存的场景快照（背景/立绘/音乐），
                 // 避免读档/崩溃恢复后背景黑屏、音乐中断。背景每帧按名字
                 // 查纹理，恢复 state 后渲染层自动正确绘制；音乐是事件
@@ -970,6 +974,8 @@ impl Engine {
                                 char_state.pose = action.pose.clone();
                             }
                         }
+                        // `- hide` 是瞬时 UI 状态，不进入存档快照，重建时忽略。
+                        DirectionKind::HideTextbox => {}
                     }
                 }
                 // 重建模式下 Dialogue/Narration/Choice/Wait/Flow/Visit/Return/StoryEnd
@@ -1064,6 +1070,8 @@ impl Engine {
                 self.scene.transition = None;
                 // 读档清空交叉淡入的旧背景（快照不含该字段，避免残留淡出层）。
                 self.scene.prev_background = None;
+                // 读档清空脚本驱动的文本框隐藏（瞬时 UI 状态，不应跨存档残留）。
+                self.scene.hide_textbox = false;
                 // 恢复存档时保存的场景快照（背景/立绘/音乐），
                 // 避免读档/崩溃恢复后背景黑屏、音乐中断。背景每帧按名字
                 // 查纹理，恢复 state 后渲染层自动正确绘制；音乐是事件
@@ -1151,6 +1159,8 @@ impl Engine {
                 self.scene.transition = None;
                 // 读档清空交叉淡入的旧背景（快照不含该字段，避免残留淡出层）。
                 self.scene.prev_background = None;
+                // 读档清空脚本驱动的文本框隐藏（瞬时 UI 状态，不应跨存档残留）。
+                self.scene.hide_textbox = false;
                 // 恢复存档时保存的场景快照（背景/立绘/音乐），
                 // 避免读档/崩溃恢复后背景黑屏、音乐中断。背景每帧按名字
                 // 查纹理，恢复 state 后渲染层自动正确绘制；音乐是事件
@@ -1229,6 +1239,8 @@ impl Engine {
                 self.scene.transition = None;
                 // 读档清空交叉淡入的旧背景（快照不含该字段，避免残留淡出层）。
                 self.scene.prev_background = None;
+                // 读档清空脚本驱动的文本框隐藏（瞬时 UI 状态，不应跨存档残留）。
+                self.scene.hide_textbox = false;
                 // 恢复存档时保存的场景快照（背景/立绘/音乐），
                 // 避免读档/崩溃恢复后背景黑屏、音乐中断。背景每帧按名字
                 // 查纹理，恢复 state 后渲染层自动正确绘制；音乐是事件
@@ -1543,6 +1555,14 @@ impl Engine {
         action: DirectionAction,
         events: &mut Vec<EngineEvent>,
     ) {
+        // 临时隐藏文本框（`- hide`）：仅设置场景标志，不触发过渡、不阻塞。
+        // 渲染层据此隐藏对话框与 HUD 按钮；下一条对话/旁白/选项自动恢复。
+        if action.kind == DirectionKind::HideTextbox {
+            self.scene.hide_textbox = true;
+            events.push(EngineEvent::TextboxHidden);
+            return;
+        }
+
         // 差分更换：直接修改现有角色的 pose，不触发过渡动画，
         // 保持位置/大小/透明度等全部不变。
         if action.kind == DirectionKind::Swap {
@@ -1648,6 +1668,10 @@ impl Engine {
             DirectionKind::Swap => {
                 // Swap 已在上方提前处理并 return，不会走到这里
                 unreachable!("Swap 应在 handle_direction 开头处理")
+            }
+            DirectionKind::HideTextbox => {
+                // HideTextbox 已在上方提前处理并 return，不会走到这里
+                unreachable!("HideTextbox 应在 handle_direction 开头处理")
             }
         }
     }

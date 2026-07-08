@@ -1316,7 +1316,8 @@ pub async fn run(mut engine: Engine, project_config: &ProjectConfig) {
                         draw_scene(&engine, &mut assets, sw, sh, true, &font, scale).await;
                     } else {
                         // 游戏中：只绘制场景（不绘制可交互 HUD，因为确认对话框期间不需要 HUD 交互）。
-                        draw_scene(&engine, &mut assets, sw, sh, !hud_hidden, &font, scale).await;
+                        // 脚本驱动的 `- hide` 同样隐藏对话框。
+                        draw_scene(&engine, &mut assets, sw, sh, !(hud_hidden || engine.scene().hide_textbox), &font, scale).await;
                     }
                 }
                 _ => {
@@ -1358,8 +1359,11 @@ pub async fn run(mut engine: Engine, project_config: &ProjectConfig) {
             // In-game: draw the scene. When the HUD is hidden, only the
             // background and characters are drawn (no dialogue box, choices,
             // or HUD), letting the player admire the scene unobstructed.
-            draw_scene(&engine, &mut assets, sw, sh, !hud_hidden, &font, scale).await;
-            if !hud_hidden {
+            // 脚本驱动的 `- hide` 与手动隐藏行为一致：隐藏对话框与 HUD 按钮。
+            let script_hide = engine.scene().hide_textbox;
+            let eff_hide = hud_hidden || script_hide;
+            draw_scene(&engine, &mut assets, sw, sh, !eff_hide, &font, scale).await;
+            if !eff_hide {
                 // 检测鼠标是否在 HUD 触发区域内，更新显隐进度。
                 let (tx, ty, tw, th) = hud_trigger_rect(sw, sh, scale);
                 let (mx, my) = mouse_position();
@@ -1656,8 +1660,8 @@ pub async fn run(mut engine: Engine, project_config: &ProjectConfig) {
 
         // Handle advance (space or enter). Disabled while the HUD is hidden so
         // the player does not skip dialogue they cannot see, and blocked during
-        // UI transitions.
-        if !ui_transition.active && ui_mode == UiMode::Normal && !hud_hidden && engine.phase() != EnginePhase::Title {
+        // UI transitions. 脚本驱动的 `- hide` 期间同样禁用推进。
+        if !ui_transition.active && ui_mode == UiMode::Normal && !(hud_hidden || engine.scene().hide_textbox) && engine.phase() != EnginePhase::Title {
             if is_key_pressed(KeyCode::Space) || is_key_pressed(KeyCode::Enter) {
                 engine.advance();
             }

@@ -375,10 +375,32 @@ impl Parser {
     /// Parse character exit direction: `- Character [exits] [with transition]`
     /// The `-` prefix indicates character exit. Optional "exits"/"leaves" keyword
     /// is accepted for clarity but not required.
+    ///
+    /// 特殊形式：`- hide` —— 临时隐藏文本框（脚本驱动的 UI 隐藏）。
+    /// "hide" 在 `-` 语句首位被视为保留字，不再作为角色名。
     fn parse_exit_direction(&mut self) -> Result<Node, ParseError> {
         let span = self.current_span();
         self.advance(); // -
         self.skip_newlines();
+
+        // `- hide`：临时隐藏文本框，直到下一条对话/旁白/选项。
+        if let TokenKind::Ident(s) = &self.peek().kind {
+            if s == "hide" {
+                self.advance();
+                self.consume_newline();
+                return Ok(Node::Direction {
+                    action: DirectionAction {
+                        kind: DirectionKind::HideTextbox,
+                        character: String::new(),
+                        pose: None,
+                        position: None,
+                        transform: SpriteTransform::default(),
+                        transition: None,
+                    },
+                    span,
+                });
+            }
+        }
 
         let character = self.expect_ident("character name")?;
 
@@ -886,6 +908,36 @@ mod tests {
                 assert_eq!(action.transition, Some(Transition::Dissolve));
             }
             _ => panic!("expected Direction (exit with transition)"),
+        }
+    }
+
+    #[test]
+    fn test_hide_textbox_directive() {
+        // `- hide` 解析为 HideTextbox 方向，character 为空。
+        let p = parse("# S\n- hide\nAki: \"hi.\"\n");
+        match &p.sections[0].nodes[0] {
+            Node::Direction { action, .. } => {
+                assert_eq!(action.kind, DirectionKind::HideTextbox);
+                assert_eq!(action.character, "");
+            }
+            _ => panic!("expected Direction (HideTextbox)"),
+        }
+        // 后续对话正常解析。
+        match &p.sections[0].nodes[1] {
+            Node::Dialogue { speaker, .. } => assert_eq!(speaker, "Aki"),
+            _ => panic!("expected Dialogue after - hide"),
+        }
+    }
+
+    #[test]
+    fn test_hide_not_treated_as_character() {
+        // `- hide` 不应把 hide 当作角色名去出场。
+        let p = parse("# S\n- hide\n");
+        if let Node::Direction { action, .. } = &p.sections[0].nodes[0] {
+            assert_ne!(action.kind, DirectionKind::Exit, "hide 不应被当作角色出场");
+            assert_eq!(action.kind, DirectionKind::HideTextbox);
+        } else {
+            panic!("expected Direction");
         }
     }
 

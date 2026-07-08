@@ -142,6 +142,8 @@ impl Checker {
                         // 若角色不在场上，运行时会降级为即时入场，此处不报错。
                         let _ = span;
                     }
+                    // `- hide` 仅隐藏文本框，不改变场上角色，跳过检查。
+                    DirectionKind::HideTextbox => {}
                 }
             }
             Node::VarOp { name, op, expr, span } => {

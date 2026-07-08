@@ -36,6 +36,11 @@ pub struct SceneState {
     pub title: String,
     /// 标题页副标题。
     pub subtitle: String,
+    /// 脚本驱动的文本框隐藏标志（`- hide` 触发）。
+    /// 为 true 时渲染层隐藏对话框与 HUD 按钮、禁用空格/回车推进，
+    /// 效果等同手动点 UI 的「隐藏」；下一条对话/旁白/选项出现时自动置回 false。
+    /// 不参与存档快照（SceneSnapshot 不含此字段）；读档时清空。
+    pub hide_textbox: bool,
 }
 
 /// Background image state.
@@ -169,6 +174,8 @@ impl SceneState {
 
     /// Set dialogue text.
     pub fn set_dialogue(&mut self, speaker: String, pose: Option<String>, text: String) {
+        // 新对话出现，恢复脚本驱动的文本框隐藏（`- hide`）。
+        self.hide_textbox = false;
         self.dialogue = Some(DialogueState {
             speaker,
             pose,
@@ -180,6 +187,8 @@ impl SceneState {
 
     /// Set narration (no speaker).
     pub fn set_narration(&mut self, text: String) {
+        // 新旁白出现，恢复脚本驱动的文本框隐藏（`- hide`）。
+        self.hide_textbox = false;
         self.dialogue = Some(DialogueState {
             speaker: String::new(),
             pose: None,
@@ -191,6 +200,8 @@ impl SceneState {
 
     /// Set choices.
     pub fn set_choices(&mut self, prompt: Option<String>, options: Vec<ChoiceOptionState>) {
+        // 选项出现，恢复脚本驱动的文本框隐藏（避免选项被隐藏导致无法操作）。
+        self.hide_textbox = false;
         self.choices = Some(ChoicesState { prompt, options, selected: 0 });
     }
 

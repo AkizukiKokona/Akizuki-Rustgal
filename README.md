@@ -6,7 +6,7 @@
 
 [![License](https://img.shields.io/badge/license-MIT-blue.svg)](#许可证)
 [![Rust](https://img.shields.io/badge/rust-1.92+-orange.svg)](https://www.rust-lang.org)
-[![Version](https://img.shields.io/badge/version-1.0.48-success.svg)](#)
+[![Version](https://img.shields.io/badge/version-1.0.49-success.svg)](#)
 [![Platform](https://img.shields.io/badge/platform-Windows%20%7C%20Linux%20%7C%20macOS-lightgrey.svg)](#下载与安装)
 [![PRs Welcome](https://img.shields.io/badge/PRs-welcome-brightgreen.svg)](#贡献)
 
@@ -107,6 +107,7 @@ Akizuki\*Rustgal 是一个从零开始、**100% 纯 Rust** 实现的视觉小说
 - **主题配色可自定义** — 通过 `project.json` 的 `theme` 字段（编辑器「项目设置 → 主题配色」内用调色板或十六进制输入框编辑）自定义游戏内 4 种颜色：主题色1（模态对话框/面板背景）、主题色2（按钮背景，悬停/按下态由引擎自动派生）、文本色（按钮/HUD 文字）、对话框色（游戏进行中文本框渐变基色）。各字段留空或缺失时回退引擎内置配色，旧项目文件无需改动即可加载。
 - **章节切换动画** — `# 章节名 显示标题` 语法将章节名与显示标题分开（标题可含空格）。通过 `->` 跳转到带标题的章节时，游戏先播放 0.5 秒全屏淡入淡出（覆盖文本框等全部内容），随后从屏幕顶部滑入一条白底通知（约 30% 透明），章节名与标题分两行居中显示，停留 1 秒后按原路径滑出。文本过长时通知自动缩小字号以适配屏宽。编辑器在标题超过 24 字符时给出非阻断警告。`=>` 访问子章节不触发该通知。
 - **背景交叉淡入** — 同一章节内 `@bg X with fade`（或 `dissolve`）切换背景时，背景层做交叉淡入（旧背景淡出、新背景淡入，0.5 秒），不画全屏黑场，对话框等 UI 在背景之上正常显示、不被遮挡。角色上下场的 `with fade` 仍走全屏遮罩过渡，不受影响。
+- **脚本驱动的文本框隐藏（`- hide`）** — 在剧本中写 `- hide` 可暂时隐藏文本框与 HUD（效果等同手动点 UI 的「隐藏」），直到下一条对话/旁白/选项出现时自动恢复。用于在一段纯场景变换（换背景、立绘上下场）期间让画面保持干净。编辑器翻译功能自动忽略该语句。
 
 ## 快速开始
 
