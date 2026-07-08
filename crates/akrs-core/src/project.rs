@@ -37,6 +37,16 @@ pub struct ProjectConfig {
     /// 项目版本号。
     #[serde(default = "default_version")]
     pub version: String,
+    /// 开屏页（标题页）背景图片资源名。
+    /// 相对 `assets/` 目录（如 `title.png` 或 `title/my_opening.png`）。
+    /// 留空则回退到默认的 `title.png`。
+    #[serde(default)]
+    pub title_background: String,
+    /// 开屏页（标题页）背景音乐资源名。
+    /// 相对 `assets/music/` 目录（如 `title_bgm.mp3`）。
+    /// 留空则回退到默认的 `title_bgm.mp3`；若该文件也不存在则静音。
+    #[serde(default)]
+    pub title_music: String,
 }
 
 fn default_script_path() -> String {
@@ -68,6 +78,8 @@ impl Default for ProjectConfig {
             default_resolution: (1920, 1080),
             language: "zh-CN".to_string(),
             version: "0.1.0".to_string(),
+            title_background: String::new(),
+            title_music: String::new(),
         }
     }
 }

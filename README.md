@@ -6,7 +6,7 @@
 
 [![License](https://img.shields.io/badge/license-MIT-blue.svg)](#许可证)
 [![Rust](https://img.shields.io/badge/rust-1.92+-orange.svg)](https://www.rust-lang.org)
-[![Version](https://img.shields.io/badge/version-1.0.44-success.svg)](#)
+[![Version](https://img.shields.io/badge/version-1.0.45-success.svg)](#)
 [![Platform](https://img.shields.io/badge/platform-Windows%20%7C%20Linux%20%7C%20macOS-lightgrey.svg)](#下载与安装)
 [![PRs Welcome](https://img.shields.io/badge/PRs-welcome-brightgreen.svg)](#贡献)
 
@@ -103,6 +103,7 @@ Akizuki\*Rustgal 是一个从零开始、**100% 纯 Rust** 实现的视觉小说
 - **多语言翻译系统** — 原文剧本不修改，翻译文件与原文一一对应；支持章节标题、对话、旁白、分支选项、角色名翻译；编辑器内置对照翻译模式（原文-译文并排，原文只读）；CLI 一键生成翻译骨架；运行时设置页实时切换语言（剧本语言与 UI 语言独立切换，放弃未应用设置时正确回退）；UI 文本翻译内置英文兜底，语言文件缺失或部分 key 未译时回退英文而非显示 raw key；返回标题/故事结束后重建引擎时自动继承翻译目录，语言切换能力不丢失
 - **编辑器内置打包** — GUI 勾选 Windows/Linux/macOS 平台，一键 `cargo build --release --target`，自动收集产物到 `build/` 目录
 - **编辑器游戏预览** — 点击按钮即可在独立窗口启动游戏预览，编辑器可继续编辑，互不阻塞
+- **开屏页（标题页）可配置** — 通过 `project.json` 的 `title_background` 与 `title_music` 字段自定义标题页背景图与背景音乐（编辑器「项目设置」内可编辑）；留空时背景回退到 `assets/title.png`、音乐回退到 `assets/music/title_bgm.mp3`，二者皆无则静音。**本仓库自带的 demo 不含任何音频资源，也未配置开屏页音乐**，因此默认标题页静音——但引擎完整支持自定义开屏页音画。
 
 ## 快速开始
 

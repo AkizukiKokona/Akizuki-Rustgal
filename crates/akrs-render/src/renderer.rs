@@ -785,9 +785,21 @@ pub async fn run(mut engine: Engine, project_config: &ProjectConfig) {
     // 若发生切换则由 ui_transition 负责，若回到原页则瞬间消失亦可接受）。
     let mut dialog_fade: f32 = 0.0;
 
-    // Check title music
-    if !assets.check_music("title_bgm.mp3") {
-        eprintln!("[Warning] title_bgm.mp3 not found — using black screen + silence");
+    // 开屏页（标题页）资源：优先使用 project.json 中配置的 title_music /
+    // title_background，留空则回退到默认的 title_bgm.mp3 / title.png。
+    // demo 不含音频资源，因此默认情况下标题页静音；功能完整支持自定义。
+    let title_music_name = if project_config.title_music.is_empty() {
+        "title_bgm.mp3".to_string()
+    } else {
+        project_config.title_music.clone()
+    };
+    let title_bg_name = if project_config.title_background.is_empty() {
+        "./title.png".to_string()
+    } else {
+        project_config.title_background.clone()
+    };
+    if !assets.check_music(&title_music_name) {
+        eprintln!("[Warning] 开屏页音乐 {} 未找到 — 标题页将静音", title_music_name);
     }
 
     loop {
@@ -929,13 +941,14 @@ pub async fn run(mut engine: Engine, project_config: &ProjectConfig) {
             }
         }
 
-        // Handle title music：进入标题画面时循环播放 title_bgm.mp3（若存在）
+        // Handle title music：进入标题画面时循环播放开屏页音乐（若存在）。
+        // 文件名取自 project.json 的 title_music（留空回退 title_bgm.mp3）。
         // 离开标题时重置 title_music_played，使玩家从游戏返回标题时能重新播放。
         if engine.phase() == EnginePhase::Title {
             if !title_music_played {
                 title_music_played = true;
                 if current_bgm.is_none() {
-                    if let Some(sound) = assets.get_sound(AssetKind::Music, "title_bgm.mp3").await {
+                    if let Some(sound) = assets.get_sound(AssetKind::Music, &title_music_name).await {
                         let vol = engine.settings().bgm_volume;
                         play_sound(
                             sound,
@@ -1103,7 +1116,7 @@ pub async fn run(mut engine: Engine, project_config: &ProjectConfig) {
 
         if ui_mode == UiMode::AutoSavePrompt {
             // 异常中断恢复提示：以 title.png 为背景 + 10% 黑布遮罩 + 居中对话框
-            draw_title_background(sw, sh, &mut assets).await;
+            draw_title_background(sw, sh, &mut assets, &title_bg_name).await;
             draw_rectangle(0.0, 0.0, sw, sh, Color::new(0.0, 0.0, 0.0, 0.10));
             draw_autosave_prompt(&engine, &mut buttons, sw, sh, &font, scale);
         } else if ui_mode == UiMode::SettingsMenu {
@@ -1126,7 +1139,7 @@ pub async fn run(mut engine: Engine, project_config: &ProjectConfig) {
                 }
                 UiMode::Normal => {
                     if engine.phase() == EnginePhase::Title {
-                        draw_title_screen(&engine, &mut buttons, sw, sh, &mut assets, &font, scale, has_continue_save).await;
+                        draw_title_screen(&engine, &mut buttons, sw, sh, &mut assets, &font, scale, has_continue_save, &title_bg_name).await;
                     } else if engine.phase() == EnginePhase::StoryEnded {
                         draw_scene(&engine, &mut assets, sw, sh, true, &font, scale).await;
                     } else {
@@ -1166,7 +1179,7 @@ pub async fn run(mut engine: Engine, project_config: &ProjectConfig) {
                 _ => {}
             }
         } else if engine.phase() == EnginePhase::Title {
-            draw_title_screen(&engine, &mut buttons, sw, sh, &mut assets, &font, scale, has_continue_save).await;
+            draw_title_screen(&engine, &mut buttons, sw, sh, &mut assets, &font, scale, has_continue_save, &title_bg_name).await;
         } else if engine.phase() == EnginePhase::StoryEnded {
             draw_scene(&engine, &mut assets, sw, sh, true, &font, scale).await;
         } else {
@@ -1520,8 +1533,8 @@ pub async fn run(mut engine: Engine, project_config: &ProjectConfig) {
 // ─── Drawing functions ───
 
 /// 绘制标题页背景图（cover 模式，16:9 裁切适应），回退为天蓝色渐变。
-async fn draw_title_background(sw: f32, sh: f32, assets: &mut AssetManager) {
-    let title_bg = assets.get_texture(AssetKind::Title, "./title.png").await;
+async fn draw_title_background(sw: f32, sh: f32, assets: &mut AssetManager, bg_name: &str) {
+    let title_bg = assets.get_texture(AssetKind::Title, bg_name).await;
     if let Some(tex) = title_bg {
         let tex_w = tex.width();
         let tex_h = tex.height();
@@ -1554,8 +1567,8 @@ async fn draw_title_background(sw: f32, sh: f32, assets: &mut AssetManager) {
     }
 }
 
-async fn draw_title_screen(engine: &Engine, buttons: &mut Vec<ButtonRect>, sw: f32, sh: f32, assets: &mut AssetManager, font: &Option<Font>, scale: f32, has_continue_save: bool) {
-    draw_title_background(sw, sh, assets).await;
+async fn draw_title_screen(engine: &Engine, buttons: &mut Vec<ButtonRect>, sw: f32, sh: f32, assets: &mut AssetManager, font: &Option<Font>, scale: f32, has_continue_save: bool, title_bg_name: &str) {
+    draw_title_background(sw, sh, assets, title_bg_name).await;
 
     let scene = engine.scene();
 

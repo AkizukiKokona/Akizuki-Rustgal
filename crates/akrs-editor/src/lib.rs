@@ -3322,6 +3322,32 @@ impl eframe::App for EditorApp {
                     ui.separator();
                     ui.add_space(12.0);
 
+                    ui.heading("开屏页（标题页）");
+                    ui.add_space(8.0);
+
+                    ui.horizontal(|ui| {
+                        ui.label("背景图片：");
+                        ui.add_sized(
+                            [ui.available_width(), 28.0],
+                            egui::TextEdit::singleline(&mut self.project_config.title_background)
+                                .hint_text("相对 assets/ 的路径，如 title.png；留空用默认 title.png"),
+                        );
+                    });
+                    ui.add_space(8.0);
+
+                    ui.horizontal(|ui| {
+                        ui.label("背景音乐：");
+                        ui.add_sized(
+                            [ui.available_width(), 28.0],
+                            egui::TextEdit::singleline(&mut self.project_config.title_music)
+                                .hint_text("assets/music/ 下的文件名，如 title_bgm.mp3；留空静音"),
+                        );
+                    });
+
+                    ui.add_space(16.0);
+                    ui.separator();
+                    ui.add_space(12.0);
+
                     ui.heading("运行设置");
                     ui.add_space(8.0);
 
