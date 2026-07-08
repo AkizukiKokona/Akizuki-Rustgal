@@ -46,6 +46,11 @@ const COLOR_DEFAULT: egui::Color32 = egui::Color32::from_rgb(255, 255, 255);
 
 const FONT_SIZE: f32 = 14.0;
 
+/// 章节显示标题（`# name title` 中的 title，无标题时取 name）的最大建议字符数。
+/// 超过此值时编辑器给出警告（非阻断，仍可强制运行；运行时通知会自动缩字显示）。
+/// 取值依据：顶部章节通知宽度约为屏幕 80%，基准字号下可舒适显示约 24 个字符。
+const MAX_CHAPTER_TITLE_CHARS: usize = 24;
+
 /// 「新建」操作使用的小型有效模板。
 const NEW_TEMPLATE: &str = "# Start\n\n~~\n";
 
@@ -848,6 +853,23 @@ impl EditorApp {
     fn run_script(&mut self) {
         let (program, errors) = compile(&self.editor_content);
         self.diagnostics = format_errors(&errors);
+
+        // 章节标题长度检查：`# name title` 中的显示标题（无标题时取 name）
+        // 超过 MAX_CHAPTER_TITLE_CHARS 字符时给出警告（非阻断，仍可运行）。
+        // 顶部章节通知会自动缩小字号显示超长文本，但过长的标题观感不佳。
+        if let Some(prog) = &program {
+            for sec in &prog.sections {
+                let display = sec.title.clone().unwrap_or_else(|| sec.name.clone());
+                let len = display.chars().count();
+                if len > MAX_CHAPTER_TITLE_CHARS {
+                    let line = sec.span.start_linecol.line;
+                    self.diagnostics.push(format!(
+                        "[警告] 第 {} 行：章节标题过长（{} 字 > {}），顶部通知会自动缩字显示，建议精简",
+                        line, len, MAX_CHAPTER_TITLE_CHARS
+                    ));
+                }
+            }
+        }
 
         match program {
             Some(_) => match Engine::start_running(&self.editor_content) {

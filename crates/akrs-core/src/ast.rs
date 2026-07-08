@@ -15,9 +15,17 @@ pub struct Program {
 }
 
 /// A named section (delimited by # Name).
+///
+/// `name` 是首个标识符（用于 `->`/`=>` 跳转，不含空格）。
+/// `title` 是 name 之后同一行的剩余文本（用空格连接），作为章节显示标题。
+/// 语法：`# Scenario1 章节标题`，其中 `Scenario1` 是 name，`章节标题` 是 title。
+/// 仅有 `# Start` 时 title 为 None。
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Section {
     pub name: String,
+    /// 章节显示标题（name 之后的同行文本）。None 表示无标题。
+    #[serde(default)]
+    pub title: Option<String>,
     pub nodes: Vec<Node>,
     pub span: LocSpan,
 }

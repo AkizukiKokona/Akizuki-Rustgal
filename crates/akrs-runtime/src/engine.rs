@@ -114,6 +114,18 @@ enum PendingEvent {
     StoryEnd,
 }
 
+/// 章节切换通知（由 `->` 章节跳转触发）。
+///
+/// 引擎在处理 `VmEvent::Flow` 时设置此通知，渲染层每帧通过
+/// `take_chapter_notify()` 取走，随后播放全屏淡入淡出 + 顶部通知动画。
+/// `name` 为章节标识符（`#` 后首个标识符），`title` 为可选显示标题
+/// （`# name title` 中 name 之后的同行文本）。
+#[derive(Debug, Clone)]
+pub struct ChapterNotify {
+    pub name: String,
+    pub title: Option<String>,
+}
+
 /// Typewriter animation state.
 struct TypewriterState {
     chars_per_second: f32,
@@ -201,6 +213,9 @@ pub struct Engine {
     ui_translator: UiTranslator,
     /// 翻译文件所在目录，用于 reload_language 时定位语言文件。
     translations_dir: Option<std::path::PathBuf>,
+    /// 待处理的章节切换通知（由 `->` 章节跳转设置，渲染层取走后播放动画）。
+    /// None 表示无待处理通知。
+    pending_chapter_notify: Option<ChapterNotify>,
 }
 
 impl Engine {
@@ -232,6 +247,7 @@ impl Engine {
             translator: Translator::new(),
             ui_translator: UiTranslator::new(),
             translations_dir: None,
+            pending_chapter_notify: None,
         })
     }
 
@@ -284,6 +300,15 @@ impl Engine {
     /// Get current section name.
     pub fn current_section(&self) -> &str {
         &self.current_section_name
+    }
+
+    /// 取走待处理的章节切换通知（若有）。
+    ///
+    /// 渲染层每帧调用：返回 `Some(ChapterNotify)` 表示刚发生一次 `->` 章节
+    /// 跳转，应播放全屏淡入淡出 + 顶部章节通知动画；返回 `None` 表示无。
+    /// 取走后内部清空，同一通知不会被消费两次。
+    pub fn take_chapter_notify(&mut self) -> Option<ChapterNotify> {
+        self.pending_chapter_notify.take()
     }
 
     /// Access settings.
@@ -1351,11 +1376,22 @@ impl Engine {
                     }
                     return;
                 }
-                VmEvent::Flow { target } | VmEvent::Visit { target } => {
-                    self.current_section_name = target;
+                VmEvent::Flow { target, title } => {
+                    // 章节单向跳转：更新当前章节名，并设置待处理章节通知。
+                    // 渲染层每帧调用 take_chapter_notify() 取走后播放
+                    // 全屏淡入淡出 + 顶部章节通知。
+                    self.current_section_name = target.clone();
+                    self.pending_chapter_notify = Some(ChapterNotify { name: target, title });
+                    // Non-blocking: continue to next event
+                }
+                VmEvent::Visit { target, title } => {
+                    // 子例程访问：仅更新当前章节名，不触发章节通知。
+                    self.current_section_name = target.clone();
+                    let _ = title; // 访问不显示通知，标题在此忽略
                     // Non-blocking: continue to next event
                 }
                 VmEvent::Return => {
+                    // 从子例程返回：不更新章节名（无目标信息），不触发通知。
                     // Non-blocking: continue to next event
                 }
             }

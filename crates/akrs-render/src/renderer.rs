@@ -467,6 +467,107 @@ impl UiTransition {
     }
 }
 
+/// 章节切换动画阶段。
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum ChapterPhase {
+    /// 全屏淡入淡出（0.5s）：先渐暗到全黑，再渐亮，遮盖章节切换的瞬时内容变化。
+    Fade,
+    /// 顶部通知从屏幕上方滑入（0.3s）。
+    ToastIn,
+    /// 顶部通知停留显示（1.0s）。
+    ToastHold,
+    /// 顶部通知向上滑出（0.3s）。
+    ToastOut,
+}
+
+/// 章节切换动画状态机。
+///
+/// 由 `->` 章节跳转触发（引擎通过 `take_chapter_notify()` 通知）。
+/// 依次播放：全屏淡入淡出 → 顶部通知滑入 → 停留 1s → 滑出。
+/// 通知为白底（约 30% 透明，alpha≈0.7），深色文字，章节名与标题两行居中。
+/// 文本过长时自动缩小字号以适配通知宽度。
+struct ChapterAnimation {
+    active: bool,
+    phase: ChapterPhase,
+    /// 当前阶段的进度 0.0..1.0。
+    progress: f32,
+    /// 章节名（`#` 后首个标识符）。
+    name: String,
+    /// 章节显示标题（name 之后的同行文本）。
+    title: Option<String>,
+}
+
+/// 章节淡入淡出总时长（秒）。
+const CHAPTER_FADE_DUR: f32 = 0.5;
+/// 通知滑入时长（秒）。
+const CHAPTER_TOAST_IN_DUR: f32 = 0.3;
+/// 通知停留时长（秒）。
+const CHAPTER_TOAST_HOLD_DUR: f32 = 1.0;
+/// 通知滑出时长（秒）。
+const CHAPTER_TOAST_OUT_DUR: f32 = 0.3;
+
+impl ChapterAnimation {
+    fn new() -> Self {
+        Self { active: false, phase: ChapterPhase::Fade, progress: 0.0, name: String::new(), title: None }
+    }
+
+    /// 启动一次章节切换动画。若已有动画在进行，则替换为新章节内容并从头开始。
+    fn start(&mut self, name: String, title: Option<String>) {
+        self.active = true;
+        self.phase = ChapterPhase::Fade;
+        self.progress = 0.0;
+        self.name = name;
+        self.title = title;
+    }
+
+    /// 推进动画。返回值无意义（保留以便未来扩展）。
+    fn update(&mut self, dt: f32) {
+        if !self.active { return; }
+        let dur = match self.phase {
+            ChapterPhase::Fade => CHAPTER_FADE_DUR,
+            ChapterPhase::ToastIn => CHAPTER_TOAST_IN_DUR,
+            ChapterPhase::ToastHold => CHAPTER_TOAST_HOLD_DUR,
+            ChapterPhase::ToastOut => CHAPTER_TOAST_OUT_DUR,
+        };
+        self.progress += dt / dur;
+        if self.progress >= 1.0 {
+            self.progress = 0.0;
+            self.phase = match self.phase {
+                ChapterPhase::Fade => ChapterPhase::ToastIn,
+                ChapterPhase::ToastIn => ChapterPhase::ToastHold,
+                ChapterPhase::ToastHold => ChapterPhase::ToastOut,
+                ChapterPhase::ToastOut => { self.active = false; return; }
+            };
+        }
+    }
+
+    /// 全屏淡入淡出遮罩的 alpha（0.0..1.0）。仅 Fade 阶段非零。
+    /// 前 0.25s 0→1（渐暗），后 0.25s 1→0（渐亮）。
+    fn fade_alpha(&self) -> f32 {
+        if !self.active || self.phase != ChapterPhase::Fade { return 0.0; }
+        let p = self.progress;
+        if p < 0.5 { p * 2.0 } else { (1.0 - p) * 2.0 }.clamp(0.0, 1.0)
+    }
+
+    /// 顶部通知的垂直偏移（像素，负值表示在屏幕上方之外）。
+    /// ToastIn：从 -height 滑到 0；ToastHold：0；ToastOut：0 滑到 -height。
+    /// `height` 为通知总高度（含内边距），由绘制函数传入。
+    fn toast_offset(&self, height: f32) -> f32 {
+        if !self.active { return 0.0; }
+        match self.phase {
+            ChapterPhase::ToastIn => -height * (1.0 - self.progress),
+            ChapterPhase::ToastHold => 0.0,
+            ChapterPhase::ToastOut => -height * self.progress,
+            ChapterPhase::Fade => -height,
+        }
+    }
+
+    /// 是否正在显示顶部通知（ToastIn/Hold/Out 阶段）。
+    fn toast_visible(&self) -> bool {
+        self.active && matches!(self.phase, ChapterPhase::ToastIn | ChapterPhase::ToastHold | ChapterPhase::ToastOut)
+    }
+}
+
 /// Button layout for clickable regions.
 struct ButtonRect {
     x: f32,
@@ -800,6 +901,8 @@ pub async fn run(mut engine: Engine, project_config: &ProjectConfig) {
     let mut load_displayed_slots: usize = 24;
     // UI transition state machine for smooth page switches.
     let mut ui_transition = UiTransition::new();
+    // 章节切换动画状态机（由 `->` 章节跳转触发）。
+    let mut chapter_anim = ChapterAnimation::new();
     // 上一次实际应用到窗口的全屏状态。
     // window_conf() 中 fullscreen 初始化为 false，故此处同步为 false。
     // 每帧检测 settings.fullscreen 是否与此值不一致，若不一致则切换窗口全屏状态，
@@ -999,6 +1102,16 @@ pub async fn run(mut engine: Engine, project_config: &ProjectConfig) {
                 _ => {}
             }
         }
+
+        // 取走待处理的章节切换通知（由 `->` 章节跳转设置），启动章节动画。
+        // 仅在游戏中（非标题/菜单）播放，避免标题页或读档瞬间触发。
+        if let Some(notify) = engine.take_chapter_notify() {
+            if engine.phase() != EnginePhase::Title {
+                chapter_anim.start(notify.name, notify.title);
+            }
+        }
+        // 推进章节动画。
+        chapter_anim.update(dt);
 
         // Handle title music：进入标题画面时循环播放开屏页音乐（若存在）。
         // 文件名取自 project.json 的 title_music（留空回退 title_bgm.mp3）。
@@ -1585,6 +1698,16 @@ pub async fn run(mut engine: Engine, project_config: &ProjectConfig) {
             draw_rectangle(0.0, 0.0, sw, sh, Color::new(0.0, 0.0, 0.0, alpha));
         }
 
+        // Draw chapter-switch animation: full-screen fade + top toast notification.
+        // 章节淡入淡出遮罩盖在所有内容之上（含文本框）。
+        let fade_alpha = chapter_anim.fade_alpha();
+        if fade_alpha > 0.0 {
+            draw_rectangle(0.0, 0.0, sw, sh, Color::new(0.0, 0.0, 0.0, fade_alpha));
+        }
+        if chapter_anim.toast_visible() {
+            draw_chapter_toast(&chapter_anim, sw, sh, &font, scale);
+        }
+
         next_frame().await;
     }
 }
@@ -1738,6 +1861,76 @@ async fn draw_scene(engine: &Engine, assets: &mut AssetManager, sw: f32, sh: f32
         if let Some(dialogue) = &scene.dialogue {
             draw_dialogue(dialogue, sw, sh, font, scale);
         }
+    }
+}
+
+/// 绘制章节切换的顶部通知（白底 30% 透明，章节名 + 标题两行居中）。
+///
+/// 由 `ChapterAnimation` 在 ToastIn/Hold/Out 阶段调用。通知从屏幕顶部滑入，
+/// 停留 1s 后滑出。文本过长时自动缩小字号以适配最大宽度（屏幕宽度的 80%）。
+fn draw_chapter_toast(anim: &ChapterAnimation, sw: f32, sh: f32, font: &Option<Font>, scale: f32) {
+    let name = &anim.name;
+    let title = anim.title.as_deref();
+
+    // 基准字号。
+    let mut name_size = 38.0 * scale;
+    let mut title_size = 28.0 * scale;
+    let pad_x = 40.0 * scale;
+    let pad_y = 26.0 * scale;
+    let gap = 12.0 * scale;
+    let max_toast_w = sw * 0.8;
+    let top_margin = sh * 0.07;
+    let min_factor = 0.45; // 字号最低缩到 45%，避免过小不可读
+
+    // 测量文本宽度，按需等比缩小字号以适配最大宽度。
+    let measure = |text: &str, size: f32| -> f32 {
+        if text.is_empty() { 0.0 } else { measure_text_f(text, font, size as u16, 1.0).width }
+    };
+    let mut factor = 1.0;
+    loop {
+        let name_w = measure(name, name_size * factor);
+        let title_w = if let Some(t) = title { measure(t, title_size * factor) } else { 0.0 };
+        let content_w = name_w.max(title_w);
+        if content_w + 2.0 * pad_x <= max_toast_w || factor <= min_factor {
+            break;
+        }
+        factor -= 0.05;
+    }
+    factor = factor.max(min_factor);
+    name_size *= factor;
+    title_size *= factor;
+
+    let name_w = measure(name, name_size);
+    let title_w = if let Some(t) = title { measure(t, title_size) } else { 0.0 };
+    let content_w = name_w.max(title_w);
+
+    let name_line_h = name_size * 1.2;
+    let title_line_h = title_size * 1.2;
+    let toast_w = (content_w + 2.0 * pad_x).min(max_toast_w).max(120.0 * scale);
+    let toast_h = pad_y + name_line_h + (if title.is_some() { gap + title_line_h } else { 0.0 }) + pad_y;
+
+    let toast_x = (sw - toast_w) / 2.0;
+    let rest_y = top_margin;
+    let offset_y = anim.toast_offset(toast_h + top_margin);
+    let draw_y = rest_y + offset_y;
+
+    // 白底（约 30% 透明 → alpha 0.7）。圆角效果用 glamera 不便，这里用矩形 + 细边框。
+    draw_rectangle(toast_x, draw_y, toast_w, toast_h, Color::new(1.0, 1.0, 1.0, 0.7));
+    // 细边框增强层次感。
+    draw_rectangle_lines(toast_x, draw_y, toast_w, toast_h, 2.0 * scale, Color::new(0.0, 0.0, 0.0, 0.15));
+
+    let text_color = Color::new(0.10, 0.10, 0.14, 1.0);
+
+    // 第一行：章节名（居中）。
+    let name_y = draw_y + pad_y + name_size; // baseline 在字号处
+    let name_x = toast_x + (toast_w - name_w) / 2.0;
+    draw_text_f(name, name_x, name_y, name_size, text_color, font);
+
+    // 第二行：章节标题（居中）。
+    if let Some(t) = title {
+        let title_y = name_y + gap + title_size;
+        let title_x = toast_x + (toast_w - title_w) / 2.0;
+        draw_text_f(t, title_x, title_y, title_size, text_color, font);
     }
 }
 

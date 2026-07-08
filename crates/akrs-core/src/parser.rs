@@ -65,6 +65,20 @@ impl Parser {
         self.skip_newlines();
 
         let name = self.expect_ident("section name")?;
+
+        // 收集可选的章节标题：name 之后同一行剩余的 ident/string，用空格连接。
+        // 语法：`# Scenario1 章节标题`，其中 `Scenario1` 是 name，`章节标题` 是 title。
+        // 遇到换行 / EOF / 闭合 # 时停止。
+        let mut title_parts: Vec<String> = Vec::new();
+        while !self.is_at_end() {
+            match &self.peek().kind {
+                TokenKind::Ident(s) => { title_parts.push(s.clone()); self.advance(); }
+                TokenKind::String(s) => { title_parts.push(s.clone()); self.advance(); }
+                _ => break,
+            }
+        }
+        let title = if title_parts.is_empty() { None } else { Some(title_parts.join(" ")) };
+
         self.skip_newlines();
 
         // Optional closing #
@@ -82,7 +96,7 @@ impl Parser {
             self.skip_newlines();
         }
 
-        Ok(Section { name, nodes, span })
+        Ok(Section { name, title, nodes, span })
     }
 
     fn parse_node(&mut self) -> Result<Node, ParseError> {
@@ -787,7 +801,26 @@ mod tests {
         let p = parse("# Start\nAki: \"Hello!\"\n\"Narration.\"\n");
         assert_eq!(p.sections.len(), 1);
         assert_eq!(p.sections[0].name, "Start");
+        assert_eq!(p.sections[0].title, None);
         assert_eq!(p.sections[0].nodes.len(), 2);
+    }
+
+    #[test]
+    fn test_section_with_title() {
+        // `# name title text` —— name 为首个标识符，其后同行文本为显示标题。
+        let p = parse("# Scenario1 樱花飘落的午后\nAki: \"Hi.\"\n");
+        assert_eq!(p.sections[0].name, "Scenario1");
+        assert_eq!(p.sections[0].title.as_deref(), Some("樱花飘落的午后"));
+
+        // 多个标识符用空格连接为标题。
+        let p2 = parse("# Ch1 A Fine Day\n\"n.\"\n");
+        assert_eq!(p2.sections[0].name, "Ch1");
+        assert_eq!(p2.sections[0].title.as_deref(), Some("A Fine Day"));
+
+        // 闭合 # 不影响标题解析。
+        let p3 = parse("# Ch2 Title Here #\n\"n.\"\n");
+        assert_eq!(p3.sections[0].name, "Ch2");
+        assert_eq!(p3.sections[0].title.as_deref(), Some("Title Here"));
     }
 
     #[test]

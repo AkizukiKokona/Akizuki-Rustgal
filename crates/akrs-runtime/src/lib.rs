@@ -54,7 +54,7 @@ pub mod transition;
 pub mod hot_reload;
 
 // Re-export key types
-pub use engine::{Engine, EngineEvent, EnginePhase};
+pub use engine::{Engine, EngineEvent, EnginePhase, ChapterNotify};
 pub use game_state::{
     SceneState, BackgroundState, CharacterState, DialogueState,
     ChoicesState, ChoiceOptionState, TransitionOverlay, TransitionPhase,

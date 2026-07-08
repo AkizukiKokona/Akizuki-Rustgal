@@ -16,8 +16,13 @@ pub enum VmEvent {
     Command { cmd: String, args: Vec<String>, transition: Option<Transition> },
     Direction { action: DirectionAction },
     Choice { prompt: Option<String>, options: Vec<ChoiceInfo> },
-    Flow { target: String },
-    Visit { target: String },
+    /// 章节单向跳转（`->`）。`target` 为目标章节名，`title` 为其显示标题。
+    /// 触发引擎的全屏淡入淡出 + 顶部章节通知。
+    Flow { target: String, title: Option<String> },
+    /// 访问子章节（`=>`）。`target` 为目标章节名，`title` 为其显示标题。
+    /// 仅更新当前章节名，不触发章节通知（子例程调用）。
+    Visit { target: String, title: Option<String> },
+    /// 从子章节返回（`<=`）。
     Return,
     Wait { seconds: f64 },
     StoryEnd,
@@ -74,6 +79,8 @@ struct CompiledOption {
 #[derive(Debug, Clone)]
 struct CompiledSection {
     name: String,
+    /// 章节显示标题（用于章节通知）。None 表示无标题。
+    title: Option<String>,
     instrs: Vec<Instr>,
 }
 
@@ -106,7 +113,7 @@ impl Vm {
         // Now compile each section with the complete map available
         for sec in &program.sections {
             let instrs = compiler.compile_section(sec, &section_map);
-            sections.push(CompiledSection { name: sec.name.clone(), instrs });
+            sections.push(CompiledSection { name: sec.name.clone(), title: sec.title.clone(), instrs });
         }
 
         let entry = program.entry.as_deref().or_else(|| sections.first().map(|s| s.name.as_str()));
@@ -207,16 +214,27 @@ impl Vm {
                     self.ip = 0;
                     // Clear call stack - flow is one-way
                     self.call_stack.clear();
+                    // 发出章节跳转事件：携带目标章节名与显示标题。
+                    // 引擎据此触发全屏淡入淡出 + 顶部章节通知。
+                    let tgt_name = self.sections.get(target).map(|s| s.name.clone()).unwrap_or_default();
+                    let tgt_title = self.sections.get(target).and_then(|s| s.title.clone());
+                    return Ok(VmEvent::Flow { target: tgt_name, title: tgt_title });
                 }
                 Instr::VisitCall { target } => {
                     self.call_stack.push((self.current_section, self.ip + 1));
                     self.current_section = target;
                     self.ip = 0;
+                    // 发出访问事件：携带目标章节名与显示标题。
+                    // 引擎仅更新当前章节名，不触发章节通知（子例程调用）。
+                    let tgt_name = self.sections.get(target).map(|s| s.name.clone()).unwrap_or_default();
+                    let tgt_title = self.sections.get(target).and_then(|s| s.title.clone());
+                    return Ok(VmEvent::Visit { target: tgt_name, title: tgt_title });
                 }
                 Instr::Return => {
                     if let Some((sec, instr)) = self.call_stack.pop() {
                         self.current_section = sec;
                         self.ip = instr;
+                        return Ok(VmEvent::Return);
                     } else {
                         return Err(VmError { message: "return without visit".to_string() });
                     }
@@ -662,6 +680,20 @@ mod tests {
         let events = run(src);
         assert!(events.iter().any(|e| matches!(e, VmEvent::Dialogue { text, .. } if text == "First.")));
         assert!(events.iter().any(|e| matches!(e, VmEvent::Dialogue { text, .. } if text == "Second.")));
+    }
+
+    #[test]
+    fn test_flow_emits_event_with_title() {
+        // `->` 章节跳转应发出 VmEvent::Flow，携带目标章节名与显示标题。
+        // 标题来自目标章节的 `#` 声明（`# Next 樱花飘落`），而非 `->` 行。
+        let src = "# Start\nAki: \"Go.\"\n-> Next\n# Next 樱花飘落\nAki: \"Hi.\"\n";
+        let events = run(src);
+        let flow = events.iter().find_map(|e| match e {
+            VmEvent::Flow { target, title } => Some((target.clone(), title.clone())),
+            _ => None,
+        });
+        assert_eq!(flow, Some(("Next".to_string(), Some("樱花飘落".to_string()))),
+            "Flow 事件应携带目标章节名与标题");
     }
 
     #[test]
