@@ -3766,16 +3766,44 @@ fn install_cjk_fonts(ctx: &egui::Context) {
         font_data = Some(bytes);
     }
 
-    // 2. 系统字体回退
+    // 2. 系统字体回退（按平台分别列出候选路径）
     if font_data.is_none() {
-        let sys_candidates: &[&str] = &[
-            "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc",
-            "/usr/share/fonts/truetype/noto/NotoSansCJK-Regular.ttc",
-            "/usr/share/fonts/truetype/wqy/wqy-microhei.ttc",
-            "/System/Library/Fonts/PingFang.ttc",
-            "/System/Library/Fonts/STHeiti Light.ttc",
-        ];
-        for path in sys_candidates {
+        let mut sys_candidates: Vec<String> = Vec::new();
+        #[cfg(target_os = "windows")]
+        {
+            let win_dir = std::env::var("WINDIR").unwrap_or_else(|_| "C:\\Windows".to_string());
+            let fonts_dir = std::path::Path::new(&win_dir).join("Fonts");
+            for name in &["msyh.ttc", "msyh.ttf", "msyhbd.ttc", "simsun.ttc", "simhei.ttf"] {
+                sys_candidates.push(fonts_dir.join(name).to_string_lossy().into_owned());
+            }
+            if let Some(home) = std::env::var_os("USERPROFILE") {
+                let user_fonts = std::path::Path::new(&home)
+                    .join("AppData/Local/Microsoft/Windows/Fonts/msyh.ttc");
+                sys_candidates.push(user_fonts.to_string_lossy().into_owned());
+            }
+        }
+        #[cfg(target_os = "macos")]
+        {
+            for path in &[
+                "/System/Library/Fonts/PingFang.ttc",
+                "/Library/Fonts/PingFang.ttc",
+                "/System/Library/Fonts/STHeiti Light.ttc",
+            ] {
+                sys_candidates.push((*path).to_string());
+            }
+        }
+        #[cfg(target_os = "linux")]
+        {
+            for path in &[
+                "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc",
+                "/usr/share/fonts/truetype/noto/NotoSansCJK-Regular.ttc",
+                "/usr/share/fonts/truetype/wqy/wqy-microhei.ttc",
+                "/usr/share/fonts/wenquanyi/wqy-microhei/wqy-microhei.ttc",
+            ] {
+                sys_candidates.push((*path).to_string());
+            }
+        }
+        for path in &sys_candidates {
             if let Ok(bytes) = std::fs::read(path) {
                 eprintln!("[editor] 使用系统中文字体: {}", path);
                 font_data = Some(bytes);

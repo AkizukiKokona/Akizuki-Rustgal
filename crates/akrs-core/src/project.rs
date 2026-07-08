@@ -196,13 +196,41 @@ fn recent_projects_path() -> PathBuf {
 }
 
 fn dirs_data_dir() -> Option<PathBuf> {
-    // 简单实现：优先使用 ~/.local/share，回退到当前目录
-    if let Ok(home) = std::env::var("HOME") {
-        let path = PathBuf::from(&home).join(".local").join("share");
-        if path.exists() {
-            return Some(path);
+    // 跨平台数据目录解析（不依赖外部 crate）：
+    // - Windows: %APPDATA% 或 %USERPROFILE%\AppData\Roaming
+    // - macOS:   ~/Library/Application Support
+    // - Linux:   $XDG_DATA_HOME 或 ~/.local/share
+    #[cfg(target_os = "windows")]
+    {
+        if let Ok(appdata) = std::env::var("APPDATA") {
+            return Some(PathBuf::from(appdata));
         }
-        return Some(PathBuf::from(home));
+        if let Ok(home) = std::env::var("USERPROFILE") {
+            return Some(PathBuf::from(home).join("AppData").join("Roaming"));
+        }
+        return None;
     }
-    None
+    #[cfg(target_os = "macos")]
+    {
+        if let Ok(home) = std::env::var("HOME") {
+            return Some(PathBuf::from(home).join("Library").join("Application Support"));
+        }
+        return None;
+    }
+    #[cfg(not(any(target_os = "windows", target_os = "macos")))]
+    {
+        if let Ok(xdg) = std::env::var("XDG_DATA_HOME") {
+            if !xdg.is_empty() {
+                return Some(PathBuf::from(xdg));
+            }
+        }
+        if let Ok(home) = std::env::var("HOME") {
+            let path = PathBuf::from(&home).join(".local").join("share");
+            if path.exists() {
+                return Some(path);
+            }
+            return Some(PathBuf::from(home));
+        }
+        None
+    }
 }

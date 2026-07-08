@@ -138,6 +138,8 @@ cargo run --release -p akrs-editor
 > **Rust 版本要求**：1.92.0+（使用 Rust 2024 Edition）
 >
 > **Linux 额外依赖**：`libxcb-render-util0-dev libxcb-shape0-dev libxcb-xfixes0-dev libxcb-xkb-dev libasound2-dev`
+>
+> **跨平台说明**：编辑器与运行时均会按平台自动选择系统中文字体（Windows 微软雅黑 / macOS 苹方 / Linux Noto 或文泉驿）、数据目录（Windows `%APPDATA%` / macOS `~/Library/Application Support` / Linux `~/.local/share`）与二进制名（Windows `akrs.exe` / 其他 `akrs`），无需手动配置。
 
 ## 剧本语言速览
 

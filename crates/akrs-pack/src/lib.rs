@@ -301,12 +301,33 @@ fn generate_readme(platform: &str, binary_name: &str, release: bool) -> String {
     readme
 }
 
+/// 判断给定 target triple 是否为 Windows 目标。
+fn target_is_windows(target: Option<&str>) -> bool {
+    match target {
+        Some(t) => t.contains("windows"),
+        None => cfg!(target_os = "windows"),
+    }
+}
+
+/// 根据目标平台拼接二进制路径。
+fn binary_path_for(profile: &str, target: Option<&str>) -> PathBuf {
+    let name = if target_is_windows(target) {
+        "akrs.exe"
+    } else {
+        "akrs"
+    };
+    match target {
+        Some(t) => PathBuf::from(format!("target/{}/{}/{}", t, profile, name)),
+        None => PathBuf::from(format!("target/{}/{}", profile, name)),
+    }
+}
+
 /// CLI entry point for the pack command.
 ///
 /// Parses arguments and runs the pack operation.
 /// Designed to be called from `akrs-cli` or as a standalone tool.
 pub fn run_pack_cli(args: &[String]) -> Result<(), String> {
-    let mut binary_path = PathBuf::from("target/release/akrs");
+    let mut binary_path = binary_path_for("release", None);
     let mut assets_dir = PathBuf::from("assets");
     let mut output_dir = PathBuf::from("dist/AkizukiRustgal");
     let mut release = true;
@@ -338,18 +359,15 @@ pub fn run_pack_cli(args: &[String]) -> Result<(), String> {
             }
             "--debug" => {
                 release = false;
-                binary_path = PathBuf::from("target/debug/akrs");
+                binary_path = binary_path_for("debug", None);
             }
             "--target" => {
                 i += 1;
                 if i < args.len() {
                     target = Some(args[i].clone());
-                    // Adjust binary path for target
-                    if release {
-                        binary_path = PathBuf::from(format!("target/{}/release/akrs", args[i]));
-                    } else {
-                        binary_path = PathBuf::from(format!("target/{}/debug/akrs", args[i]));
-                    }
+                    // 根据目标平台调整二进制路径（Windows 目标加 .exe）
+                    let profile = if release { "release" } else { "debug" };
+                    binary_path = binary_path_for(profile, Some(&args[i]));
                 }
             }
             "--help" | "-h" => {
