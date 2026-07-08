@@ -3348,6 +3348,35 @@ impl eframe::App for EditorApp {
                     ui.separator();
                     ui.add_space(12.0);
 
+                    ui.heading("主题配色");
+                    ui.add_space(8.0);
+                    ui.label(
+                        "自定义游戏内 4 种主题色。点击色块可打开调色板，\
+                         也可直接在输入框填写十六进制 #RRGGBB[AA]。\
+                         默认值即引擎内置配色。",
+                    );
+                    ui.add_space(6.0);
+
+                    let mut edit_color = |ui: &mut egui::Ui, label: &str, color: &mut [u8; 4]| {
+                        ui.horizontal(|ui| {
+                            ui.label(label);
+                            let mut c = egui::Color32::from_rgba_unmultiplied(color[0], color[1], color[2], color[3]);
+                            egui::color_picker::color_edit_button_srgba(ui, &mut c, egui::color_picker::Alpha::BlendOrAdditive);
+                            *color = c.to_array();
+                        });
+                    };
+                    edit_color(ui, "主题色1（面板背景）：", &mut self.project_config.theme.primary);
+                    ui.add_space(4.0);
+                    edit_color(ui, "主题色2（按钮背景）：", &mut self.project_config.theme.secondary);
+                    ui.add_space(4.0);
+                    edit_color(ui, "文本色（按钮 / 文字）：", &mut self.project_config.theme.text);
+                    ui.add_space(4.0);
+                    edit_color(ui, "对话框色（文本框渐变）：", &mut self.project_config.theme.dialogue);
+
+                    ui.add_space(16.0);
+                    ui.separator();
+                    ui.add_space(12.0);
+
                     ui.heading("运行设置");
                     ui.add_space(8.0);
 

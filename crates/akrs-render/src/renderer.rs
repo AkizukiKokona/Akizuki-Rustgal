@@ -12,6 +12,55 @@ use macroquad::audio::{play_sound, set_sound_volume, stop_sound, PlaySoundParams
 use macroquad::prelude::*;
 use std::path::PathBuf;
 
+/// 运行时主题配色（macroquad `Color` 形式）。
+///
+/// 由 `run()` 从 `ProjectConfig.theme` 构造后写入 thread_local 全局，
+/// 供各绘制函数读取，避免给每个 `draw_*` 函数都加主题参数。
+/// macroquad 主循环单线程，thread_local 访问安全且零争用。
+#[derive(Clone, Copy)]
+struct GameTheme {
+    /// 主题色1：模态对话框/面板背景。
+    primary: Color,
+    /// 主题色2：按钮背景基色（悬停/按下态由 `shade` 派生）。
+    secondary: Color,
+    /// 文本色：按钮/HUD 文字。
+    text: Color,
+    /// 对话框色：游戏进行中文本框渐变基色（仅取 RGB）。
+    dialogue: Color,
+}
+
+impl Default for GameTheme {
+    fn default() -> Self {
+        Self {
+            primary: Color::new(0.08, 0.06, 0.15, 0.97),
+            secondary: Color::new(0.30, 0.55, 0.85, 0.90),
+            text: Color::new(1.0, 1.0, 1.0, 1.0),
+            dialogue: Color::new(0.55, 0.78, 0.95, 1.0),
+        }
+    }
+}
+
+thread_local! {
+    static GAME_THEME: std::cell::Cell<GameTheme> = std::cell::Cell::new(GameTheme::default());
+}
+
+/// 读取当前主题色。
+fn theme() -> GameTheme {
+    GAME_THEME.with(|t| t.get())
+}
+
+/// 写入当前主题色（`run()` 开头调用一次）。
+fn set_theme(t: GameTheme) {
+    GAME_THEME.with(|c| c.set(t));
+}
+
+/// 基于基色提亮（`factor > 0`）或加深（`factor < 0`），alpha 保持不变。
+/// 用于从 `secondary` 派生按钮的悬停/按下/默认三态颜色。
+fn shade(c: Color, factor: f32) -> Color {
+    let f = |v: f32| (v + factor).clamp(0.0, 1.0);
+    Color::new(f(c.r), f(c.g), f(c.b), c.a)
+}
+
 /// Candidate system font paths, searched in order when the bundled font is
 /// missing or unreadable.  The first existing file is loaded.
 fn system_font_candidates() -> Vec<(&'static str, PathBuf)> {
@@ -801,6 +850,16 @@ pub async fn run(mut engine: Engine, project_config: &ProjectConfig) {
     if !assets.check_music(&title_music_name) {
         eprintln!("[Warning] 开屏页音乐 {} 未找到 — 标题页将静音", title_music_name);
     }
+
+    // 主题配色：从 project.json 的 theme 字段解析，写入 thread_local 供绘制函数读取。
+    // 留空或缺失时 ProjectConfig::default 已回退内置配色，此处直接转换。
+    let (tp, ts, ttx, td) = project_config.theme.to_f32();
+    set_theme(GameTheme {
+        primary: Color::new(tp[0], tp[1], tp[2], tp[3]),
+        secondary: Color::new(ts[0], ts[1], ts[2], ts[3]),
+        text: Color::new(ttx[0], ttx[1], ttx[2], ttx[3]),
+        dialogue: Color::new(td[0], td[1], td[2], td[3]),
+    });
 
     loop {
         let dt = get_frame_time();
@@ -1795,7 +1854,10 @@ fn draw_dialogue(dialogue: &akrs_runtime::DialogueState, sw: f32, sh: f32, font:
 
     // 对话框背景：平滑渐变效果
     // 顶部：15%透明（alpha=0.85），底部：完全透明（alpha=0.0）
-    // 渐变延伸到屏幕底部，使用 64 段绘制实现更平滑过渡
+    // 渐变延伸到屏幕底部，使用 64 段绘制实现更平滑过渡。
+    // 渐变基色取自主题对话框色（theme.dialogue 的 RGB），可经编辑器自定义。
+    let t = theme();
+    let (dr, dg, db) = (t.dialogue.r, t.dialogue.g, t.dialogue.b);
     let gradient_segments = 64;
     // 渐变区域从对话框顶部一直延伸到屏幕底部
     let gradient_start_y = box_y;
@@ -1806,12 +1868,12 @@ fn draw_dialogue(dialogue: &akrs_runtime::DialogueState, sw: f32, sh: f32, font:
         let seg_y = gradient_start_y + i as f32 * segment_h;
         let alpha_top = 0.85; // 顶部 15% 透明 = 85% 不透明
         let alpha_bottom = 0.0; // 底部完全透明
-        let t = i as f32 / (gradient_segments - 1) as f32;
-        let alpha = alpha_top * (1.0 - t) + alpha_bottom * t;
+        let gt = i as f32 / (gradient_segments - 1) as f32;
+        let alpha = alpha_top * (1.0 - gt) + alpha_bottom * gt;
         // 只在对话框区域内绘制，但渐变计算覆盖到屏幕底部
         if seg_y < box_y + box_h {
             let draw_h = segment_h.min(box_y + box_h - seg_y);
-            draw_rectangle(box_x, seg_y, box_w, draw_h, Color::new(0.55, 0.78, 0.95, alpha));
+            draw_rectangle(box_x, seg_y, box_w, draw_h, Color::new(dr, dg, db, alpha));
         }
     }
     // 边框已移除（用户反馈边框线看着难受）
@@ -2017,12 +2079,13 @@ fn draw_autosave_prompt(engine: &Engine, buttons: &mut Vec<ButtonRect>, sw: f32,
     let dialog_y = (sh - dialog_h) / 2.0;
 
     // Panel background + border.
+    let tp = theme().primary;
     draw_rectangle(
         dialog_x,
         dialog_y,
         dialog_w,
         dialog_h,
-        Color::new(0.08, 0.06, 0.15, 0.97),
+        Color::new(tp.r, tp.g, tp.b, 0.97),
     );
     draw_rectangle_lines(
         dialog_x,
@@ -2132,7 +2195,8 @@ fn draw_note_edit_dialog(
     let dialog_y = (sh - dialog_h) / 2.0;
 
     // 面板背景 + 边框。
-    draw_rectangle(dialog_x, dialog_y, dialog_w, dialog_h, Color::new(0.08, 0.06, 0.15, 0.97));
+    let tp = theme().primary;
+    draw_rectangle(dialog_x, dialog_y, dialog_w, dialog_h, Color::new(tp.r, tp.g, tp.b, 0.97));
     draw_rectangle_lines(dialog_x, dialog_y, dialog_w, dialog_h, 2.0 * scale, Color::new(0.29, 0.62, 1.0, 0.9));
 
     let pad = 28.0 * scale;
@@ -2200,7 +2264,10 @@ fn draw_note_edit_dialog(
     // fade=0 时面板区域被同色矩形完全遮盖（看不见内容），fade=1 时无遮罩，
     // 中间过程内容平滑淡入，避免弹窗瞬间弹出。
     if fade < 1.0 {
-        draw_rectangle(dialog_x, dialog_y, dialog_w, dialog_h, Color::new(0.08, 0.06, 0.15, 1.0 - fade));
+        draw_rectangle(dialog_x, dialog_y, dialog_w, dialog_h, {
+            let tp = theme().primary;
+            Color::new(tp.r, tp.g, tp.b, 1.0 - fade)
+        });
     }
 }
 
@@ -2214,12 +2281,13 @@ fn draw_confirm_dialog(engine: &Engine, buttons: &mut Vec<ButtonRect>, sw: f32, 
     let dialog_y = (sh - dialog_h) / 2.0;
 
     // Panel background + border.
+    let tp = theme().primary;
     draw_rectangle(
         dialog_x,
         dialog_y,
         dialog_w,
         dialog_h,
-        Color::new(0.08, 0.06, 0.15, 0.97),
+        Color::new(tp.r, tp.g, tp.b, 0.97),
     );
     draw_rectangle_lines(
         dialog_x,
@@ -2294,7 +2362,10 @@ fn draw_confirm_dialog(engine: &Engine, buttons: &mut Vec<ButtonRect>, sw: f32, 
     // fade=0 时面板区域被同色矩形完全遮盖（看不见内容），fade=1 时无遮罩，
     // 中间过程内容平滑淡入，避免弹窗瞬间弹出。
     if fade < 1.0 {
-        draw_rectangle(dialog_x, dialog_y, dialog_w, dialog_h, Color::new(0.08, 0.06, 0.15, 1.0 - fade));
+        draw_rectangle(dialog_x, dialog_y, dialog_w, dialog_h, {
+            let tp = theme().primary;
+            Color::new(tp.r, tp.g, tp.b, 1.0 - fade)
+        });
     }
 }
 
@@ -4308,14 +4379,16 @@ fn draw_button(
     let (mx, my) = mouse_position();
     let hover = mx >= x && mx <= x + w && my >= y && my <= y + h;
 
-    let bg_color = if hover {
-        Color::new(0.45, 0.7, 0.95, 0.95)
-    } else {
-        Color::new(0.3, 0.55, 0.85, 0.9)
-    };
+    // 按钮配色：基于主题色2（secondary）派生悬停/默认两态。
+    let t = theme();
+    let bg_color = if hover { shade(t.secondary, 0.15) } else { t.secondary };
     draw_rectangle(x, y, w, h, bg_color);
-    draw_rectangle_lines(x, y, w, h, 2.0 * scale,
-        if hover { Color::new(0.7, 0.88, 1.0, 1.0) } else { Color::new(0.5, 0.75, 1.0, 0.8) });
+    let border = if hover {
+        Color::new(shade(t.secondary, 0.40).r, shade(t.secondary, 0.40).g, shade(t.secondary, 0.40).b, 1.0)
+    } else {
+        Color::new(shade(t.secondary, 0.20).r, shade(t.secondary, 0.20).g, shade(t.secondary, 0.20).b, 0.8)
+    };
+    draw_rectangle_lines(x, y, w, h, 2.0 * scale, border);
 
     // Font size scales with the button height, capped to keep labels legible.
     let font_size = (h * 0.4).min(28.0 * scale);
@@ -4325,7 +4398,7 @@ fn draw_button(
         x + (w - tw) / 2.0,
         y + h / 2.0 + font_size / 3.0,
         font_size,
-        WHITE,
+        t.text,
         font,
     );
 
@@ -4443,16 +4516,25 @@ fn draw_small_button(
     let hover = mx >= x && mx <= x + w && my >= y && my <= y + h;
     let pressed = hover && is_mouse_button_down(MouseButton::Left);
 
-    // 三态颜色（天蓝色主题），激活态（如快进中）使用更亮的颜色
-    let (bg_r, bg_g, bg_b, bg_a_base, border_r, border_g, border_b, border_a_base, scale_factor, dy) = if pressed {
+    // 三态颜色：基于主题色2（secondary）派生，激活态（如快进中）使用更亮的颜色。
+    let t = theme();
+    let sec = t.secondary;
+    let (bg, border, scale_factor, dy) = if pressed {
         // 按下：颜色加深、按压下移 1px、轻微缩小
-        (0.2, 0.45, 0.75, 0.95, 0.45, 0.7, 0.95, 1.0, 0.96, 1.0 * scale)
+        (shade(sec, -0.10), shade(sec, 0.15), 0.96, 1.0 * scale)
     } else if hover || active {
         // 悬停或激活：高亮、放大
-        (0.35, 0.6, 0.9, 0.92, 0.6, 0.82, 1.0, 1.0, 1.06, 0.0)
+        (shade(sec, 0.05), shade(sec, 0.30), 1.06, 0.0)
     } else {
         // 默认：低亮度半透明
-        (0.2, 0.4, 0.7, 0.70, 0.4, 0.6, 0.85, 0.55, 1.00, 0.0)
+        (shade(sec, -0.15), sec, 1.00, 0.0)
+    };
+    let (bg_a_base, border_a_base) = if pressed {
+        (0.95, 1.0)
+    } else if hover || active {
+        (0.92, 1.0)
+    } else {
+        (0.70, 0.55)
     };
 
     // 按缩放因子调整绘制尺寸（以中心为基准）
@@ -4461,19 +4543,19 @@ fn draw_small_button(
     let draw_x = x + (w - draw_w) / 2.0;
     let draw_y = y + (h - draw_h) / 2.0 + dy;
 
-    let bg_color = Color::new(bg_r, bg_g, bg_b, bg_a_base * alpha);
+    let bg_color = Color::new(bg.r, bg.g, bg.b, bg_a_base * alpha);
     draw_rectangle(draw_x, draw_y, draw_w, draw_h, bg_color);
     draw_rectangle_lines(
         draw_x, draw_y, draw_w, draw_h,
         1.5 * scale,
-        Color::new(border_r, border_g, border_b, border_a_base * alpha),
+        Color::new(border.r, border.g, border.b, border_a_base * alpha),
     );
 
     let font_size = 20.0 * scale;
     let tw = measure_text_f(label, font, font_size as u16, 1.0).width;
     // 文字透明度随 alpha 走；悬停/按下时略提亮
     let text_alpha = if pressed { 0.95 } else if hover { 1.0 } else { 0.9 } * alpha;
-    let text_color = Color::new(1.0, 1.0, 1.0, text_alpha);
+    let text_color = Color::new(t.text.r, t.text.g, t.text.b, text_alpha);
     draw_text_f(
         label,
         draw_x + (draw_w - tw) / 2.0,

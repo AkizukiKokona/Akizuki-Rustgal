@@ -6,7 +6,7 @@
 
 [![License](https://img.shields.io/badge/license-MIT-blue.svg)](#许可证)
 [![Rust](https://img.shields.io/badge/rust-1.92+-orange.svg)](https://www.rust-lang.org)
-[![Version](https://img.shields.io/badge/version-1.0.45-success.svg)](#)
+[![Version](https://img.shields.io/badge/version-1.0.46-success.svg)](#)
 [![Platform](https://img.shields.io/badge/platform-Windows%20%7C%20Linux%20%7C%20macOS-lightgrey.svg)](#下载与安装)
 [![PRs Welcome](https://img.shields.io/badge/PRs-welcome-brightgreen.svg)](#贡献)
 
@@ -104,6 +104,7 @@ Akizuki\*Rustgal 是一个从零开始、**100% 纯 Rust** 实现的视觉小说
 - **编辑器内置打包** — GUI 勾选 Windows/Linux/macOS 平台，一键 `cargo build --release --target`，自动收集产物到 `build/` 目录
 - **编辑器游戏预览** — 点击按钮即可在独立窗口启动游戏预览，编辑器可继续编辑，互不阻塞
 - **开屏页（标题页）可配置** — 通过 `project.json` 的 `title_background` 与 `title_music` 字段自定义标题页背景图与背景音乐（编辑器「项目设置」内可编辑）；留空时背景回退到 `assets/title.png`、音乐回退到 `assets/music/title_bgm.mp3`，二者皆无则静音。**本仓库自带的 demo 不含任何音频资源，也未配置开屏页音乐**，因此默认标题页静音——但引擎完整支持自定义开屏页音画。
+- **主题配色可自定义** — 通过 `project.json` 的 `theme` 字段（编辑器「项目设置 → 主题配色」内用调色板或十六进制输入框编辑）自定义游戏内 4 种颜色：主题色1（模态对话框/面板背景）、主题色2（按钮背景，悬停/按下态由引擎自动派生）、文本色（按钮/HUD 文字）、对话框色（游戏进行中文本框渐变基色）。各字段留空或缺失时回退引擎内置配色，旧项目文件无需改动即可加载。
 
 ## 快速开始
 
