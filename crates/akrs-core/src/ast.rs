@@ -99,6 +99,35 @@ pub enum Node {
     StoryEnd {
         span: LocSpan,
     },
+    /// 隐藏结局声明（编译期元数据，不产生运行时指令）。
+    /// 语法：`ending "id" epilogue "path" [button "text"]`
+    /// 收集到 Vm.endings 供引擎/渲染层查询，决定主页是否显示彩蛋按钮。
+    EndingDecl {
+        decl: EndingDecl,
+        span: LocSpan,
+    },
+    /// 解锁隐藏结局标记：`unlock "id"`。
+    /// VM 执行到此处时发 `VmEvent::EndingUnlocked { id }`，
+    /// 引擎据此持久化到 saves/endings.json，主页随后显示对应彩蛋按钮。
+    UnlockEnding {
+        id: String,
+        span: LocSpan,
+    },
+}
+
+/// 隐藏结局声明（彩蛋）。
+///
+/// 主线剧本中通过 `ending "id" epilogue "path" button "text"` 声明一个隐藏结局：
+/// - `id`：结局标识符，`unlock "id"` 据此解锁。
+/// - `epilogue`：彩蛋剧本文件路径（相对项目目录），主页按钮点击后加载。
+/// - `button_text`：主页按钮显示文本（可选）。None 时使用翻译键
+///   `ending.<id>.button`，再回退到默认 `ending.default.button`。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct EndingDecl {
+    pub id: String,
+    pub epilogue: String,
+    #[serde(default)]
+    pub button_text: Option<String>,
 }
 
 /// Stage direction actions.

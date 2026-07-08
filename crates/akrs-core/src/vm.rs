@@ -26,6 +26,8 @@ pub enum VmEvent {
     Return,
     Wait { seconds: f64 },
     StoryEnd,
+    /// 解锁隐藏结局（`unlock "id"`）。引擎据此持久化到 saves/endings.json。
+    EndingUnlocked { id: String },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -66,6 +68,8 @@ enum Instr {
     Return,
     Wait { seconds: f64 },
     StoryEnd,
+    /// 解锁隐藏结局标记（`unlock "id"`）
+    UnlockEnding { id: String },
 }
 
 #[derive(Debug, Clone)]
@@ -97,6 +101,9 @@ pub struct Vm {
     variables: HashMap<String, Value>,
     call_stack: Vec<(usize, usize)>,
     pending_choice: Option<Vec<CompiledOption>>,
+    /// 隐藏结局声明（编译期从所有 `ending ...` 节点收集）。
+    /// 渲染层据此决定主页是否显示彩蛋按钮及其文本/剧本路径。
+    endings: Vec<EndingDecl>,
 }
 
 impl Vm {
@@ -128,7 +135,13 @@ impl Vm {
             variables: HashMap::new(),
             call_stack: Vec::new(),
             pending_choice: None,
+            endings: compiler.endings,
         }
+    }
+
+    /// 返回编译期收集的隐藏结局声明。
+    pub fn endings(&self) -> &[EndingDecl] {
+        &self.endings
     }
 
     pub fn start(&mut self) -> Result<(), VmError> {
@@ -244,6 +257,10 @@ impl Vm {
                     return Ok(VmEvent::Wait { seconds });
                 }
                 Instr::StoryEnd => { return Ok(VmEvent::StoryEnd); }
+                Instr::UnlockEnding { id } => {
+                    self.ip += 1;
+                    return Ok(VmEvent::EndingUnlocked { id });
+                }
             }
         }
     }
@@ -350,6 +367,11 @@ impl Vm {
                 Instr::Direction { action } => {
                     self.ip += 1;
                     collected.push(VmEvent::Direction { action });
+                }
+                // 隐藏结局解锁：重建时重新发出事件（幂等，引擎再次持久化无副作用）。
+                Instr::UnlockEnding { id } => {
+                    self.ip += 1;
+                    collected.push(VmEvent::EndingUnlocked { id });
                 }
                 // 控制/状态指令：正常执行（不收集事件）。
                 Instr::VarOp { name, op, expr } => {
@@ -533,10 +555,13 @@ impl Vm {
 }
 
 /// Compiler: AST → flat instructions.
-struct Compiler;
+struct Compiler {
+    /// 编译期收集的隐藏结局声明（来自所有 `ending ...` 节点）。
+    endings: Vec<EndingDecl>,
+}
 
 impl Compiler {
-    fn new() -> Self { Self }
+    fn new() -> Self { Self { endings: Vec::new() } }
 
     fn compile_section(&mut self, section: &Section, section_map: &HashMap<String, usize>) -> Vec<Instr> {
         let mut instrs = Vec::new();
@@ -630,6 +655,14 @@ impl Compiler {
             Node::Return { .. } => { instrs.push(Instr::Return); }
             Node::Wait { seconds, .. } => { instrs.push(Instr::Wait { seconds: *seconds }); }
             Node::StoryEnd { .. } => { instrs.push(Instr::StoryEnd); }
+            // 隐藏结局声明：编译期元数据收集，不产生运行时指令。
+            Node::EndingDecl { decl, .. } => {
+                self.endings.push(decl.clone());
+            }
+            // 解锁标记：发出运行时事件，引擎据此持久化到 endings.json。
+            Node::UnlockEnding { id, .. } => {
+                instrs.push(Instr::UnlockEnding { id: id.clone() });
+            }
         }
     }
 }
@@ -736,5 +769,45 @@ mod tests {
         vm.load_state(state);
         let e = vm.step().unwrap();
         assert!(matches!(e, VmEvent::Dialogue { text, .. } if text == "First."));
+    }
+
+    #[test]
+    fn test_ending_decl_collected_and_unlock_emits_event() {
+        // ending 声明应被编译期收集（不产生指令），unlock 应产生 EndingUnlocked 事件。
+        let src = "# S\n\
+            ending \"true_end\" epilogue \"scripts/epilogue.akrs\" button \"尾声之后\"\n\
+            Aki: \"Hello.\"\n\
+            unlock \"true_end\"\n";
+        let tokens = Lexer::new(src).tokenize().expect("lex");
+        let prog = Parser::new(tokens).parse().expect("parse");
+        let mut vm = Vm::new(&prog);
+        // 编译期应收集到 1 个 ending 声明，含 button_text。
+        let endings = vm.endings();
+        assert_eq!(endings.len(), 1);
+        assert_eq!(endings[0].id, "true_end");
+        assert_eq!(endings[0].epilogue, "scripts/epilogue.akrs");
+        assert_eq!(endings[0].button_text.as_deref(), Some("尾声之后"));
+
+        vm.start().unwrap();
+        // step() 先遇到 Dialogue（Aki: "Hello."），返回后 advance，
+        // 下一个指令是 UnlockEnding，应返回 EndingUnlocked 事件。
+        let _ = vm.step(); // Dialogue "Hello."
+        vm.advance();
+        let ev = vm.step().unwrap();
+        assert!(matches!(ev, VmEvent::EndingUnlocked { id } if id == "true_end"));
+    }
+
+    #[test]
+    fn test_ending_decl_without_button_clause() {
+        // 省略 button 子句时 button_text 应为 None。
+        let src = "# S\nending \"end_a\" epilogue \"a.akrs\"\nAki: \"Hi.\"\n";
+        let tokens = Lexer::new(src).tokenize().expect("lex");
+        let prog = Parser::new(tokens).parse().expect("parse");
+        let vm = Vm::new(&prog);
+        let endings = vm.endings();
+        assert_eq!(endings.len(), 1);
+        assert_eq!(endings[0].id, "end_a");
+        assert_eq!(endings[0].epilogue, "a.akrs");
+        assert!(endings[0].button_text.is_none());
     }
 }

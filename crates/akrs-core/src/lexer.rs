@@ -425,6 +425,8 @@ impl<'a> Lexer<'a> {
             "and" => TokenKind::And,
             "or" => TokenKind::Or,
             "not" => TokenKind::Not,
+            "ending" => TokenKind::Ending,
+            "unlock" => TokenKind::Unlock,
             "true" => TokenKind::Integer(1),
             "false" => TokenKind::Integer(0),
             _ => TokenKind::Ident(s),

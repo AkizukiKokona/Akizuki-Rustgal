@@ -2835,6 +2835,8 @@ impl eframe::App for EditorApp {
                     ("@", "@bg 背景", "背景指令 (Ctrl+4)"),
                     ("?", "? 选项", "选择分支"),
                     ("$", "$变量", "变量操作"),
+                    ("E", "ending \"true_end\" epilogue \"scripts/epilogue.akrs\" button \"尾声之后\"", "隐藏结局声明（彩蛋：定义尾声剧本与按钮文本）"),
+                    ("U", "unlock \"true_end\"", "解锁隐藏结局标记（执行后主页显示尾声按钮）"),
                 ];
                 for (icon, syntax, tooltip) in &insert_buttons {
                     let btn = ui.add(
@@ -4416,6 +4418,10 @@ fn line_base_color(trimmed: &str) -> egui::Color32 {
         COLOR_VARIABLE
     } else if trimmed.starts_with('?') || trimmed.starts_with('|') {
         COLOR_CHOICE
+    } else if trimmed.starts_with("ending ") || trimmed.starts_with("unlock ") {
+        // 隐藏结局声明（ending "id" epilogue "path" [button "text"]）
+        // 与解锁标记（unlock "id"）作为流程级关键字着色。
+        COLOR_FLOW
     } else {
         COLOR_DEFAULT
     }

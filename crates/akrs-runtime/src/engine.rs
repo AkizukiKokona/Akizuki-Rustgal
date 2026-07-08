@@ -37,7 +37,7 @@ use crate::transition::TransitionManager;
 
 use akrs_core::{
     compile_and_create_vm, CompileError, DirectionAction, DirectionKind,
-    Transition, Vm, VmEvent,
+    EndingDecl, Transition, Vm, VmEvent,
 };
 
 use std::collections::HashSet;
@@ -88,6 +88,9 @@ pub enum EngineEvent {
     ScriptReloaded,
     /// Script hot-reload failed.
     ScriptReloadFailed { errors: Vec<String> },
+    /// 隐藏结局已解锁（`unlock "id"` 执行）。
+    /// 渲染层可据此显示提示；引擎已将解锁状态持久化到 `saves/endings.json`。
+    EndingUnlocked { id: String },
 }
 
 /// Engine phase (high-level state machine).
@@ -218,6 +221,10 @@ pub struct Engine {
     /// 待处理的章节切换通知（由 `->` 章节跳转设置，渲染层取走后播放动画）。
     /// None 表示无待处理通知。
     pending_chapter_notify: Option<ChapterNotify>,
+    /// 已解锁的隐藏结局 id 集合（持久化到 `saves/endings.json`）。
+    /// 由剧本中的 `unlock "id"` 标记触发；渲染层据此在标题页显示
+    /// 「尾声之后」按钮，点击后加载对应 epilogue 剧本。
+    unlocked_endings: HashSet<String>,
     /// 剧本错误信息。
     ///
     /// 当剧本编译/加载失败时，引擎以"仅标题页"模式运行：VM 使用最小占位
@@ -267,6 +274,7 @@ impl Engine {
             ui_translator: UiTranslator::new(),
             translations_dir: None,
             pending_chapter_notify: None,
+            unlocked_endings: HashSet::new(),
             script_error: None,
             crash_info: None,
         })
@@ -312,6 +320,7 @@ impl Engine {
             ui_translator: UiTranslator::new(),
             translations_dir: None,
             pending_chapter_notify: None,
+            unlocked_endings: HashSet::new(),
             script_error: Some(error_msg),
             crash_info: None,
         }
@@ -601,6 +610,8 @@ impl Engine {
         self.settings = Settings::load(&path);
         // 同时加载已读历史
         self.load_read_history();
+        // 同时加载已解锁的隐藏结局
+        self.load_endings();
     }
 
     /// 加载已读历史（saves/read_history.json）。
@@ -628,6 +639,51 @@ impl Engine {
     pub fn clear_read_history(&mut self) {
         self.read_history.clear();
         self.save_read_history();
+    }
+
+    /// 加载已解锁的隐藏结局集合（saves/endings.json）。
+    /// 文件不存在或解析失败时使用空集合（视为无结局解锁）。
+    fn load_endings(&mut self) {
+        let path = std::path::PathBuf::from("saves").join("endings.json");
+        if let Ok(content) = std::fs::read_to_string(&path) {
+            if let Ok(ids) = serde_json::from_str::<HashSet<String>>(&content) {
+                self.unlocked_endings = ids;
+            }
+        }
+    }
+
+    /// 保存已解锁的隐藏结局集合到 `saves/endings.json`。
+    fn save_endings(&self) {
+        let path = std::path::PathBuf::from("saves").join("endings.json");
+        if let Ok(content) = serde_json::to_string(&self.unlocked_endings) {
+            let _ = std::fs::create_dir_all("saves");
+            let _ = std::fs::write(&path, content);
+        }
+    }
+
+    /// 返回剧本中声明的所有隐藏结局元数据（`ending "id" epilogue "path" ...`）。
+    /// 渲染层据此决定标题页是否显示「尾声之后」按钮、加载哪个 epilogue 剧本。
+    pub fn endings(&self) -> &[EndingDecl] {
+        self.vm.endings()
+    }
+
+    /// 查询指定 id 的隐藏结局是否已解锁。
+    pub fn is_ending_unlocked(&self, id: &str) -> bool {
+        self.unlocked_endings.contains(id)
+    }
+
+    /// 返回所有已解锁的隐藏结局 id 集合。
+    pub fn unlocked_endings(&self) -> &HashSet<String> {
+        &self.unlocked_endings
+    }
+
+    /// 返回已解锁且在当前剧本中仍有声明的隐藏结局元数据列表。
+    /// 用于标题页显示「尾声之后」按钮：只展示既被 unlock 过、当前剧本又
+    /// 定义了 epilogue 的结局（避免旧存档解锁的 id 在新剧本中失效时仍显示）。
+    pub fn unlocked_endings_with_decl(&self) -> Vec<&EndingDecl> {
+        self.vm.endings().iter()
+            .filter(|e| self.unlocked_endings.contains(&e.id))
+            .collect()
     }
 
     /// Persist the current settings to `saves/settings.json`.
@@ -1550,6 +1606,14 @@ impl Engine {
                 VmEvent::Return => {
                     // 从子例程返回：不更新章节名（无目标信息），不触发通知。
                     // Non-blocking: continue to next event
+                }
+                VmEvent::EndingUnlocked { id } => {
+                    // 隐藏结局解锁：持久化到 saves/endings.json，并通知渲染层。
+                    // 幂等：重复解锁同一 id 无副作用。非阻塞，继续执行后续指令。
+                    if self.unlocked_endings.insert(id.clone()) {
+                        self.save_endings();
+                    }
+                    events.push(EngineEvent::EndingUnlocked { id });
                 }
             }
         }

@@ -102,6 +102,10 @@ pub enum TokenKind {
     Else,
     End,
     Wait,
+    /// `ending` — 隐藏结局声明关键字
+    Ending,
+    /// `unlock` — 解锁隐藏结局标记关键字
+    Unlock,
 
     // Formatting
     Newline,
@@ -162,6 +166,8 @@ impl fmt::Display for TokenKind {
             TokenKind::Else => write!(f, "else"),
             TokenKind::End => write!(f, "end"),
             TokenKind::Wait => write!(f, "wait"),
+            TokenKind::Ending => write!(f, "ending"),
+            TokenKind::Unlock => write!(f, "unlock"),
             TokenKind::Newline => write!(f, "newline"),
             TokenKind::Comma => write!(f, ","),
             TokenKind::Eof => write!(f, "eof"),

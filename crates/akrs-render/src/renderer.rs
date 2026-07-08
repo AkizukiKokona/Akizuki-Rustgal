@@ -537,6 +537,9 @@ enum PendingUiAction {
     DiscardSettings,
     /// 故事结束后自动返回标题（淡入淡出，无按钮，不保留继续存档）。
     StoryEndToTitle,
+    /// 进入隐藏结局的尾声剧本（索引到 engine.unlocked_endings_with_decl()）。
+    /// 在 swap 点加载 epilogue .akrs 文件并开始播放。
+    PlayEpilogue(usize),
 }
 
 /// 确认对话框的类型，用于显示不同的提示文本。
@@ -809,6 +812,10 @@ enum ButtonAction {
     DirCancel,
     /// 进入某个子目录（索引到 dir_picker_entries）。
     DirEntry(usize),
+    // ── 隐藏结局 epilogue ───
+    /// 从标题页进入隐藏结局的尾声剧本。
+    /// 索引指向 `engine.unlocked_endings_with_decl()` 返回的列表。
+    PlayEpilogue(usize),
 }
 
 /// 窗口配置 for macroquad。
@@ -1101,6 +1108,12 @@ pub async fn run(mut engine: Engine, project_config: &ProjectConfig) {
     let mut confirm_return_mode: UiMode = UiMode::Normal;
     // 是否有"继续游戏"存档。
     let mut has_continue_save: bool = engine.has_continue_save();
+    // 当前是否正在播放隐藏结局的尾声剧本（epilogue）。
+    // 为 true 时，故事结束/返回标题会从 main_source 重建主引擎而非 epilogue 源码。
+    let mut epilogue_active: bool = false;
+    // 主剧本源码快照。进入 epilogue 前保存主剧本源码，epilogue 结束返回标题时
+    // 据此重建主引擎（epilogue 引擎的 source() 是尾声剧本，不能用来重建标题页）。
+    let mut main_source: String = engine.source().to_string();
     // 进入设置菜单前的 UI 模式（用于返回时恢复）。
     let mut settings_prev_mode: UiMode = UiMode::Normal;
     // 备注编辑弹窗状态：正在编辑的槽位号 + 当前输入缓冲区。
@@ -1430,21 +1443,42 @@ pub async fn run(mut engine: Engine, project_config: &ProjectConfig) {
                     let _ = engine.delete_autosave();
                 }
                 PendingUiAction::BackToTitle => {
-                    // 保存"继续游戏"存档
-                    let _ = engine.save_continue();
-                    has_continue_save = true;
-                    let source = engine.source().to_string();
-                    let saved_settings = engine.settings().clone();
-                    // 保存翻译目录，重建引擎后恢复（Engine::new 不会继承 translations_dir，
-                    // 若不恢复则返回标题后 UI 翻译重置为英文且无法切换语言）。
-                    let saved_translations_dir = engine.translations_dir().map(|p| p.to_path_buf());
-                    if let Ok(mut new_engine) = Engine::new(&source) {
-                        *new_engine.settings_mut() = saved_settings;
-                        if let Some(dir) = saved_translations_dir {
-                            new_engine.restore_translations(dir);
+                    // epilogue 模式下：从尾声剧本返回标题，从 main_source 重建主引擎，
+                    //   不保存继续存档（尾声不应成为主游戏的继续点），清除 epilogue 标记。
+                    // 普通模式下：保存"继续游戏"存档后重建引擎。
+                    if epilogue_active {
+                        epilogue_active = false;
+                        let source = main_source.clone();
+                        let saved_settings = engine.settings().clone();
+                        let saved_translations_dir = engine.translations_dir().map(|p| p.to_path_buf());
+                        let saved_title = engine.scene().title.clone();
+                        let saved_subtitle = engine.scene().subtitle.clone();
+                        if let Ok(mut new_engine) = Engine::new(&source) {
+                            *new_engine.settings_mut() = saved_settings;
+                            if let Some(dir) = saved_translations_dir {
+                                new_engine.restore_translations(dir);
+                            }
+                            new_engine.set_title(saved_title, saved_subtitle);
+                            engine = new_engine;
+                            title_music_played = false;
                         }
-                        engine = new_engine;
-                        title_music_played = false;
+                    } else {
+                        // 保存"继续游戏"存档
+                        let _ = engine.save_continue();
+                        has_continue_save = true;
+                        let source = engine.source().to_string();
+                        let saved_settings = engine.settings().clone();
+                        // 保存翻译目录，重建引擎后恢复（Engine::new 不会继承 translations_dir，
+                        // 若不恢复则返回标题后 UI 翻译重置为英文且无法切换语言）。
+                        let saved_translations_dir = engine.translations_dir().map(|p| p.to_path_buf());
+                        if let Ok(mut new_engine) = Engine::new(&source) {
+                            *new_engine.settings_mut() = saved_settings;
+                            if let Some(dir) = saved_translations_dir {
+                                new_engine.restore_translations(dir);
+                            }
+                            engine = new_engine;
+                            title_music_played = false;
+                        }
                     }
                     hud_hidden = false;
                     // 清除设置快照
@@ -1482,24 +1516,109 @@ pub async fn run(mut engine: Engine, project_config: &ProjectConfig) {
                     ui_mode = settings_prev_mode;
                 }
                 PendingUiAction::StoryEndToTitle => {
-                    // 故事结束自动返回标题：重置引擎，删除继续存档，不显示继续游戏按钮
-                    let _ = engine.delete_continue();
-                    has_continue_save = false;
-                    let source = engine.source().to_string();
-                    let saved_settings = engine.settings().clone();
-                    // 保存翻译目录，重建引擎后恢复（同 BackToTitle）。
-                    let saved_translations_dir = engine.translations_dir().map(|p| p.to_path_buf());
-                    if let Ok(mut new_engine) = Engine::new(&source) {
-                        *new_engine.settings_mut() = saved_settings;
-                        if let Some(dir) = saved_translations_dir {
-                            new_engine.restore_translations(dir);
+                    // 故事结束自动返回标题。
+                    // epilogue 模式下：尾声剧本结束，从主剧本源码重建主引擎，
+                    //   不删除继续存档（尾声不应影响主游戏进度），清除 epilogue 标记。
+                    // 普通模式下：重置引擎，删除继续存档，不显示继续游戏按钮。
+                    if epilogue_active {
+                        epilogue_active = false;
+                        let source = main_source.clone();
+                        let saved_settings = engine.settings().clone();
+                        let saved_translations_dir = engine.translations_dir().map(|p| p.to_path_buf());
+                        let saved_title = engine.scene().title.clone();
+                        let saved_subtitle = engine.scene().subtitle.clone();
+                        if let Ok(mut new_engine) = Engine::new(&source) {
+                            *new_engine.settings_mut() = saved_settings;
+                            if let Some(dir) = saved_translations_dir {
+                                new_engine.restore_translations(dir);
+                            }
+                            new_engine.set_title(saved_title, saved_subtitle);
+                            engine = new_engine;
+                            title_music_played = false;
                         }
-                        engine = new_engine;
-                        title_music_played = false;
+                    } else {
+                        let _ = engine.delete_continue();
+                        has_continue_save = false;
+                        let source = engine.source().to_string();
+                        let saved_settings = engine.settings().clone();
+                        // 保存翻译目录，重建引擎后恢复（同 BackToTitle）。
+                        let saved_translations_dir = engine.translations_dir().map(|p| p.to_path_buf());
+                        if let Ok(mut new_engine) = Engine::new(&source) {
+                            *new_engine.settings_mut() = saved_settings;
+                            if let Some(dir) = saved_translations_dir {
+                                new_engine.restore_translations(dir);
+                            }
+                            engine = new_engine;
+                            title_music_played = false;
+                        }
                     }
                     hud_hidden = false;
                     settings_snapshot = None;
                     ui_mode = UiMode::Normal;
+                }
+                PendingUiAction::PlayEpilogue(idx) => {
+                    // 进入隐藏结局的尾声剧本。
+                    // 从 engine.unlocked_endings_with_decl() 取对应声明，
+                    // 读取 epilogue .akrs 文件，创建新引擎并开始播放。
+                    let endings = engine.unlocked_endings_with_decl();
+                    if let Some(decl) = endings.get(idx) {
+                        let epilogue_path = &decl.epilogue;
+                        match std::fs::read_to_string(epilogue_path) {
+                            Ok(epilogue_source) => {
+                                // 保存主剧本源码（若尚未进入 epilogue）。
+                                if !epilogue_active {
+                                    main_source = engine.source().to_string();
+                                }
+                                let saved_settings = engine.settings().clone();
+                                let saved_translations_dir = engine.translations_dir().map(|p| p.to_path_buf());
+                                let saved_title = engine.scene().title.clone();
+                                let saved_subtitle = engine.scene().subtitle.clone();
+                                match Engine::new(&epilogue_source) {
+                                    Ok(mut new_engine) => {
+                                        *new_engine.settings_mut() = saved_settings;
+                                        if let Some(dir) = saved_translations_dir {
+                                            new_engine.restore_translations(dir);
+                                        }
+                                        new_engine.set_title(saved_title, saved_subtitle);
+                                        new_engine.start_game();
+                                        engine = new_engine;
+                                        epilogue_active = true;
+                                        hud_hidden = false;
+                                        title_music_played = false;
+                                    }
+                                    Err(errors) => {
+                                        // epilogue 剧本编译失败：触发蓝屏崩溃界面。
+                                        crash::push_log(
+                                            format!("[epilogue] 尾声剧本「{}」编译失败：", epilogue_path),
+                                        );
+                                        for e in &errors {
+                                            let line = format!("  - {:?}", e);
+                                            crash::push_log(line);
+                                        }
+                                        engine.set_crash_info(Some(crash::CrashInfo {
+                                            module_key: "error.module.script_compiler",
+                                            code: crash::error_code::SCRIPT_COMPILE,
+                                            can_continue: true,
+                                        }));
+                                        ui_mode = UiMode::CrashScreen;
+                                    }
+                                }
+                            }
+                            Err(e) => {
+                                // epilogue 文件读取失败：触发蓝屏崩溃界面。
+                                crash::push_log(format!(
+                                    "[epilogue] 无法读取尾声剧本「{}」：{}", epilogue_path, e
+                                ));
+                                engine.set_crash_info(Some(crash::CrashInfo {
+                                    module_key: "error.module.script_runtime",
+                                    code: crash::error_code::SCRIPT_RUNTIME,
+                                    can_continue: true,
+                                }));
+                                ui_mode = UiMode::CrashScreen;
+                            }
+                        }
+                    }
+                    settings_snapshot = None;
                 }
             }
         }
@@ -2240,16 +2359,24 @@ async fn draw_title_screen(engine: &Engine, buttons: &mut Vec<ButtonRect>, sw: f
     let btn_h = 56.0 * scale;
     let btn_x = title_x;
 
-    let mut labels: Vec<(&str, ButtonAction)> = Vec::new();
+    let mut labels: Vec<(String, ButtonAction)> = Vec::new();
 
     // 如果有"继续游戏"存档，在"开始游戏"前显示"继续游戏"按钮
     if has_continue_save {
-        labels.push((engine.t_ui("title.continue"), ButtonAction::ContinueGame));
+        labels.push((engine.t_ui("title.continue").to_string(), ButtonAction::ContinueGame));
     }
-    labels.push((engine.t_ui("title.start"), ButtonAction::StartGame));
-    labels.push((engine.t_ui("title.load"), ButtonAction::LoadGame));
-    labels.push((engine.t_ui("title.settings"), ButtonAction::Settings));
-    labels.push((engine.t_ui("title.exit"), ButtonAction::Quit));
+    labels.push((engine.t_ui("title.start").to_string(), ButtonAction::StartGame));
+    // 隐藏结局「尾声之后」按钮：每个已解锁且当前剧本有声明的结局各一个按钮。
+    // 按钮文本优先取 ending 声明中的 button "..."，否则用翻译键 title.epilogue
+    // （默认「尾声之后」）。作为彩蛋放在「开始游戏」与「读档」之间。
+    for (i, decl) in engine.unlocked_endings_with_decl().iter().enumerate() {
+        let text = decl.button_text.clone()
+            .unwrap_or_else(|| engine.t_ui("title.epilogue").to_string());
+        labels.push((text, ButtonAction::PlayEpilogue(i)));
+    }
+    labels.push((engine.t_ui("title.load").to_string(), ButtonAction::LoadGame));
+    labels.push((engine.t_ui("title.settings").to_string(), ButtonAction::Settings));
+    labels.push((engine.t_ui("title.exit").to_string(), ButtonAction::Quit));
 
     // 计算最宽的文本宽度（标题、副标题、按钮中取最大）
     let title_w = measure_text_f(title, font, title_font_size as u16, 1.0).width;
@@ -2279,7 +2406,7 @@ async fn draw_title_screen(engine: &Engine, buttons: &mut Vec<ButtonRect>, sw: f
     let mut btn_y = panel_bottom - bottom_pad - total_btn_h;
 
     for (label, action) in &labels {
-        draw_button(btn_x, btn_y, btn_w, btn_h, label, buttons, *action, font, scale);
+        draw_button(btn_x, btn_y, btn_w, btn_h, label.as_str(), buttons, *action, font, scale);
         btn_y += btn_h + 14.0 * scale;
     }
 }
@@ -5616,6 +5743,8 @@ fn handle_button_action(action: ButtonAction) -> Option<(UiMode, PendingUiAction
         ButtonAction::CrashExportLog | ButtonAction::CrashContinue | ButtonAction::CrashExit
         | ButtonAction::DirUp | ButtonAction::DirConfirm | ButtonAction::DirCancel
         | ButtonAction::DirEntry(_) => None,
+        // 隐藏结局 epilogue：进入尾声剧本（淡入淡出后由 swap 点处理加载）。
+        ButtonAction::PlayEpilogue(i) => Some((UiMode::Normal, PendingUiAction::PlayEpilogue(i))),
     }
 }
 

@@ -119,10 +119,12 @@ impl Parser {
             TokenKind::LtEq => self.parse_return(),
             TokenKind::StoryEnd => self.parse_story_end(),
             TokenKind::Wait => self.parse_wait(),
+            TokenKind::Ending => self.parse_ending_decl(),
+            TokenKind::Unlock => self.parse_unlock(),
             _ => Err(ParseError {
                 message: format!("unexpected token: {}", self.peek().kind),
                 span: self.current_span(),
-                hint: Some("expected dialogue, narration, @command, +enter, -exit, $var, ?, if, ->, =>, <=, ~~, or wait".to_string()),
+                hint: Some("expected dialogue, narration, @command, +enter, -exit, $var, ?, if, ->, =>, <=, ~~, wait, ending, or unlock".to_string()),
             }),
         }
     }
@@ -612,6 +614,53 @@ impl Parser {
         };
         self.consume_newline();
         Ok(Node::Wait { seconds, span })
+    }
+
+    /// 解析隐藏结局声明：`ending "id" epilogue "path" [button "text"]`。
+    fn parse_ending_decl(&mut self) -> Result<Node, ParseError> {
+        let span = self.current_span();
+        self.advance(); // ending
+        let id = self.expect_string("ending id")?;
+        // 期望 `epilogue "path"`
+        self.expect_keyword("epilogue")?;
+        let epilogue = self.expect_string("epilogue script path")?;
+        // 可选 `button "text"`
+        let button_text = if let TokenKind::Ident(s) = &self.peek().kind {
+            if s == "button" {
+                self.advance();
+                Some(self.expect_string("button text")?)
+            } else {
+                None
+            }
+        } else {
+            None
+        };
+        self.consume_newline();
+        Ok(Node::EndingDecl {
+            decl: EndingDecl { id, epilogue, button_text },
+            span,
+        })
+    }
+
+    /// 解析解锁隐藏结局标记：`unlock "id"`。
+    fn parse_unlock(&mut self) -> Result<Node, ParseError> {
+        let span = self.current_span();
+        self.advance(); // unlock
+        let id = self.expect_string("ending id")?;
+        self.consume_newline();
+        Ok(Node::UnlockEnding { id, span })
+    }
+
+    /// 期望当前 token 是指定关键字的 Ident（如 `epilogue`/`button`）。
+    fn expect_keyword(&mut self, kw: &str) -> Result<(), ParseError> {
+        match &self.peek().kind.clone() {
+            TokenKind::Ident(s) if s == kw => { self.advance(); Ok(()) }
+            _ => Err(ParseError {
+                message: format!("expected '{}', found {}", kw, self.peek().kind),
+                span: self.current_span(),
+                hint: None,
+            }),
+        }
     }
 
     // --- Expression parsing ---

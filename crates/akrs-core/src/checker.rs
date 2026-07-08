@@ -234,6 +234,9 @@ impl Checker {
             Node::Return { .. } => {}
             Node::Wait { .. } => {}
             Node::StoryEnd { .. } => {}
+            // 隐藏结局声明与解锁标记：纯元数据/事件，无类型或资源检查。
+            Node::EndingDecl { .. } => {}
+            Node::UnlockEnding { .. } => {}
         }
     }
 
@@ -325,7 +328,8 @@ fn node_span(node: &Node) -> LocSpan {
         Node::Dialogue { span, .. } | Node::Narration { span, .. } | Node::Command { span, .. }
         | Node::Direction { span, .. } | Node::VarOp { span, .. } | Node::Choice { span, .. }
         | Node::Conditional { span, .. } | Node::Flow { span, .. } | Node::Visit { span, .. }
-        | Node::Return { span, .. } | Node::Wait { span, .. } | Node::StoryEnd { span, .. } => *span,
+        | Node::Return { span, .. } | Node::Wait { span, .. } | Node::StoryEnd { span, .. }
+        | Node::EndingDecl { span, .. } | Node::UnlockEnding { span, .. } => *span,
     }
 }
 
