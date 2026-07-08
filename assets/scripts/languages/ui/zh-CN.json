@@ -21,6 +21,7 @@
   "settings.tab.display": "画面",
   "settings.tab.skip": "快进",
   "settings.tab.color": "配色",
+  "settings.tab.developer": "开发者",
   "settings.tab.help": "帮助",
   "settings.tab.about": "关于",
   "settings.apply": "应用",
@@ -52,6 +53,12 @@
   "settings.color.use_custom": "自定义",
   "settings.color.use_default": "项目默认",
   "settings.color.reset": "重置",
+
+  "settings.dev.title": "开发者模式",
+  "settings.dev.warning": "请不要随便动本页的内容。",
+  "settings.dev.debug_terminal": "显示终端调试输出",
+  "settings.dev.clear_read_history": "将全部文本设为未读",
+  "settings.dev.clear_read_history_hint": "清空已读历史，使所有句子重新被视为未读。",
 
   "skip_mode.text_only": "仅显示文本",
   "skip_mode.with_voice": "包含语音",

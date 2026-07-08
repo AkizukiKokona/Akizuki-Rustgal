@@ -1797,6 +1797,7 @@ pub async fn run(mut engine: Engine, project_config: &ProjectConfig) {
                         || current.theme_primary != snapshot.theme_primary
                         || current.theme_secondary != snapshot.theme_secondary
                         || current.theme_dialogue != snapshot.theme_dialogue
+                        || current.debug_terminal != snapshot.debug_terminal
                 } else {
                     false
                 };
@@ -3559,8 +3560,8 @@ struct SettingsLayout {
     panel_y: f32,
     panel_w: f32,
     panel_h: f32,
-    /// 标签页按钮位置（文本、音频、画面、快进、配色、帮助、关于）。
-    tab_rects: [Rect4; 7],
+    /// 标签页按钮位置（文本、音频、画面、快进、配色、开发者、帮助、关于）。
+    tab_rects: [Rect4; 8],
     /// 内容区顶部 y（标签页下方）。
     #[allow(dead_code)]
     content_top: f32,
@@ -3586,9 +3587,10 @@ struct SettingsLayout {
     audio_slider_tracks: [Rect4; 3],
     audio_slider_hits: [Rect4; 3],
     /// 画面标签页：第 0 行 auto_recovery，第 1 行 fullscreen，第 2 行 resolution，
-    /// 第 3 行 ui_language，第 4 行 script_language，第 5 行 debug_terminal。
-    display_row_mids: [f32; 6],
-    display_toggles: [Rect4; 3],
+    /// 第 3 行 ui_language，第 4 行 script_language。
+    /// （显示终端开关已移至「开发者」标签页。）
+    display_row_mids: [f32; 5],
+    display_toggles: [Rect4; 2],
     display_dropdown: Rect4,
     /// UI 语言下拉（影响界面文本）。
     ui_language_dropdown: Rect4,
@@ -3609,6 +3611,12 @@ struct SettingsLayout {
     /// 配色标签页：5 行 × 12 色调色板预设小色块（共 60 个）。
     /// 索引 = row * 12 + palette_index。
     color_palette_rects: [Rect4; 60],
+    /// 开发者标签页：红字警告文本的顶部 y（标题下方）。
+    dev_warning_y: f32,
+    /// 开发者标签页：显示终端调试输出开关。
+    dev_debug_toggle: Rect4,
+    /// 开发者标签页：「将全部文本设为未读」按钮。
+    dev_clear_read_btn: Rect4,
     /// "应用" button hit rect.
     apply_btn: Rect4,
     /// "取消" button hit rect.
@@ -3629,13 +3637,14 @@ fn compute_settings_layout(sw: f32, sh: f32, scale: f32) -> SettingsLayout {
     let title_top = 36.0 * scale;
 
     // 标签页（浏览器风格，位于标题下方）
-    let tab_labels = ["文本", "音频", "画面", "快进", "配色", "帮助", "关于"];
+    let tab_labels = ["文本", "音频", "画面", "快进", "配色", "开发者", "帮助", "关于"];
     let tab_h = 62.0 * scale;
     let tab_top = title_top + title_size + 24.0 * scale;
-    let tab_start_x = 96.0 * scale;
-    let tab_w = 156.0 * scale;
+    // 8 个标签需收窄宽度和起始 x，以在 1280 宽度下不溢出（8×140 + 7×5 + 80×2 = 1235）。
+    let tab_start_x = 80.0 * scale;
+    let tab_w = 140.0 * scale;
     let tab_gap = 5.0 * scale;
-    let mut tab_rects = [Rect4::default(); 7];
+    let mut tab_rects = [Rect4::default(); 8];
     for (i, _) in tab_labels.iter().enumerate() {
         tab_rects[i] = Rect4 {
             x: tab_start_x + i as f32 * (tab_w + tab_gap),
@@ -3710,14 +3719,15 @@ fn compute_settings_layout(sw: f32, sh: f32, scale: f32) -> SettingsLayout {
         };
     }
 
-    // 画面标签页（6 行：自动续播、全屏、分辨率、UI 语言、剧本语言、终端调试）
-    let mut display_row_mids = [0.0; 6];
-    let mut display_toggles = [Rect4::default(); 3];
-    for i in 0..6 {
+    // 画面标签页（5 行：自动续播、全屏、分辨率、UI 语言、剧本语言）
+    // 显示终端开关已移至「开发者」标签页。
+    let mut display_row_mids = [0.0; 5];
+    let mut display_toggles = [Rect4::default(); 2];
+    for i in 0..5 {
         display_row_mids[i] = content_top + row_h * 0.5 + (i as f32 + 1.0) * row_h;
     }
-    // 第 0 行 auto_recovery，第 1 行 fullscreen，第 5 行 debug_terminal
-    let toggle_indices = [0usize, 1, 5];
+    // 第 0 行 auto_recovery，第 1 行 fullscreen
+    let toggle_indices = [0usize, 1];
     for (idx, row) in toggle_indices.iter().enumerate() {
         let mid = display_row_mids[*row];
         display_toggles[idx] = Rect4 {
@@ -3805,6 +3815,22 @@ fn compute_settings_layout(sw: f32, sh: f32, scale: f32) -> SettingsLayout {
         }
     }
 
+    // 开发者标签页：标题下方红字警告，然后显示终端开关，再「全部设为未读」按钮。
+    // 警告文本紧贴内容区顶部；开关与按钮沿用通用行高/toggle 尺寸。
+    let dev_warning_y = content_top + 8.0 * scale;
+    let dev_debug_row_mid = content_top + row_h * 0.5 + row_h;
+    let dev_debug_toggle = Rect4 {
+        x: control_x, y: dev_debug_row_mid - toggle_h / 2.0,
+        w: toggle_w, h: toggle_h,
+    };
+    let dev_clear_btn_w = 360.0 * scale;
+    let dev_clear_btn_h = 60.0 * scale;
+    let dev_clear_read_btn = Rect4 {
+        x: control_x,
+        y: dev_debug_row_mid + row_h - dev_clear_btn_h / 2.0,
+        w: dev_clear_btn_w, h: dev_clear_btn_h,
+    };
+
     // 两个按钮：应用和取消
     let btn_w = 240.0 * scale;
     let btn_h = 67.0 * scale;
@@ -3831,6 +3857,7 @@ fn compute_settings_layout(sw: f32, sh: f32, scale: f32) -> SettingsLayout {
         skip_row_mids, skip_toggle, skip_dropdown,
         color_row_mids,
         color_swatch_rects, color_hex_rects, color_default_btn_rects, color_palette_rects,
+        dev_warning_y, dev_debug_toggle, dev_clear_read_btn,
         apply_btn, cancel_btn,
     }
 }
@@ -3931,6 +3958,43 @@ fn draw_color_tab(engine: &Engine, layout: &SettingsLayout, font: &Option<Font>,
                 if selected { Color::new(1.0, 1.0, 0.4, 1.0) } else { Color::new(0.5, 0.7, 0.95, 0.6) });
         }
     }
+}
+
+/// 绘制「开发者」选项卡：红字警告 + 显示终端开关 + 全部设为未读按钮。
+///
+/// 本页集中放置高危/调试开关。标题下方以红字警告「请不要随便动本页的内容」。
+/// - 显示终端开关：从「画面」标签页移入此处。
+/// - 全部设为未读：清空已读历史（`engine.clear_read_history()`），使所有句子重新视为未读。
+fn draw_developer_tab(engine: &Engine, layout: &SettingsLayout, font: &Option<Font>, scale: f32) {
+    let settings = engine.settings();
+    let label_size = 34.0 * scale;
+    let warning_size = 32.0 * scale;
+    let hint_size = 28.0 * scale;
+
+    // 红字警告（标题下方）
+    let warning = engine.t_ui("settings.dev.warning");
+    draw_text_f(warning, layout.label_x, layout.dev_warning_y + warning_size,
+        warning_size, Color::new(1.0, 0.27, 0.27, 1.0), font);
+
+    // 显示终端调试输出开关
+    let toggle_row_mid = layout.dev_debug_toggle.y + layout.dev_debug_toggle.h / 2.0;
+    draw_text_f(engine.t_ui("settings.dev.debug_terminal"),
+        layout.label_x, toggle_row_mid + 8.0 * scale, label_size, WHITE, font);
+    draw_toggle(layout.dev_debug_toggle, settings.debug_terminal, font, scale);
+
+    // 全部设为未读按钮
+    let btn = layout.dev_clear_read_btn;
+    draw_rectangle(btn.x, btn.y, btn.w, btn.h, Color::new(0.55, 0.18, 0.18, 1.0));
+    draw_rectangle_lines(btn.x, btn.y, btn.w, btn.h, 1.5 * scale,
+        Color::new(0.9, 0.5, 0.5, 1.0));
+    let btn_label = engine.t_ui("settings.dev.clear_read_history");
+    let bw = measure_text_f(btn_label, font, label_size as u16, 1.0).width;
+    draw_text_f(btn_label, btn.x + (btn.w - bw) / 2.0,
+        btn.y + btn.h / 2.0 + label_size / 3.0, label_size, WHITE, font);
+    // 按钮下方提示
+    let hint = engine.t_ui("settings.dev.clear_read_history_hint");
+    draw_text_f(hint, btn.x, btn.y + btn.h + 28.0 * scale, hint_size,
+        Color::new(0.7, 0.7, 0.7, 1.0), font);
 }
 
 /// 绘制「帮助」选项卡：键位功能对照表。
@@ -4148,10 +4212,11 @@ fn draw_settings_menu(engine: &mut Engine, layout: &SettingsLayout, font: &Optio
         engine.t_ui("settings.tab.display"),
         engine.t_ui("settings.tab.skip"),
         engine.t_ui("settings.tab.color"),
+        engine.t_ui("settings.tab.developer"),
         engine.t_ui("settings.tab.help"),
         engine.t_ui("settings.tab.about"),
     ];
-    let tab_tabs = [SettingsTab::Text, SettingsTab::Audio, SettingsTab::Display, SettingsTab::Skip, SettingsTab::Color, SettingsTab::Help, SettingsTab::About];
+    let tab_tabs = [SettingsTab::Text, SettingsTab::Audio, SettingsTab::Display, SettingsTab::Skip, SettingsTab::Color, SettingsTab::Developer, SettingsTab::Help, SettingsTab::About];
     let tab_label_size = 29.0 * scale;
     for (i, label) in tab_labels.iter().enumerate() {
         let r = layout.tab_rects[i];
@@ -4180,7 +4245,7 @@ fn draw_settings_menu(engine: &mut Engine, layout: &SettingsLayout, font: &Optio
     // 内容区分隔线（标签页下方一条横线）
     let line_y = layout.tab_rects[0].y + layout.tab_rects[0].h;
     draw_rectangle(layout.tab_rects[0].x, line_y,
-        layout.tab_rects[6].x + layout.tab_rects[6].w - layout.tab_rects[0].x, 1.5 * scale,
+        layout.tab_rects[7].x + layout.tab_rects[7].w - layout.tab_rects[0].x, 1.5 * scale,
         Color::new(0.45, 0.7, 0.95, 0.6));
 
     let settings = engine.settings();
@@ -4293,9 +4358,6 @@ fn draw_settings_menu(engine: &mut Engine, layout: &SettingsLayout, font: &Optio
                 format!("{} ({})", engine.translator().display_name(), engine.translator().language())
             };
             draw_dropdown_box_language(layout.language_dropdown, &settings.language, &script_lang_label, font, lang_dropdown_open, scale);
-            // 显示终端调试输出（第 6 行，索引 5）
-            draw_text_f(engine.t_ui("settings.debug_terminal"), layout.label_x, layout.display_row_mids[5] + 8.0 * scale, label_size, WHITE, font);
-            draw_toggle(layout.display_toggles[2], settings.debug_terminal, font, scale);
         }
         SettingsTab::Skip => {
             // 允许跳过未读文本
@@ -4307,6 +4369,9 @@ fn draw_settings_menu(engine: &mut Engine, layout: &SettingsLayout, font: &Optio
         }
         SettingsTab::Color => {
             draw_color_tab(engine, layout, font, scale, project_config, color_edit_active, color_hex_buffer);
+        }
+        SettingsTab::Developer => {
+            draw_developer_tab(engine, layout, font, scale);
         }
         SettingsTab::Help => {
             draw_help_tab(engine, layout, font, scale);
@@ -4592,8 +4657,8 @@ fn handle_settings_interaction(
             }
         }
 
-        // 先检查标签页点击（7 个标签：文本/音频/画面/快进/配色/帮助/关于）
-        let tab_tabs = [SettingsTab::Text, SettingsTab::Audio, SettingsTab::Display, SettingsTab::Skip, SettingsTab::Color, SettingsTab::Help, SettingsTab::About];
+        // 先检查标签页点击（8 个标签：文本/音频/画面/快进/配色/开发者/帮助/关于）
+        let tab_tabs = [SettingsTab::Text, SettingsTab::Audio, SettingsTab::Display, SettingsTab::Skip, SettingsTab::Color, SettingsTab::Developer, SettingsTab::Help, SettingsTab::About];
         for (i, tab) in tab_tabs.iter().enumerate() {
             if point_in_rect(mx, my, layout.tab_rects[i]) {
                 *active_tab = *tab;
@@ -4644,14 +4709,13 @@ fn handle_settings_interaction(
                 }
             }
             SettingsTab::Display => {
-                // 开关（auto_recovery、fullscreen、debug_terminal 共 3 个）
-                for i in 0..3 {
+                // 开关（auto_recovery、fullscreen 共 2 个；debug_terminal 已移至开发者页）
+                for i in 0..2 {
                     if point_in_rect(mx, my, layout.display_toggles[i]) {
                         let settings = engine.settings_mut();
                         match i {
                             0 => settings.auto_recovery = !settings.auto_recovery,
                             1 => settings.fullscreen = !settings.fullscreen,
-                            2 => settings.debug_terminal = !settings.debug_terminal,
                             _ => {}
                         }
                         return None;
@@ -4855,6 +4919,19 @@ fn handle_settings_interaction(
                     }
                 }
             }
+            SettingsTab::Developer => {
+                // 显示终端调试输出开关
+                if point_in_rect(mx, my, layout.dev_debug_toggle) {
+                    let settings = engine.settings_mut();
+                    settings.debug_terminal = !settings.debug_terminal;
+                    return None;
+                }
+                // 全部设为未读：清空已读历史
+                if point_in_rect(mx, my, layout.dev_clear_read_btn) {
+                    engine.clear_read_history();
+                    return None;
+                }
+            }
         }
 
         // 应用按钮：保存设置并返回
@@ -4887,6 +4964,7 @@ fn handle_settings_interaction(
                     || current.theme_primary != snapshot.theme_primary
                     || current.theme_secondary != snapshot.theme_secondary
                     || current.theme_dialogue != snapshot.theme_dialogue
+                    || current.debug_terminal != snapshot.debug_terminal
             } else {
                 false
             };

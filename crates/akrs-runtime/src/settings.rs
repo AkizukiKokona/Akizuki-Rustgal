@@ -46,6 +46,8 @@ pub enum SettingsTab {
     Skip,
     /// 配色自定义。
     Color,
+    /// 开发者模式：调试开关与高危操作。
+    Developer,
     /// 帮助：键位功能对照。
     Help,
     /// 关于：引擎信息。
@@ -60,13 +62,23 @@ impl SettingsTab {
             Self::Display => "画面",
             Self::Skip => "快进",
             Self::Color => "配色",
+            Self::Developer => "开发者",
             Self::Help => "帮助",
             Self::About => "关于",
         }
     }
 
     pub fn all() -> &'static [Self] {
-        &[Self::Text, Self::Audio, Self::Display, Self::Skip, Self::Color, Self::Help, Self::About]
+        &[
+            Self::Text,
+            Self::Audio,
+            Self::Display,
+            Self::Skip,
+            Self::Color,
+            Self::Developer,
+            Self::Help,
+            Self::About,
+        ]
     }
 }
 
