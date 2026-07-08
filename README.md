@@ -6,7 +6,7 @@
 
 [![License](https://img.shields.io/badge/license-MIT-blue.svg)](#许可证)
 [![Rust](https://img.shields.io/badge/rust-1.92+-orange.svg)](https://www.rust-lang.org)
-[![Version](https://img.shields.io/badge/version-1.0.43-success.svg)](#)
+[![Version](https://img.shields.io/badge/version-1.0.44-success.svg)](#)
 [![Platform](https://img.shields.io/badge/platform-Windows%20%7C%20Linux%20%7C%20macOS-lightgrey.svg)](#下载与安装)
 [![PRs Welcome](https://img.shields.io/badge/PRs-welcome-brightgreen.svg)](#贡献)
 
@@ -92,6 +92,7 @@ Akizuki\*Rustgal 是一个从零开始、**100% 纯 Rust** 实现的视觉小说
 - **自定义剧本语言** — 专为视觉小说设计的 `.akrs` DSL，支持对话、旁白、背景切换、立绘上场/下场、分支选择、变量、条件跳转
 - **编译时检查** — 在运行之前就发现错误：未定义的章节跳转、重复的节名、缺失的资源引用、舞台角色超限
 - **12 种过渡效果** — `fade`、`dissolve`、`slide_left/right/up/down`、`wipe_left/right`、`blur`、`fade_black`、`fade_white`、`instant`
+- **UI 页面切换动画** — 标题 / 设置 / 存档 / 读档等页面切换均带 0.5 秒淡入淡出过渡（淡出 + 淡入合计 0.5 秒）；设置内标签页切换为即时切换不加过渡；确认对话框、备注编辑等模态弹窗带 0.2 秒内容淡入，避免瞬间弹出
 - **多分辨率自适应** — 所有立绘位置使用百分比坐标（0.0–1.0），在 1080p / 1440p / 4K 下布局比例一致
 - **高 DPI 适配** — 启用 `high_dpi` 渲染模式，UI 缩放按逻辑像素计算，在 125% / 150% / 200% 等 DPI 倍率下控件不再溢出堆叠，高 DPI 屏幕文字自动更清晰
 - **可视化编辑器** — 基于 egui 的剧本编辑器，支持语法高亮、立绘预览、实时调参

@@ -779,6 +779,11 @@ pub async fn run(mut engine: Engine, project_config: &ProjectConfig) {
     let mut note_edit_buffer: String = String::new();
     // 备注编辑弹窗返回后应切换到的 UI 模式（SaveMenu 或 LoadMenu）。
     let mut note_return_mode: UiMode = UiMode::SaveMenu;
+    // 模态弹窗（确认对话框 / 备注编辑弹窗）的淡入进度（0.0 → 1.0）。
+    // 弹窗打开时在约 0.2 秒内由 0 升至 1，使弹窗内容平滑淡入，
+    // 避免瞬间弹出带来的突兀感。弹窗关闭时直接归零（关闭后切回的页面
+    // 若发生切换则由 ui_transition 负责，若回到原页则瞬间消失亦可接受）。
+    let mut dialog_fade: f32 = 0.0;
 
     // Check title music
     if !assets.check_music("title_bgm.mp3") {
@@ -965,6 +970,13 @@ pub async fn run(mut engine: Engine, project_config: &ProjectConfig) {
         // Clear buttons for this frame
         buttons.clear();
 
+        // 模态弹窗淡入进度更新：弹窗激活时 0.2 秒内升至 1，否则归零。
+        if ui_mode == UiMode::ConfirmDialog || ui_mode == UiMode::NoteEditDialog {
+            dialog_fade = (dialog_fade + dt / 0.2).min(1.0);
+        } else {
+            dialog_fade = 0.0;
+        }
+
         // 故事结束时自动淡入淡出返回标题（无需任何按钮或提示）。
         // 检测刚进入 StoryEnded 阶段且尚未开始过渡的情况。
         if engine.phase() == EnginePhase::StoryEnded
@@ -1130,7 +1142,7 @@ pub async fn run(mut engine: Engine, project_config: &ProjectConfig) {
             // 10% 黑色叠层（透明度 0.10），让底层界面仍可见但变暗。
             draw_rectangle(0.0, 0.0, sw, sh, Color::new(0.0, 0.0, 0.0, 0.10));
             // 居中确认对话框
-            draw_confirm_dialog(&engine, &mut buttons, sw, sh, &font, scale, confirm_type);
+            draw_confirm_dialog(&engine, &mut buttons, sw, sh, &font, scale, confirm_type, dialog_fade);
         } else if ui_mode == UiMode::NoteEditDialog {
             // 备注编辑弹窗：先绘制底层存档页（保持上下文可见），再叠加
             // 40% 黑色遮罩 + 居中输入框 + 确认/取消按钮。
@@ -1144,7 +1156,7 @@ pub async fn run(mut engine: Engine, project_config: &ProjectConfig) {
             draw_rectangle(0.0, 0.0, sw, sh, Color::new(0.0, 0.0, 0.0, 0.40));
             // 居中备注编辑弹窗。buttons 在上面已注册了存档页的按钮，
             // 弹窗按钮在此函数内追加到 buttons 末尾。
-            draw_note_edit_dialog(&engine, &mut buttons, sw, sh, &font, scale, &note_edit_buffer, note_edit_slot);
+            draw_note_edit_dialog(&engine, &mut buttons, sw, sh, &font, scale, &note_edit_buffer, note_edit_slot, dialog_fade);
         } else if ui_mode != UiMode::Normal {
             // Save/Load menus: full-screen opaque background + full-screen grid.
             draw_rectangle(0.0, 0.0, sw, sh, Color::new(0.05, 0.05, 0.1, 1.0));
@@ -2099,6 +2111,7 @@ fn draw_note_edit_dialog(
     scale: f32,
     buffer: &str,
     slot: Option<usize>,
+    fade: f32,
 ) {
     let dialog_w = (560.0 * scale).min(sw - 80.0 * scale);
     let dialog_h = (240.0 * scale).min(sh - 80.0 * scale);
@@ -2169,11 +2182,18 @@ fn draw_note_edit_dialog(
     let btn_y = dialog_y + dialog_h - btn_h - 24.0 * scale;
     draw_button(btn1_x, btn_y, btn_w, btn_h, engine.t_ui("confirm.ok"), buttons, ButtonAction::NoteConfirm, font, scale);
     draw_button(btn2_x, btn_y, btn_w, btn_h, engine.t_ui("confirm.cancel"), buttons, ButtonAction::NoteCancel, font, scale);
+
+    // 弹窗淡入遮罩：以面板底色覆盖整个面板区域，alpha = 1 - fade。
+    // fade=0 时面板区域被同色矩形完全遮盖（看不见内容），fade=1 时无遮罩，
+    // 中间过程内容平滑淡入，避免弹窗瞬间弹出。
+    if fade < 1.0 {
+        draw_rectangle(dialog_x, dialog_y, dialog_w, dialog_h, Color::new(0.08, 0.06, 0.15, 1.0 - fade));
+    }
 }
 
 /// Draw a confirmation dialog for returning to title or discarding settings.
 /// 注意：全屏 10% 黑色叠层已由调用方绘制，此函数只绘制居中的对话框面板。
-fn draw_confirm_dialog(engine: &Engine, buttons: &mut Vec<ButtonRect>, sw: f32, sh: f32, font: &Option<Font>, scale: f32, confirm_type: Option<ConfirmType>) {
+fn draw_confirm_dialog(engine: &Engine, buttons: &mut Vec<ButtonRect>, sw: f32, sh: f32, font: &Option<Font>, scale: f32, confirm_type: Option<ConfirmType>, fade: f32) {
     // Centered dialog panel.
     let dialog_w = (600.0 * scale).min(sw - 80.0 * scale);
     let dialog_h = (280.0 * scale).min(sh - 80.0 * scale);
@@ -2256,6 +2276,13 @@ fn draw_confirm_dialog(engine: &Engine, buttons: &mut Vec<ButtonRect>, sw: f32, 
 
     draw_button(btn1_x, btn_y, btn_w, btn_h, engine.t_ui("confirm.ok"), buttons, ButtonAction::ConfirmYes, font, scale);
     draw_button(btn2_x, btn_y, btn_w, btn_h, engine.t_ui("confirm.cancel"), buttons, ButtonAction::ConfirmNo, font, scale);
+
+    // 弹窗淡入遮罩：以面板底色覆盖整个面板区域，alpha = 1 - fade。
+    // fade=0 时面板区域被同色矩形完全遮盖（看不见内容），fade=1 时无遮罩，
+    // 中间过程内容平滑淡入，避免弹窗瞬间弹出。
+    if fade < 1.0 {
+        draw_rectangle(dialog_x, dialog_y, dialog_w, dialog_h, Color::new(0.08, 0.06, 0.15, 1.0 - fade));
+    }
 }
 
 // ─── Menu drawing ───
