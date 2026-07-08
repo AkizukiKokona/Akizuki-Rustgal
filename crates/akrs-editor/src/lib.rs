@@ -2735,49 +2735,83 @@ impl eframe::App for EditorApp {
         };
         self.last_time = now;
 
-        // 键盘快捷键
-        ctx.input(|i| {
-            if i.modifiers.ctrl && !i.modifiers.shift {
-                if i.key_pressed(egui::Key::N) {
-                    self.new_file();
-                }
-                if i.key_pressed(egui::Key::O) {
-                    if self.show_welcome {
-                        self.show_welcome = false;
-                        self.status = "请从左侧文件列表选择文件".to_string();
-                    } else {
-                        self.open_current_name();
+        // 键盘快捷键：直接遍历事件流，用事件自带的 modifiers（Event::Key 携带的
+        // 按键瞬间修饰键状态，比 i.modifiers 帧级状态更可靠——后者是「帧开始时」
+        // 的快照，在跨帧的按键序列中可能滞后），并把动作执行推迟到闭包外，
+        // 避免在 input 读锁内修改 self。
+        #[derive(Default)]
+        struct ShortcutFlags {
+            new_file: bool,
+            open: bool,
+            save: bool,
+            run: bool,
+            help: bool,
+            ins1: bool,
+            ins2: bool,
+            ins3: bool,
+            ins4: bool,
+        }
+        let sc = ctx.input(|i| {
+            let mut f = ShortcutFlags::default();
+            for event in &i.events {
+                if let egui::Event::Key { key, pressed: true, modifiers, .. } = event {
+                    if !modifiers.ctrl || modifiers.shift {
+                        continue;
+                    }
+                    match key {
+                        egui::Key::N => f.new_file = true,
+                        egui::Key::O => f.open = true,
+                        egui::Key::S => f.save = true,
+                        egui::Key::R => f.run = true,
+                        egui::Key::H => f.help = true,
+                        egui::Key::Num1 => f.ins1 = true,
+                        egui::Key::Num2 => f.ins2 = true,
+                        egui::Key::Num3 => f.ins3 = true,
+                        egui::Key::Num4 => f.ins4 = true,
+                        _ => {}
                     }
                 }
-                if i.key_pressed(egui::Key::S) {
-                    self.save_file();
-                }
-                if i.key_pressed(egui::Key::R) {
-                    self.run_script();
-                }
-                // Ctrl+1/2/3/4：快速插入语法
-                if i.key_pressed(egui::Key::Num1) {
-                    self.editor_content.push_str("+ 角色\n");
-                    self.status = "已插入：+ 角色（立绘上场）".to_string();
-                }
-                if i.key_pressed(egui::Key::Num2) {
-                    self.editor_content.push_str("- 角色\n");
-                    self.status = "已插入：- 角色（立绘下场）".to_string();
-                }
-                if i.key_pressed(egui::Key::Num3) {
-                    self.editor_content.push_str("# 章节\n");
-                    self.status = "已插入：# 章节（章节标题）".to_string();
-                }
-                if i.key_pressed(egui::Key::Num4) {
-                    self.editor_content.push_str("@bg 背景\n");
-                    self.status = "已插入：@bg 背景（背景指令）".to_string();
-                }
-                // Ctrl+H：显示帮助窗口
-                if i.key_pressed(egui::Key::H) {
-                    self.show_shortcuts = true;
-                }
             }
+            f
         });
+        if sc.new_file {
+            self.new_file();
+        }
+        if sc.open {
+            if self.show_welcome {
+                self.show_welcome = false;
+                self.status = "请从左侧文件列表选择文件".to_string();
+            } else {
+                self.open_current_name();
+            }
+        }
+        if sc.save {
+            self.save_file();
+        }
+        if sc.run {
+            self.run_script();
+        }
+        // Ctrl+1/2/3/4：快速插入语法
+        if sc.ins1 {
+            self.editor_content.push_str("+ 角色\n");
+            self.status = "已插入：+ 角色（立绘上场）".to_string();
+        }
+        if sc.ins2 {
+            self.editor_content.push_str("- 角色\n");
+            self.status = "已插入：- 角色（立绘下场）".to_string();
+        }
+        if sc.ins3 {
+            self.editor_content.push_str("# 章节\n");
+            self.status = "已插入：# 章节（章节标题）".to_string();
+        }
+        if sc.ins4 {
+            self.editor_content.push_str("@bg 背景\n");
+            self.status = "已插入：@bg 背景（背景指令）".to_string();
+        }
+        // Ctrl+H：显示帮助窗口
+        if sc.help {
+            self.show_shortcuts = true;
+        }
 
         if let Some(engine) = self.engine.as_mut() {
             let _ = engine.update(dt);
