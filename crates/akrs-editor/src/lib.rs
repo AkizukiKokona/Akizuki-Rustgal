@@ -43,6 +43,8 @@ const COLOR_COMMENT: egui::Color32 = egui::Color32::from_rgb(102, 102, 102);
 const COLOR_STRING: egui::Color32 = egui::Color32::from_rgb(229, 229, 102);
 /// 默认文字 -> 白色
 const COLOR_DEFAULT: egui::Color32 = egui::Color32::from_rgb(255, 255, 255);
+/// 配对高亮背景色：光标停在 `=>`/`<=` 时，该指令及其配对指令的背景。
+const COLOR_PAIR_HIGHLIGHT: egui::Color32 = egui::Color32::from_rgb(255, 220, 0);
 
 const FONT_SIZE: f32 = 14.0;
 
@@ -110,6 +112,8 @@ enum PreviewTab {
     Background,
     /// 音乐预览。
     Music,
+    /// 大纲视图：按缩进展示章节、分支选项与 `=>`/`<=` 配对结构。
+    Outline,
 }
 
 /// 立绘预览状态：允许作者在不启动游戏的情况下调整立绘位置与大小，
@@ -1460,18 +1464,194 @@ impl EditorApp {
         egui::ScrollArea::vertical()
             .auto_shrink([false, false])
             .show(ui, |ui| {
+                // 在布局前从持久化状态读取光标字符位置，用于配对高亮（无帧延迟）。
+                // id_source 与下方 TextEdit 的 .id_source 必须一致。
+                let editor_id = ui.make_persistent_id(egui::Id::new("main_editor"));
+                let cursor_ccursor = egui::text_edit::TextEditState::load(ui.ctx(), editor_id)
+                    .and_then(|s| s.ccursor_range())
+                    .map(|r| r.primary.index);
+
+                // 计算配对高亮区间：光标所在 mark 及其配对 mark 的字符范围。
+                let marks = scan_flow_marks(&self.editor_content);
+                let pairs = compute_flow_pairs(&marks);
+                let mut highlight_ranges: Vec<(usize, usize)> = Vec::new();
+                if let Some(ci) = cursor_ccursor {
+                    if let Some(idx) = mark_at_cursor(&marks, ci) {
+                        let m = &marks[idx];
+                        highlight_ranges.push((m.char_start, m.char_end));
+                        if let Some(p) = pairs[idx] {
+                            let pm = &marks[p];
+                            highlight_ranges.push((pm.char_start, pm.char_end));
+                        }
+                    }
+                }
+
                 let mut layouter = |ui: &egui::Ui, string: &str, wrap_width: f32| {
-                    let mut job = highlight_code(string);
+                    let mut job = highlight_code(string, &highlight_ranges);
                     job.wrap.max_width = wrap_width;
                     ui.fonts(|f| f.layout_job(job))
                 };
-                ui.add(
-                    egui::TextEdit::multiline(&mut self.editor_content)
-                        .code_editor()
-                        .desired_width(f32::MAX)
-                        .layouter(&mut layouter),
-                );
+                let output = egui::TextEdit::multiline(&mut self.editor_content)
+                    .code_editor()
+                    .desired_width(f32::MAX)
+                    .id_source(egui::Id::new("main_editor"))
+                    .layouter(&mut layouter)
+                    .show(ui);
+
+                // 悬停 tooltip：鼠标在 => / <= 上时显示配对信息。
+                self.show_flow_hover_tooltip(ui.ctx(), &output, &marks, &pairs);
             });
+    }
+
+    /// 鼠标悬停在 `=>`/`<=` 标记上时显示配对信息 tooltip。
+    ///
+    /// - 悬停 `=>`：「跳转到目标：<目标章节名>」+「返回点在第 X 行」（X 为配对 `<=` 行号，1 基）
+    /// - 悬停 `<=`：「返回到上一个拜访点」
+    fn show_flow_hover_tooltip(
+        &self,
+        ctx: &egui::Context,
+        output: &egui::text_edit::TextEditOutput,
+        marks: &[FlowMark],
+        pairs: &[Option<usize>],
+    ) {
+        let hover_pos = match output.response.hover_pos() {
+            Some(p) => p,
+            None => return,
+        };
+        let local = hover_pos - output.text_draw_pos;
+        if local.x < 0.0 || local.y < 0.0 {
+            return;
+        }
+        let cursor = output.galley.cursor_from_pos(local);
+        let ci = cursor.ccursor.index;
+        let idx = match mark_at_cursor(marks, ci) {
+            Some(i) => i,
+            None => return,
+        };
+        let m = &marks[idx];
+        let tip = match m.kind {
+            FlowKind::Visit => {
+                let target = m.target.as_deref().unwrap_or("(未指定)");
+                match pairs[idx] {
+                    Some(p) => format!(
+                        "跳转到目标：{}\n返回点在第 {} 行",
+                        target,
+                        marks[p].line + 1
+                    ),
+                    None => format!("跳转到目标：{}\n返回点未找到", target),
+                }
+            }
+            FlowKind::Return => "返回到上一个拜访点".to_string(),
+        };
+        egui::show_tooltip_at(
+            ctx,
+            egui::Id::new("flow_pair_tooltip"),
+            Some(hover_pos),
+            |ui| {
+                ui.label(egui::RichText::new(tip).monospace());
+            },
+        );
+    }
+
+    /// 大纲视图：按缩进展示章节（`#`）、分支选项（`?`/`|`）与 `=>`/`<=` 配对结构。
+    ///
+    /// 每个 `=>` 打开一个「拜访块」，其与匹配 `<=` 之间的内容缩进一级；
+    /// 嵌套 `=>` 进一步缩进。配对基于文本顺序栈匹配（[`compute_flow_pairs`]），
+    /// 不做块级语义分析。仅展示上述结构性行，对话/旁白/指令等不显示。
+    fn show_outline(&self, ui: &mut egui::Ui) {
+        let content = &self.editor_content;
+        if content.trim().is_empty() {
+            ui.label(
+                egui::RichText::new("（暂无内容）")
+                    .italics()
+                    .color(egui::Color32::from_gray(130)),
+            );
+            return;
+        }
+
+        let marks = scan_flow_marks(content);
+        let pairs = compute_flow_pairs(&marks);
+        let lines: Vec<&str> = content.split('\n').collect();
+        let indent_w = 16.0;
+        ui.spacing_mut().item_spacing.y = 2.0;
+
+        let mut mark_iter = 0usize;
+        let mut depth: i32 = 0;
+        let mut shown = 0u32;
+
+        for (line_no, raw) in lines.iter().enumerate() {
+            // 推进 mark 游标到当前行（marks 行号单调递增）。
+            while mark_iter < marks.len() && marks[mark_iter].line < line_no {
+                mark_iter += 1;
+            }
+            let mark_here = if mark_iter < marks.len() && marks[mark_iter].line == line_no {
+                Some(mark_iter)
+            } else {
+                None
+            };
+
+            let trimmed = raw.trim_start();
+            if trimmed.is_empty() {
+                continue;
+            }
+
+            // 计算该行缩进级别与显示内容/颜色。
+            let (indent_level, text_opt, color) = if let Some(mi) = mark_here {
+                let m = &marks[mi];
+                match m.kind {
+                    FlowKind::Visit => {
+                        let t = m.target.as_deref().unwrap_or("");
+                        (depth, Some(format!("=> {}", t)), COLOR_FLOW)
+                    }
+                    FlowKind::Return => {
+                        // 配对 <= 对齐其 =>（depth-1）；孤立 <= 留在当前 depth。
+                        let lvl = if pairs[mi].is_some() { depth - 1 } else { depth };
+                        (lvl, Some("<=".to_string()), COLOR_FLOW)
+                    }
+                }
+            } else if let Some(rest) = trimmed.strip_prefix('#') {
+                (depth, Some(format!("# {}", rest.trim())), COLOR_SECTION)
+            } else if let Some(rest) = trimmed.strip_prefix('?') {
+                let r = rest.trim();
+                if r.is_empty() {
+                    continue; // 裸 `?` 终止符不显示
+                }
+                (depth, Some(format!("? {}", r)), COLOR_CHOICE)
+            } else if let Some(rest) = trimmed.strip_prefix('|') {
+                (depth, Some(format!("| {}", rest.trim())), COLOR_CHOICE)
+            } else {
+                continue; // 对话/旁白/指令/变量等不显示
+            };
+
+            // 更新 depth：=> 入栈，配对 <= 出栈。
+            if let Some(mi) = mark_here {
+                match marks[mi].kind {
+                    FlowKind::Visit => depth += 1,
+                    FlowKind::Return => {
+                        if pairs[mi].is_some() {
+                            depth -= 1;
+                        }
+                    }
+                }
+            }
+
+            if let Some(text) = text_opt {
+                let indent_level = indent_level.max(0) as usize;
+                ui.horizontal(|ui| {
+                    ui.add_space(indent_level as f32 * indent_w);
+                    ui.label(egui::RichText::new(text).monospace().color(color));
+                });
+                shown += 1;
+            }
+        }
+
+        if shown == 0 {
+            ui.label(
+                egui::RichText::new("（未发现章节 / 分支 / => 等结构）")
+                    .italics()
+                    .color(egui::Color32::from_gray(130)),
+            );
+        }
     }
 
     fn kind_label(kind: &TranslatableKind) -> &'static str {
@@ -2811,6 +2991,7 @@ impl eframe::App for EditorApp {
                         ui.selectable_value(&mut self.preview_tab, PreviewTab::Sprite, "立绘");
                         ui.selectable_value(&mut self.preview_tab, PreviewTab::Background, "背景");
                         ui.selectable_value(&mut self.preview_tab, PreviewTab::Music, "音乐");
+                        ui.selectable_value(&mut self.preview_tab, PreviewTab::Outline, "大纲");
                     });
                     ui.separator();
                     match self.preview_tab {
@@ -2842,6 +3023,9 @@ impl eframe::App for EditorApp {
                         }
                         PreviewTab::Music => {
                             self.show_music_preview(ui);
+                        }
+                        PreviewTab::Outline => {
+                            self.show_outline(ui);
                         }
                     }
                 });
@@ -4088,15 +4272,119 @@ fn position_label(p: &Position) -> String {
 }
 
 // ---------------------------------------------------------------------------
+// `=>` / `<=` 流程标记配对辅助
+// ---------------------------------------------------------------------------
+//
+// 纯文本层扫描与配对，用于编辑器的配对高亮、悬停提示与大纲视图。
+// 不修改任何脚本语法或编译逻辑，仅影响视觉呈现。
+//
+// 配对规则（经典括号栈匹配，按文本顺序扫描，不考虑嵌套语义或作用域边界）：
+// - `=>`（访问子章节）入栈，`<=`（从子章节返回）弹出栈顶 `=>` 并互相配对。
+// - 栈空时遇到的 `<=` 无配对（孤立返回）；栈中剩余的 `=>` 无配对（未闭合访问）。
+
+/// 流程标记种类。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum FlowKind {
+    /// `=> target`：访问子章节。
+    Visit,
+    /// `<=`：从子章节返回。
+    Return,
+}
+
+/// 文本中扫描到的一个 `=>`/`<=` 流程标记。
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct FlowMark {
+    kind: FlowKind,
+    /// 标记在全文中的起始字符索引（`=>`/`<=` 首字符）。
+    char_start: usize,
+    /// 标记在全文中的结束字符索引（exclusive，`=>`/`<=` 末尾）。
+    char_end: usize,
+    /// 标记所在行号（从 0 开始）。
+    line: usize,
+    /// `=>` 的目标章节名（`=> Sub` 中的 `Sub`）；`<=` 为 None。
+    target: Option<String>,
+}
+
+/// 扫描全文，按文本顺序收集所有行首的 `=>`/`<=` 流程标记。
+///
+/// 判定与 lexer 一致：仅识别行首（去除前导空白后）的 `=>`/`<=`。表达式中的
+/// `<=`（如 `if a <= b`）不会出现在行首语句位置，故按行首判定即可消歧。
+/// 字符索引按 `char` 计数（与 egui `CCursor` 一致），非字节偏移。
+fn scan_flow_marks(text: &str) -> Vec<FlowMark> {
+    let mut marks = Vec::new();
+    let mut line = 0usize;
+    let mut line_start_char = 0usize; // 当前行首在全文中的字符索引
+    for raw_line in text.split('\n') {
+        let trimmed = raw_line.trim_start();
+        let leading_ws = raw_line.chars().take_while(|c| c.is_whitespace()).count();
+        let token_char_start = line_start_char + leading_ws;
+        if let Some(rest) = trimmed.strip_prefix("=>") {
+            let target = rest.trim();
+            marks.push(FlowMark {
+                kind: FlowKind::Visit,
+                char_start: token_char_start,
+                char_end: token_char_start + "=>".chars().count(),
+                line,
+                target: if target.is_empty() { None } else { Some(target.to_string()) },
+            });
+        } else if trimmed.strip_prefix("<=").is_some() {
+            marks.push(FlowMark {
+                kind: FlowKind::Return,
+                char_start: token_char_start,
+                char_end: token_char_start + "<=".chars().count(),
+                line,
+                target: None,
+            });
+        }
+        line += 1;
+        line_start_char += raw_line.chars().count() + 1; // +1 为换行符
+    }
+    marks
+}
+
+/// 计算每个 FlowMark 的配对索引。
+///
+/// 返回 `pairs[i]` = 第 i 个 mark 的配对 mark 索引，无配对为 `None`。
+fn compute_flow_pairs(marks: &[FlowMark]) -> Vec<Option<usize>> {
+    let mut pairs = vec![None; marks.len()];
+    let mut stack: Vec<usize> = Vec::new(); // 待配对的 Visit 索引
+    for (i, m) in marks.iter().enumerate() {
+        match m.kind {
+            FlowKind::Visit => stack.push(i),
+            FlowKind::Return => {
+                if let Some(j) = stack.pop() {
+                    pairs[j] = Some(i);
+                    pairs[i] = Some(j);
+                }
+            }
+        }
+    }
+    pairs
+}
+
+/// 返回字符索引 `char_idx` 所在的 FlowMark 索引。
+///
+/// 光标位置为字符间隙；`char_idx` 落在 `[char_start, char_end]`（含端点）即视为停在该标记上。
+fn mark_at_cursor(marks: &[FlowMark], char_idx: usize) -> Option<usize> {
+    marks.iter().position(|m| char_idx >= m.char_start && char_idx <= m.char_end)
+}
+
+// ---------------------------------------------------------------------------
 // 语法高亮
 // ---------------------------------------------------------------------------
 
 /// 为整个缓冲区构建带逐 token 着色的 `LayoutJob`。
-fn highlight_code(text: &str) -> egui::text::LayoutJob {
+///
+/// `highlight_ranges` 为需要配对高亮的字符区间列表（全文 `char` 索引，含起止），
+/// 通常包含光标所在 `=>`/`<=` 及其配对指令的字符范围。空列表表示不高亮。
+fn highlight_code(text: &str, highlight_ranges: &[(usize, usize)]) -> egui::text::LayoutJob {
     let mut job = egui::text::LayoutJob::default();
     let lines: Vec<&str> = text.split('\n').collect();
+    // 行首字符偏移与 `scan_flow_marks` 采用同一计数方案（每行 chars + 1 个换行符）。
+    let mut char_offset = 0usize;
     for (idx, line) in lines.iter().enumerate() {
-        highlight_line(&mut job, line);
+        highlight_line(&mut job, line, char_offset, highlight_ranges);
+        char_offset += line.chars().count() + 1;
         if idx + 1 < lines.len() {
             // 重新插入被 `split` 消耗的换行符。
             job.append("\n", 0.0, text_format(COLOR_DEFAULT));
@@ -4137,15 +4425,50 @@ fn line_base_color(trimmed: &str) -> egui::Color32 {
 ///
 /// 在一行内，`"..."` 字符串字面量和行尾 `--` 注释始终使用各自的专用颜色；
 /// 其余内容使用行的基础颜色。基于 `char` 操作（通过 `char_indices`）以保留多字节 UTF-8 内容。
-fn highlight_line(job: &mut egui::text::LayoutJob, line: &str) {
+///
+/// `line_char_offset` 为该行行首在全文中的字符索引（与 `scan_flow_marks` 同口径），
+/// 用于判断行首 `=>`/`<=` token 是否落在配对高亮区间内；命中时该 token 单独使用
+/// [`highlight_format`] 着色，剩余部分仍按流程色处理。
+fn highlight_line(
+    job: &mut egui::text::LayoutJob,
+    line: &str,
+    line_char_offset: usize,
+    highlight_ranges: &[(usize, usize)],
+) {
     let trimmed = line.trim_start();
     let leading_ws = &line[..line.len() - trimmed.len()];
     if !leading_ws.is_empty() {
         job.append(leading_ws, 0.0, text_format(COLOR_DEFAULT));
     }
 
-    let base = line_base_color(trimmed);
-    let chars: Vec<(usize, char)> = trimmed.char_indices().collect();
+    // 流程行（=> / <=）的配对高亮：若行首 token 落在任一高亮区间内，
+    // 用高亮格式单独着色 token，剩余部分按流程色继续着色。
+    let flow_token = if trimmed.starts_with("=>") {
+        Some("=>")
+    } else if trimmed.starts_with("<=") {
+        Some("<=")
+    } else {
+        None
+    };
+    if let Some(tok) = flow_token {
+        let tok_char_start = line_char_offset + leading_ws.chars().count();
+        let tok_char_end = tok_char_start + tok.chars().count();
+        let highlighted = highlight_ranges
+            .iter()
+            .any(|(s, e)| *s <= tok_char_start && tok_char_end <= *e);
+        if highlighted {
+            job.append(tok, 0.0, highlight_format());
+            highlight_remainder(job, &trimmed[tok.len()..], COLOR_FLOW);
+            return;
+        }
+    }
+
+    highlight_remainder(job, trimmed, line_base_color(trimmed));
+}
+
+/// 将一段文本按基础色着色追加到 `job`，处理 `"..."` 字符串字面量与行尾 `--` 注释。
+fn highlight_remainder(job: &mut egui::text::LayoutJob, text: &str, base: egui::Color32) {
+    let chars: Vec<(usize, char)> = text.char_indices().collect();
     let n = chars.len();
 
     let mut buf_start: Option<usize> = None;
@@ -4158,7 +4481,7 @@ fn highlight_line(job: &mut egui::text::LayoutJob, line: &str) {
         if c == '"' {
             // 刷新待处理的基础着色文本，然后消费字符串字面量。
             if let Some(s) = buf_start {
-                job.append(&trimmed[s..buf_end], 0.0, text_format(base));
+                job.append(&text[s..buf_end], 0.0, text_format(base));
                 buf_start = None;
             }
             let start = bofs;
@@ -4172,16 +4495,16 @@ fn highlight_line(job: &mut egui::text::LayoutJob, line: &str) {
                     break;
                 }
             }
-            job.append(&trimmed[start..end_byte], 0.0, text_format(COLOR_STRING));
+            job.append(&text[start..end_byte], 0.0, text_format(COLOR_STRING));
             continue;
         }
 
         if c == '-' && i + 1 < n && chars[i + 1].1 == '-' {
             // `--` 注释延续到行尾。
             if let Some(s) = buf_start {
-                job.append(&trimmed[s..buf_end], 0.0, text_format(base));
+                job.append(&text[s..buf_end], 0.0, text_format(base));
             }
-            job.append(&trimmed[bofs..], 0.0, text_format(COLOR_COMMENT));
+            job.append(&text[bofs..], 0.0, text_format(COLOR_COMMENT));
             return;
         }
 
@@ -4194,7 +4517,7 @@ fn highlight_line(job: &mut egui::text::LayoutJob, line: &str) {
     }
 
     if let Some(s) = buf_start {
-        job.append(&trimmed[s..buf_end], 0.0, text_format(base));
+        job.append(&text[s..buf_end], 0.0, text_format(base));
     }
 }
 
@@ -4203,6 +4526,16 @@ fn text_format(color: egui::Color32) -> egui::text::TextFormat {
     egui::text::TextFormat {
         font_id: egui::FontId::monospace(FONT_SIZE),
         color,
+        ..Default::default()
+    }
+}
+
+/// 构建配对高亮专用 `TextFormat`：流程色前景 + 亮黄背景，用于 `=>`/`<=` 配对标记。
+fn highlight_format() -> egui::text::TextFormat {
+    egui::text::TextFormat {
+        font_id: egui::FontId::monospace(FONT_SIZE),
+        color: COLOR_FLOW,
+        background: COLOR_PAIR_HIGHLIGHT,
         ..Default::default()
     }
 }
@@ -4220,6 +4553,92 @@ mod tests {
     }
 
     #[test]
+    fn flow_marks_scan_visit_and_return() {
+        let src = "# Main\nAki: \"Hi\"\n=> Sub\nAki: \"in sub\"\n<=\nAki: \"back\"\n";
+        let marks = scan_flow_marks(src);
+        assert_eq!(marks.len(), 2);
+        assert_eq!(marks[0].kind, FlowKind::Visit);
+        assert_eq!(marks[0].target.as_deref(), Some("Sub"));
+        assert_eq!(marks[0].line, 2);
+        assert_eq!(marks[1].kind, FlowKind::Return);
+        assert_eq!(marks[1].target, None);
+        assert_eq!(marks[1].line, 4);
+        // char 索引：行 0 "# Main"(6) +\n=7，行1 "Aki: \"Hi\""(9)+\n=10 ->17，
+        // 行2 起始 char=17，"=> Sub" 的 "=>" 在 17..19
+        assert_eq!(marks[0].char_start, 17);
+        assert_eq!(marks[0].char_end, 19);
+    }
+
+    #[test]
+    fn flow_marks_ignore_expression_leq() {
+        // `if a <= b then` 中的 <= 不在行首，不应被识别
+        let src = "$x = 1\nif a <= b then\n  Aki: \"ok\"\nend\n";
+        let marks = scan_flow_marks(src);
+        assert!(marks.is_empty(), "表达式中的 <= 不应被识别为返回标记");
+    }
+
+    #[test]
+    fn flow_marks_leading_whitespace() {
+        let src = "  => Sub\n  <=\n";
+        let marks = scan_flow_marks(src);
+        assert_eq!(marks.len(), 2);
+        assert_eq!(marks[0].char_start, 2); // 2 个空格后
+        assert_eq!(marks[0].char_end, 4);
+    }
+
+    #[test]
+    fn flow_pairs_basic() {
+        let src = "=> A\n<=\n=> B\n<=\n";
+        let marks = scan_flow_marks(src);
+        let pairs = compute_flow_pairs(&marks);
+        assert_eq!(pairs, vec![Some(1), Some(0), Some(3), Some(2)]);
+    }
+
+    #[test]
+    fn flow_pairs_nested() {
+        // 嵌套：外层 => 配最后一个 <=，内层 => 配第一个 <=
+        let src = "=> Outer\n=> Inner\n<=\n<=\n";
+        let marks = scan_flow_marks(src);
+        let pairs = compute_flow_pairs(&marks);
+        // mark0(=>Outer) - mark3(<=)
+        // mark1(=>Inner) - mark2(<=)
+        assert_eq!(pairs[0], Some(3));
+        assert_eq!(pairs[1], Some(2));
+        assert_eq!(pairs[2], Some(1));
+        assert_eq!(pairs[3], Some(0));
+    }
+
+    #[test]
+    fn flow_pairs_unbalanced() {
+        // 孤立 <=（无 => 可配）+ 未闭合 =>
+        let src = "<=\n=> A\n<=\n=> B\n";
+        let marks = scan_flow_marks(src);
+        let pairs = compute_flow_pairs(&marks);
+        // mark0(<=) 无配对
+        assert_eq!(pairs[0], None);
+        // mark1(=>A) - mark2(<=)
+        assert_eq!(pairs[1], Some(2));
+        assert_eq!(pairs[2], Some(1));
+        // mark3(=>B) 未闭合
+        assert_eq!(pairs[3], None);
+    }
+
+    #[test]
+    fn flow_mark_at_cursor() {
+        let src = "=> Sub\n<=\n";
+        let marks = scan_flow_marks(src);
+        // 光标在 "=>" 上（0..=2）
+        assert_eq!(mark_at_cursor(&marks, 0), Some(0));
+        assert_eq!(mark_at_cursor(&marks, 1), Some(0));
+        assert_eq!(mark_at_cursor(&marks, 2), Some(0));
+        // 光标在 " Sub" 中（3..6）不在标记上
+        assert_eq!(mark_at_cursor(&marks, 3), None);
+        // "=>" 占 0..2，'\n'=7，"<=" 在 8..10
+        assert_eq!(mark_at_cursor(&marks, 8), Some(1));
+        assert_eq!(mark_at_cursor(&marks, 9), Some(1));
+    }
+
+    #[test]
     fn highlight_preserves_text() {
         // LayoutJob 的 `text` 必须等于输入，以使光标位置对 TextEdit 有效。
         for src in [
@@ -4228,7 +4647,7 @@ mod tests {
             "# Title\nAki: \"Hi\"\n-- comment\n$x = 1\n",
             "多行\n中文 \"字\" 符\n",
         ] {
-            let job = highlight_code(src);
+            let job = highlight_code(src, &[]);
             assert_eq!(job.text, src, "mismatch for {:?}", src);
         }
     }
