@@ -125,7 +125,7 @@ pub fn convert_rpy_to_akrs(rpy_source: &str) -> MigrationResult {
         if is_comment(content) {
             // Check if it's a pure comment (not a label or directive)
             let comment_text = content.trim_start_matches('#').trim();
-            output.push_str(&format!("-- {}\n", comment_text));
+            output.push_str(&format!("// {}\n", comment_text));
             i += 1;
             continue;
         }
@@ -519,14 +519,14 @@ pub fn convert_rpy_to_akrs(rpy_source: &str) -> MigrationResult {
 
         // Unknown line — emit as comment with warning
         warnings.push(format!("line {}: unrecognized syntax, emitted as comment: {}", line.line_num, content));
-        output.push_str(&format!("-- TODO: {}\n", content));
+        output.push_str(&format!("// TODO: {}\n", content));
         i += 1;
     }
 
     // Build final script: default vars first, then body
     let mut final_script = String::new();
     if !default_vars.is_empty() {
-        final_script.push_str("-- Default variables (from Ren'Py 'default' declarations)\n");
+        final_script.push_str("// Default variables (from Ren'Py 'default' declarations)\n");
         for var in &default_vars {
             final_script.push_str(var);
             final_script.push('\n');
@@ -614,7 +614,7 @@ fn convert_simple_line(
 
     if is_comment(content) {
         let comment_text = content.trim_start_matches('#').trim();
-        output.push_str(&format!("-- {}\n", comment_text));
+        output.push_str(&format!("// {}\n", comment_text));
         return;
     }
 
@@ -741,7 +741,7 @@ fn convert_simple_line(
     }
 
     // Unknown — emit as comment
-    output.push_str(&format!("-- TODO: {}\n", content));
+    output.push_str(&format!("// TODO: {}\n", content));
 }
 
 /// Convert Ren'Py transition names to .akrs transition names.
@@ -921,7 +921,7 @@ label start:
         assert!(result.image_map.iter().any(|(n, f)| n == "bg_school" && f == "images/school.png"));
 
         // Default vars collected at top
-        assert!(result.akrs_script.starts_with("-- Default variables"));
+        assert!(result.akrs_script.starts_with("// Default variables"));
         assert!(result.akrs_script.contains("$affection = 0"));
 
         // Character name resolved
@@ -949,7 +949,7 @@ label start:
     return
 "#;
         let result = convert_rpy_to_akrs(rpy);
-        assert!(result.akrs_script.contains("-- This is a comment"));
+        assert!(result.akrs_script.contains("// This is a comment"));
         assert!(result.akrs_script.contains("\"This is narration.\""));
     }
 

@@ -6,7 +6,7 @@
 
 [![License](https://img.shields.io/badge/license-MIT-blue.svg)](#许可证)
 [![Rust](https://img.shields.io/badge/rust-1.92+-orange.svg)](https://www.rust-lang.org)
-[![Version](https://img.shields.io/badge/version-1.0.55-success.svg)](#)
+[![Version](https://img.shields.io/badge/version-1.0.56-success.svg)](#)
 [![Platform](https://img.shields.io/badge/platform-Windows%20%7C%20Linux%20%7C%20macOS-lightgrey.svg)](#下载与安装)
 [![PRs Welcome](https://img.shields.io/badge/PRs-welcome-brightgreen.svg)](#贡献)
 
@@ -156,35 +156,35 @@ cargo run --release -p akrs-editor
 ```ruby
 # 夏日祭的尾声
 
--- 背景：夏日祭夜晚
+// 背景：夏日祭夜晚
 @bg bg1 with fade
 
--- 立绘：心夏（身体1）居中
+// 立绘：心夏（身体1）居中
 + 心夏 (kokonabody1) 居中
 
 心夏: "引航者，今天晚上玩得开心吗？"
 
--- 差分更换：仅换立绘图片，位置/大小不变，无过渡
+// 差分更换：仅换立绘图片，位置/大小不变，无过渡
 + 心夏 (kokonabody2) swap
 
 引航者: "不错不错，可惜今晚是夏日祭最后一天了。"
 
--- 旁白
+// 旁白
 "心夏低下了头，不过不到一秒她又把头抬起来了。"
 
--- 分支选项
+// 分支选项
 ? "引航者要对心夏说什么？"
 | "我有个小礼物想送给心夏" -> 分支A
 | "我给心夏买了一套衣服" -> 分支B
 ?
 
--- 变量与条件
+// 变量与条件
 $好感度 = 10
 if 好感度 >= 10 then
   心夏: "嘿嘿，也许我有呢？"
 end
 
--- 切换背景 + CG
+// 切换背景 + CG
 @bg cg with fade
 
 ~~

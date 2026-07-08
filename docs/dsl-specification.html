@@ -702,11 +702,11 @@ wait 0.5</code></pre>
 
   <!-- 4.12 Comments -->
   <h3 class="sub" id="comments"><span class="anchor-marker">4.12</span>Comments</h3>
-  <div class="sig">-- <span class="opt">comment to end of line</span></div>
-  <p>A double dash <code>--</code> begins a comment that runs to the end of the line. Comments are ignored by the lexer and may appear anywhere whitespace is allowed.</p>
-  <pre><code class="akrs">-- Set the scene
-@bg school_entrance with fade  -- nice entrance
-$affection = 1  -- starting value</code></pre>
+  <div class="sig">// <span class="opt">comment to end of line</span></div>
+  <p>A double slash <code>//</code> begins a comment that runs to the end of the line. Comments are ignored by the lexer and may appear anywhere whitespace is allowed.</p>
+  <pre><code class="akrs">// Set the scene
+@bg school_entrance with fade  // nice entrance
+$affection = 1  // starting value</code></pre>
 
   <!-- 4.13 Story End -->
   <h3 class="sub" id="storyend"><span class="anchor-marker">4.13</span>Story End</h3>
@@ -1097,7 +1097,7 @@ IDENT          ::= [A-Za-z_] [A-Za-z0-9_]*
 INTEGER        ::= [0-9]+
 FLOAT          ::= [0-9]+ "." [0-9]+
 STRING         ::= '"' ... '"' | "'" ... "'"
-COMMENT        ::= "--" [^\n]*</code></pre>
+COMMENT        ::= "//" [^\n]*</code></pre>
 
   <div class="note"><span class="tag">Indentation</span><p>Whitespace and indentation are not part of this grammar. Newlines separate statements but carry no nesting meaning &mdash; blocks are delimited solely by their explicit markers.</p></div>
 </section>

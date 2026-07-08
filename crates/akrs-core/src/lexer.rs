@@ -11,7 +11,7 @@
 //! - `~~` story end
 //! - `+` character entrance
 //! - `-` character exit (or arithmetic minus in expressions)
-//! - `--` comment
+//! - `//` comment
 
 use crate::token::{LineCol, LocSpan, Token, TokenKind};
 
@@ -99,12 +99,6 @@ impl<'a> Lexer<'a> {
                             TokenKind::Newline,
                             self.make_span(start, sp),
                         ));
-                    }
-                }
-                // Comments: -- to end of line
-                '-' if self.peek_at(1) == Some('-') => {
-                    while self.pos < self.chars.len() && self.chars[self.pos] != '\n' {
-                        self.advance();
                     }
                 }
                 // Section mark: # (hash)
@@ -265,10 +259,17 @@ impl<'a> Lexer<'a> {
                     self.tokens.push(Token::new(TokenKind::Star, self.make_span(start, sp)));
                 }
                 '/' => {
-                    let sp = self.current_linecol();
-                    let start = self.pos;
-                    self.advance();
-                    self.tokens.push(Token::new(TokenKind::Slash, self.make_span(start, sp)));
+                    if self.peek_at(1) == Some('/') {
+                        // Comments: // to end of line
+                        while self.pos < self.chars.len() && self.chars[self.pos] != '\n' {
+                            self.advance();
+                        }
+                    } else {
+                        let sp = self.current_linecol();
+                        let start = self.pos;
+                        self.advance();
+                        self.tokens.push(Token::new(TokenKind::Slash, self.make_span(start, sp)));
+                    }
                 }
                 '"' | '\'' => {
                     if let Err(e) = self.lex_string(ch) {

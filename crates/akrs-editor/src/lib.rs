@@ -37,7 +37,7 @@ const COLOR_DIRECTION: egui::Color32 = egui::Color32::from_rgb(76, 178, 255);
 const COLOR_VARIABLE: egui::Color32 = egui::Color32::from_rgb(255, 204, 76);
 /// `?` `|` 选择分支 -> (0.8, 0.3, 0.8)
 const COLOR_CHOICE: egui::Color32 = egui::Color32::from_rgb(204, 76, 204);
-/// `--` 注释 -> (0.4, 0.4, 0.4)
+/// `//` 注释 -> (0.4, 0.4, 0.4)
 const COLOR_COMMENT: egui::Color32 = egui::Color32::from_rgb(102, 102, 102);
 /// `"..."` 字符串 -> (0.9, 0.9, 0.4)
 const COLOR_STRING: egui::Color32 = egui::Color32::from_rgb(229, 229, 102);
@@ -1434,13 +1434,13 @@ impl EditorApp {
                         @bg 背景名 with fade\n\
                         + 角色名 (pose1) at 0.5,1.0 size 1.0\n\
                         角色名: \"对话内容\"\n\
-                        + 角色名 (pose2) swap  -- 差分更换（无过渡）\n\
+                        + 角色名 (pose2) swap  // 差分更换（无过渡）\n\
                         $变量 = 1\n\
                         ? \"选择提示\"\n\
                         | \"选项1\"  -> 分支A\n\
                         | \"选项2\"  -> 分支B\n\
                         ?\n\
-                        ~~  -- 章节结束";
+                        ~~  // 章节结束";
                     ui.label(
                         egui::RichText::new(example)
                             .monospace()
@@ -2676,13 +2676,13 @@ impl EditorApp {
             }
             // 注释行保留
             if trimmed.starts_with('#') {
-                akrs_lines.push(format!("-- {}", trimmed.trim_start_matches('#').trim()));
+                akrs_lines.push(format!("// {}", trimmed.trim_start_matches('#').trim()));
                 continue;
             }
 
             // 未识别的行保留为注释
             if !trimmed.is_empty() {
-                akrs_lines.push(format!("-- 未转换: {}", trimmed));
+                akrs_lines.push(format!("// 未转换: {}", trimmed));
                 warnings.push(format!("未识别的行：{}", trimmed));
             }
         }
@@ -4395,10 +4395,10 @@ fn highlight_code(text: &str, highlight_ranges: &[(usize, usize)]) -> egui::text
 
 /// 根据行首非空白 token 选择基础颜色。
 fn line_base_color(trimmed: &str) -> egui::Color32 {
-    // 以 `-` 开头的双字符标记必须先于单字符 `-` 方向标记检查。
+    // 以 `-` 开头的双字符标记 `->` 必须先于单字符 `-` 方向标记检查。
     if trimmed.starts_with('#') {
         COLOR_SECTION
-    } else if trimmed.starts_with("--") {
+    } else if trimmed.starts_with("//") {
         COLOR_COMMENT
     } else if trimmed.starts_with("->")
         || trimmed.starts_with("=>")
@@ -4423,7 +4423,7 @@ fn line_base_color(trimmed: &str) -> egui::Color32 {
 
 /// 将单行的着色片段追加到 `job`。
 ///
-/// 在一行内，`"..."` 字符串字面量和行尾 `--` 注释始终使用各自的专用颜色；
+/// 在一行内，`"..."` 字符串字面量和行尾 `//` 注释始终使用各自的专用颜色；
 /// 其余内容使用行的基础颜色。基于 `char` 操作（通过 `char_indices`）以保留多字节 UTF-8 内容。
 ///
 /// `line_char_offset` 为该行行首在全文中的字符索引（与 `scan_flow_marks` 同口径），
@@ -4466,7 +4466,7 @@ fn highlight_line(
     highlight_remainder(job, trimmed, line_base_color(trimmed));
 }
 
-/// 将一段文本按基础色着色追加到 `job`，处理 `"..."` 字符串字面量与行尾 `--` 注释。
+/// 将一段文本按基础色着色追加到 `job`，处理 `"..."` 字符串字面量与行尾 `//` 注释。
 fn highlight_remainder(job: &mut egui::text::LayoutJob, text: &str, base: egui::Color32) {
     let chars: Vec<(usize, char)> = text.char_indices().collect();
     let n = chars.len();
@@ -4499,8 +4499,8 @@ fn highlight_remainder(job: &mut egui::text::LayoutJob, text: &str, base: egui::
             continue;
         }
 
-        if c == '-' && i + 1 < n && chars[i + 1].1 == '-' {
-            // `--` 注释延续到行尾。
+        if c == '/' && i + 1 < n && chars[i + 1].1 == '/' {
+            // `//` 注释延续到行尾。
             if let Some(s) = buf_start {
                 job.append(&text[s..buf_end], 0.0, text_format(base));
             }
@@ -4644,7 +4644,7 @@ mod tests {
         for src in [
             "",
             "hello",
-            "# Title\nAki: \"Hi\"\n-- comment\n$x = 1\n",
+            "# Title\nAki: \"Hi\"\n// comment\n$x = 1\n",
             "多行\n中文 \"字\" 符\n",
         ] {
             let job = highlight_code(src, &[]);
