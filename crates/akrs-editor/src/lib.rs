@@ -1406,8 +1406,9 @@ impl EditorApp {
                     ui.set_max_width(560.0);
                     let example = "# 章节标题\n\
                         @bg 背景名 with fade\n\
-                        + 角色名 enters from left\n\
+                        + 角色名 (pose1) at 0.5,1.0 size 1.0\n\
                         角色名: \"对话内容\"\n\
+                        + 角色名 (pose2) swap  -- 差分更换（无过渡）\n\
                         $变量 = 1\n\
                         ? \"选择提示\"\n\
                         | \"选项1\"  -> 分支A\n\
@@ -1425,7 +1426,7 @@ impl EditorApp {
             ui.add_space(12.0);
             ui.label(
                 egui::RichText::new(
-                    "提示：# 定义章节  @ 场景指令  + 角色上场  $ 变量操作  ? 选择分支  ~~ 章节结束",
+                    "提示：# 定义章节  @ 场景指令  + 角色上场  +...swap 差分更换  - 角色下场  $ 变量操作  ? 选择分支  ~~ 章节结束",
                 )
                 .size(12.0)
                 .color(egui::Color32::from_rgb(140, 150, 170)),
@@ -2625,8 +2626,9 @@ impl eframe::App for EditorApp {
                 // 快速插入语法按钮（鼠标悬停显示提示）
                 ui.label("插入:");
                 let insert_buttons = [
-                    ("+", "+ 角色", "立绘上场 (Ctrl+1)"),
-                    ("-", "- 角色", "立绘下场 (Ctrl+2)"),
+                    ("+", "+ 角色", "立绘上场（0.5秒淡入）(Ctrl+1)"),
+                    ("-", "- 角色", "立绘下场（0.5秒淡出）(Ctrl+2)"),
+                    ("~", "+ 角色 (新pose) swap", "差分更换立绘（仅换pose，无过渡，位置/大小不变）"),
                     ("#", "# 章节", "章节标题 (Ctrl+3)"),
                     ("@", "@bg 背景", "背景指令 (Ctrl+4)"),
                     ("?", "? 选项", "选择分支"),
@@ -2888,8 +2890,9 @@ impl eframe::App for EditorApp {
                     ui.label(egui::RichText::new("快速插入语法").strong());
                     ui.separator();
                     let insert_shortcuts = [
-                        ("Ctrl+1", "+ 角色", "立绘上场"),
-                        ("Ctrl+2", "- 角色", "立绘下场"),
+                        ("Ctrl+1", "+ 角色", "立绘上场（0.5秒淡入）"),
+                        ("Ctrl+2", "- 角色", "立绘下场（0.5秒淡出）"),
+                        ("按钮 ~", "+ 角色 (pose) swap", "差分更换（仅换pose，无过渡）"),
                         ("Ctrl+3", "# 章节", "章节标题"),
                         ("Ctrl+4", "@bg 背景", "背景指令"),
                     ];

@@ -112,6 +112,9 @@ pub struct DirectionAction {
 pub enum DirectionKind {
     Enter,
     Exit,
+    /// 差分更换：仅替换立绘 pose 图片，不触发过渡动画，
+    /// 保持位置/大小/透明度等全部不变。语法：`+ 角色 (新pose) swap`
+    Swap,
 }
 
 /// Sprite position.
@@ -207,7 +210,7 @@ impl Transition {
     }
     pub fn default_duration(&self) -> f32 {
         match self {
-            Self::Fade => 0.6,
+            Self::Fade => 0.5,
             Self::FadeBlack | Self::FadeWhite => 0.8,
             Self::SlideLeft | Self::SlideRight | Self::SlideUp | Self::SlideDown => 0.5,
             Self::Dissolve => 0.8,

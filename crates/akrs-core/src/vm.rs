@@ -621,7 +621,7 @@ mod tests {
     use super::*;
     use crate::lexer::Lexer;
     use crate::parser::Parser;
-    use std::assert_matches;
+    // assert_matches! 在 Rust 1.92 尚未稳定，用 matches! 宏替代。
 
     fn run(src: &str) -> Vec<VmEvent> {
         let tokens = Lexer::new(src).tokenize().expect("lex");
@@ -703,6 +703,6 @@ mod tests {
         // Load back
         vm.load_state(state);
         let e = vm.step().unwrap();
-        assert_matches!(e, VmEvent::Dialogue { text, .. } if text == "First.");
+        assert!(matches!(e, VmEvent::Dialogue { text, .. } if text == "First."));
     }
 }

@@ -933,6 +933,16 @@ impl Engine {
                         DirectionKind::Exit => {
                             snap_scene.character_exit(&action.character);
                         }
+                        DirectionKind::Swap => {
+                            // 重建时差分更换：直接修改现有角色 pose，不触发过渡。
+                            if let Some(char_state) = snap_scene
+                                .characters
+                                .iter_mut()
+                                .find(|c| c.name == action.character)
+                            {
+                                char_state.pose = action.pose.clone();
+                            }
+                        }
                     }
                 }
                 // 重建模式下 Dialogue/Narration/Choice/Wait/Flow/Visit/Return/StoryEnd
@@ -1489,7 +1499,37 @@ impl Engine {
         action: DirectionAction,
         events: &mut Vec<EngineEvent>,
     ) {
-        let kind = action.transition.unwrap_or(Transition::Dissolve);
+        // 差分更换：直接修改现有角色的 pose，不触发过渡动画，
+        // 保持位置/大小/透明度等全部不变。
+        if action.kind == DirectionKind::Swap {
+            let new_pose = action.pose.clone();
+            if let Some(char_state) = self.scene.characters.iter_mut().find(|c| c.name == action.character) {
+                char_state.pose = new_pose;
+                events.push(EngineEvent::CharacterEntered {
+                    name: action.character,
+                });
+            } else {
+                // 角色不在场上：降级为即时入场（Instant 过渡）
+                let pose = action.pose.clone();
+                let position = action.position;
+                let transform = action.transform;
+                self.transition.start(
+                    Transition::Instant,
+                    &mut self.scene,
+                    None,
+                    vec![(action.character.clone(), pose, position, transform)],
+                    vec![],
+                    None,
+                );
+                events.push(EngineEvent::CharacterEntered {
+                    name: action.character,
+                });
+            }
+            return;
+        }
+
+        // 正常上下场：默认使用 Fade（0.5秒淡入淡出），而非 Dissolve（0.8秒）
+        let kind = action.transition.unwrap_or(Transition::Fade);
 
         match action.kind {
             DirectionKind::Enter => {
@@ -1560,6 +1600,10 @@ impl Engine {
                 events.push(EngineEvent::CharacterExited {
                     name: action.character,
                 });
+            }
+            DirectionKind::Swap => {
+                // Swap 已在上方提前处理并 return，不会走到这里
+                unreachable!("Swap 应在 handle_direction 开头处理")
             }
         }
     }

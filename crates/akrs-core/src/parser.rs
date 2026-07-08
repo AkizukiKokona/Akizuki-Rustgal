@@ -197,13 +197,14 @@ impl Parser {
         self.advance(); // +
         self.skip_newlines();
 
-        // Parse: Character [(pose)] [enters|exits] [position|at x[,y]] [size s] [with transition]
+        // Parse: Character [(pose)] [enters|exits|swap] [position|at x[,y]] [size s] [with transition]
         // - `+ 心夏 (kokonabody1) 居中`           (新语法：立绘 + 中文位置)
         // - `+ 心夏 居左`                         (新语法：仅位置)
         // - `+ 心夏`                              (新语法：默认居中)
         // - `+ 心夏 at 0.3,0.8`                   (百分比位置：x=30%, y=80%)
         // - `+ 心夏 at 0.5 size 1.2`              (百分比位置 + 大小倍数)
         // - `+ 心夏 size 0.9`                     (仅大小，位置默认居中)
+        // - `+ 心夏 (pose2) swap`                 (差分更换：仅换pose，无过渡，位置/大小不变)
         // - `+ Aki enters from left with fade`   (旧语法：向后兼容)
         let character = self.expect_ident("character name")?;
 
@@ -215,7 +216,8 @@ impl Parser {
             self.expect(&TokenKind::RParen, ")")?;
         }
 
-        // `+` 默认表示入场；若显式写出 exits/leave 则为出场
+        // `+` 默认表示入场；若显式写出 exits/leave 则为出场；
+        // 若显式写出 swap 则为差分更换（仅换pose，无过渡，位置/大小不变）
         let mut kind = DirectionKind::Enter;
         let mut position = None;
         let mut transition = None;
@@ -228,6 +230,12 @@ impl Parser {
                     "enters" | "enter" => { self.advance(); }
                     "exits" | "exit" | "leaves" | "leave" => {
                         kind = DirectionKind::Exit;
+                        self.advance();
+                    }
+                    "swap" | "diff" | "差分" => {
+                        // 差分更换：仅替换 pose 图片，不触发过渡，保持位置/大小不变。
+                        // 必须带有 pose（`(新pose)`），否则无意义。
+                        kind = DirectionKind::Swap;
                         self.advance();
                     }
                     "from" | "to" => {
@@ -295,6 +303,18 @@ impl Parser {
             } else {
                 break;
             }
+        }
+
+        // 差分更换必须指定新 pose，否则没有可更换的内容
+        if kind == DirectionKind::Swap && pose.is_none() {
+            return Err(ParseError {
+                message: format!(
+                    "差分更换(swap)必须指定新立绘名，语法：`+ {} (新pose) swap`",
+                    character
+                ),
+                span: self.current_span(),
+                hint: Some("例如：+ 心夏 (kokonabody2) swap".to_string()),
+            });
         }
 
         self.consume_newline();
@@ -755,7 +775,7 @@ impl Parser {
 mod tests {
     use super::*;
     use crate::lexer::Lexer;
-    use std::assert_matches;
+    // assert_matches! 在 Rust 1.92 尚未稳定，用 matches! 宏替代。
 
     fn parse(src: &str) -> Program {
         let tokens = Lexer::new(src).tokenize().expect("lex failed");
@@ -867,16 +887,16 @@ mod tests {
     #[test]
     fn test_flow_and_visit() {
         let p = parse("# S\n-> Next\n# T\n=> Sub\n<=\n");
-        assert_matches!(p.sections[0].nodes[0], Node::Flow { .. });
-        assert_matches!(p.sections[1].nodes[0], Node::Visit { .. });
-        assert_matches!(p.sections[1].nodes[1], Node::Return { .. });
+        assert!(matches!(p.sections[0].nodes[0], Node::Flow { .. }));
+        assert!(matches!(p.sections[1].nodes[0], Node::Visit { .. }));
+        assert!(matches!(p.sections[1].nodes[1], Node::Return { .. }));
     }
 
     #[test]
     fn test_varop() {
         let p = parse("# S\n$affection = 10\n$score += 5\n");
-        assert_matches!(p.sections[0].nodes[0], Node::VarOp { op: VarOpKind::Assign, .. });
-        assert_matches!(p.sections[0].nodes[1], Node::VarOp { op: VarOpKind::PlusEq, .. });
+        assert!(matches!(p.sections[0].nodes[0], Node::VarOp { op: VarOpKind::Assign, .. }));
+        assert!(matches!(p.sections[0].nodes[1], Node::VarOp { op: VarOpKind::PlusEq, .. }));
     }
 
     #[test]
@@ -918,6 +938,30 @@ mod tests {
             }
             _ => panic!("expected Direction"),
         }
+    }
+
+    #[test]
+    fn test_direction_swap() {
+        // 差分更换：`+ 角色 (新pose) swap`
+        let p = parse("# S\n+ 心夏 (kokonabody2) swap\n");
+        match &p.sections[0].nodes[0] {
+            Node::Direction { action, .. } => {
+                assert_eq!(action.character, "心夏");
+                assert_eq!(action.kind, DirectionKind::Swap);
+                assert_eq!(action.pose.as_deref(), Some("kokonabody2"));
+            }
+            _ => panic!("expected Direction (swap)"),
+        }
+    }
+
+    #[test]
+    fn test_direction_swap_without_pose_errors() {
+        // swap 必须带 pose，否则应返回解析错误
+        let tokens = crate::lexer::Lexer::new("# S\n+ 心夏 swap\n").tokenize().expect("lex failed");
+        let result = Parser::new(tokens).parse();
+        assert!(result.is_err(), "swap 无 pose 应返回解析错误");
+        let errors = result.unwrap_err();
+        assert!(errors.iter().any(|e| e.message.contains("swap")), "错误消息应提到 swap");
     }
 
     #[test]

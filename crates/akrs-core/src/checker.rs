@@ -137,6 +137,11 @@ impl Checker {
                     DirectionKind::Exit => {
                         on_stage.retain(|n| n != &action.character);
                     }
+                    DirectionKind::Swap => {
+                        // 差分更换不改变场上角色列表，仅换 pose。
+                        // 若角色不在场上，运行时会降级为即时入场，此处不报错。
+                        let _ = span;
+                    }
                 }
             }
             Node::VarOp { name, op, expr, span } => {
