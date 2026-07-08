@@ -84,7 +84,7 @@ jobs:
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
         with:
-          toolchain: "1.92.0"
+          toolchain: "1.96.1"
           targets: ${{ matrix.target }}
 
       - name: Cache cargo
@@ -146,7 +146,7 @@ jobs:
           STAGE="akrs-game"
           mkdir -p "$STAGE/scripts" "$STAGE/assets/fonts"
           mkdir -p "$STAGE/assets/bg" "$STAGE/assets/characters"
-          mkdir -p "$STAGE/assets/music" "$STAGE/assets/sound" "$STAGE/assets/title"
+          mkdir -p "$STAGE/assets/music" "$STAGE/assets/sound"
           BIN_DIR="target/${{ matrix.target }}/release"
           if [ "${{ matrix.platform }}" = "windows" ]; then
             cp "$BIN_DIR/akrs.exe" "$STAGE/"
@@ -161,8 +161,13 @@ jobs:
             chmod +x "$STAGE/启动游戏.sh"
           fi
           cp scripts/demo.akrs "$STAGE/scripts/" 2>/dev/null || true
-          cp assets/fonts/NotoSansCJK-Regular.ttc "$STAGE/assets/fonts/" 2>/dev/null || true
-          cp assets/fonts/NotoSansSC-Regular-subset.ttf "$STAGE/assets/fonts/" 2>/dev/null || true
+          cp assets/fonts/SourceHanSansSC-Regular-2.otf "$STAGE/assets/fonts/" 2>/dev/null || true
+          cp assets/bg/*.png "$STAGE/assets/bg/" 2>/dev/null || true
+          cp assets/characters/*.png "$STAGE/assets/characters/" 2>/dev/null || true
+          cp assets/title.png "$STAGE/assets/" 2>/dev/null || true
+          mkdir -p "$STAGE/assets/scripts/languages/ui"
+          cp assets/scripts/languages/*.json "$STAGE/assets/scripts/languages/" 2>/dev/null || true
+          cp assets/scripts/languages/ui/*.json "$STAGE/assets/scripts/languages/ui/" 2>/dev/null || true
           printf 'Akizuki*Rustgal — 开发测试版 (%s)\n版本: %s\n\nWindows: 双击 启动游戏.bat\nLinux/macOS: ./启动游戏.sh\n命令行工具: akrs check scripts/demo.akrs\n' "${{ matrix.platform }}" "${{ steps.ver.outputs.version }}" > "$STAGE/README.txt"
 
       - name: Archive
