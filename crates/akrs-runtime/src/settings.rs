@@ -123,6 +123,22 @@ pub struct Settings {
     ///   开启此项不影响行为，仅作为开发者标志位。
     #[serde(default)]
     pub debug_terminal: bool,
+    /// 已读文字颜色（RGBA 0–255）。玩家看过的对话/旁白用此色显示。
+    /// 默认浅紫色 [200, 170, 230, 255]。
+    #[serde(default = "default_read_text_color")]
+    pub read_text_color: [u8; 4],
+    /// 未读文字颜色（RGBA 0–255）。玩家尚未看过的对话/旁白用此色显示。
+    /// 默认白色 [255, 255, 255, 255]。
+    #[serde(default = "default_unread_text_color")]
+    pub unread_text_color: [u8; 4],
+}
+
+fn default_read_text_color() -> [u8; 4] {
+    [200, 170, 230, 255]
+}
+
+fn default_unread_text_color() -> [u8; 4] {
+    [255, 255, 255, 255]
 }
 
 fn default_auto_recovery() -> bool {
@@ -155,6 +171,8 @@ impl Default for Settings {
             language: String::new(),
             ui_language: String::new(),
             debug_terminal: false,
+            read_text_color: default_read_text_color(),
+            unread_text_color: default_unread_text_color(),
         }
     }
 }

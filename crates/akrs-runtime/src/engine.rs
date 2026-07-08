@@ -527,6 +527,14 @@ impl Engine {
         }
     }
 
+    /// 清空已读历史（「全部设为未读」）。
+    /// 清空后，所有对话/旁白重新视为未读：已读/未读着色回到未读色，
+    /// 「仅跳过已读」快进也会在每句停下。立即持久化到 `saves/read_history.json`。
+    pub fn clear_read_history(&mut self) {
+        self.read_history.clear();
+        self.save_read_history();
+    }
+
     /// Persist the current settings to `saves/settings.json`.
     pub fn save_settings(&self) -> Result<(), String> {
         let path = Settings::default_path();
@@ -604,9 +612,11 @@ impl Engine {
                 } else if self.settings.skip_unread {
                     true // 允许跳过未读，直接跳
                 } else {
-                    // 只跳过已读：检查当前文本是否在已读历史中
-                    let key = format!("{}|{}", dialogue.speaker, dialogue.full_text);
-                    self.read_history.contains(&key)
+                    // 只跳过已读：使用对话自身的 is_read 标志（show_dialogue 时
+                    // 依据「原文 key 是否已在 read_history」设置）。
+                    // 此前用翻译后的 speaker|text 重算 key 与存储的原文 key 不一致，
+                    // 会导致已读判定永远为假、快进卡死，现直接复用 is_read 修复。
+                    dialogue.is_read
                 }
             } else {
                 false // 没有对话，不跳
@@ -1453,11 +1463,13 @@ impl Engine {
     ) {
         // 记录已读历史（用原文，跨语言稳定）
         let key = format!("{}|{}", speaker, text);
+        // is_read：本次显示前是否已读过（用于已读/未读着色与「仅跳过已读」快进）。
+        let is_read = self.read_history.contains(&key);
         self.read_history.insert(key);
         // 翻译显示文本：角色名 + 对话正文
         let display_speaker = self.translator.t_character(&speaker).to_string();
         let display_text = self.translator.t_dialogue(&text).to_string();
-        self.scene.set_dialogue(display_speaker.clone(), pose, display_text.clone());
+        self.scene.set_dialogue(display_speaker.clone(), pose, display_text.clone(), is_read);
         self.typewriter.start(
             display_text.chars().count(),
             self.settings.text_speed,
@@ -1476,10 +1488,12 @@ impl Engine {
     fn show_narration(&mut self, text: String, events: &mut Vec<EngineEvent>) {
         // 记录已读历史（用原文，跨语言稳定；旁白 speaker 为空）
         let key = format!("|{}", text);
+        // is_read：本次显示前是否已读过。
+        let is_read = self.read_history.contains(&key);
         self.read_history.insert(key);
         // 翻译显示文本
         let display_text = self.translator.t_narration(&text).to_string();
-        self.scene.set_narration(display_text.clone());
+        self.scene.set_narration(display_text.clone(), is_read);
         self.typewriter.start(
             display_text.chars().count(),
             self.settings.text_speed,

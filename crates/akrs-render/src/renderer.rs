@@ -27,6 +27,10 @@ struct GameTheme {
     text: Color,
     /// 对话框色：游戏进行中文本框渐变基色（仅取 RGB）。
     dialogue: Color,
+    /// 已读文字色：玩家看过的对话/旁白文字（默认浅紫）。
+    read_text: Color,
+    /// 未读文字色：玩家尚未看过的对话/旁白文字（默认白）。
+    unread_text: Color,
 }
 
 impl Default for GameTheme {
@@ -36,6 +40,8 @@ impl Default for GameTheme {
             secondary: Color::new(0.30, 0.55, 0.85, 0.90),
             text: Color::new(1.0, 1.0, 1.0, 1.0),
             dialogue: Color::new(0.55, 0.78, 0.95, 1.0),
+            read_text: Color::new(0.784, 0.667, 0.902, 1.0),
+            unread_text: Color::new(1.0, 1.0, 1.0, 1.0),
         }
     }
 }
@@ -52,6 +58,27 @@ fn theme() -> GameTheme {
 /// 写入当前主题色（`run()` 开头调用一次）。
 fn set_theme(t: GameTheme) {
     GAME_THEME.with(|c| c.set(t));
+}
+
+/// 把 `[u8;4]` RGBA 转为 macroquad `Color`。
+fn color_from_u8(v: [u8; 4]) -> Color {
+    Color::new(v[0] as f32 / 255.0, v[1] as f32 / 255.0, v[2] as f32 / 255.0, v[3] as f32 / 255.0)
+}
+
+/// 计算并写入「有效主题色」：以项目主题（`ProjectConfig.theme`）为基础，
+/// 叠加玩家设置中的已读/未读文字色。每帧调用一次，确保玩家改色即时生效。
+/// 主题色1/2/对话框色的玩家覆盖在后续提交（配色标签页）接入后在此处叠加。
+fn apply_effective_theme(engine: &Engine, project_config: &ProjectConfig) {
+    let p = &project_config.theme;
+    let s = engine.settings();
+    set_theme(GameTheme {
+        primary: color_from_u8(p.primary),
+        secondary: color_from_u8(p.secondary),
+        text: color_from_u8(p.text),
+        dialogue: color_from_u8(p.dialogue),
+        read_text: color_from_u8(s.read_text_color),
+        unread_text: color_from_u8(s.unread_text_color),
+    });
 }
 
 /// 基于基色提亮（`factor > 0`）或加深（`factor < 0`），alpha 保持不变。
@@ -954,15 +981,9 @@ pub async fn run(mut engine: Engine, project_config: &ProjectConfig) {
         eprintln!("[Warning] 开屏页音乐 {} 未找到 — 标题页将静音", title_music_name);
     }
 
-    // 主题配色：从 project.json 的 theme 字段解析，写入 thread_local 供绘制函数读取。
-    // 留空或缺失时 ProjectConfig::default 已回退内置配色，此处直接转换。
-    let (tp, ts, ttx, td) = project_config.theme.to_f32();
-    set_theme(GameTheme {
-        primary: Color::new(tp[0], tp[1], tp[2], tp[3]),
-        secondary: Color::new(ts[0], ts[1], ts[2], ts[3]),
-        text: Color::new(ttx[0], ttx[1], ttx[2], ttx[3]),
-        dialogue: Color::new(td[0], td[1], td[2], td[3]),
-    });
+    // 主题配色：从 project.json 的 theme 字段解析，叠加玩家设置中的已读/未读文字色，
+    // 写入 thread_local 供绘制函数读取。每帧重新计算，使玩家改色即时生效。
+    apply_effective_theme(&engine, project_config);
 
     loop {
         let dt = get_frame_time();
@@ -972,6 +993,10 @@ pub async fn run(mut engine: Engine, project_config: &ProjectConfig) {
         // UI scale factor relative to the 1920×1080 design baseline.
         // 基于物理像素计算，避免高 DPI 下 UI 过小。
         let scale = ui_scale(sw, sh, dpi);
+
+        // 每帧重算有效主题色：玩家在设置页改色（含已读/未读文字色）后立即生效，
+        // 也覆盖应用/放弃设置、读档、返回标题等引擎重建路径。
+        apply_effective_theme(&engine, project_config);
 
         // 全屏状态同步：使用 applied_fullscreen（已应用的值）而非正在编辑的值。
         // 这样设置菜单中切换全屏开关不会立即生效，只有点击"应用"后才生效。
@@ -2089,6 +2114,9 @@ fn draw_dialogue(dialogue: &akrs_runtime::DialogueState, sw: f32, sh: f32, font:
     // 渐变基色取自主题对话框色（theme.dialogue 的 RGB），可经编辑器自定义。
     let t = theme();
     let (dr, dg, db) = (t.dialogue.r, t.dialogue.g, t.dialogue.b);
+    // 已读/未读文字色：已读（玩家看过）默认浅紫，未读（首次出现）默认白。
+    // 颜色由玩家在设置页「配色」标签页自定义。
+    let text_color = if dialogue.is_read { t.read_text } else { t.unread_text };
     let gradient_segments = 64;
     // 渐变区域从对话框顶部一直延伸到屏幕底部
     let gradient_start_y = box_y;
@@ -2117,14 +2145,14 @@ fn draw_dialogue(dialogue: &akrs_runtime::DialogueState, sw: f32, sh: f32, font:
     let content_offset_y = box_h * 0.05;
     let content_offset_x = sw * 0.02;
 
-    // 角色名（仅在非旁白时显示）
+    // 角色名（仅在非旁白时显示）—— 同样按已读/未读着色。
     if !dialogue.speaker.is_empty() {
         draw_text_f(
             &dialogue.speaker,
             box_x + 20.0 * scale + content_offset_x,
             box_y + 36.0 * scale + content_offset_y,
             name_font_size,
-            Color::new(0.1, 0.25, 0.5, 1.0),
+            text_color,
             font,
         );
     }
@@ -2139,7 +2167,7 @@ fn draw_dialogue(dialogue: &akrs_runtime::DialogueState, sw: f32, sh: f32, font:
         text_y,
         box_w - text_left_padding - 60.0 * scale - content_offset_x,
         text_font_size,
-        Color::new(0.08, 0.12, 0.2, 1.0),
+        text_color,
         font,
         scale,
     );

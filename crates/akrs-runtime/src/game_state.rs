@@ -110,6 +110,10 @@ pub struct DialogueState {
     pub displayed_chars: usize,
     /// Whether the full text is displayed.
     pub complete: bool,
+    /// 该句在本次显示前是否已被读过（用于已读/未读文字着色）。
+    /// `true` 表示玩家此前已看过此句（已读，默认浅紫），
+    /// `false` 表示首次出现（未读，默认白色）。
+    pub is_read: bool,
 }
 
 /// Choices state.
@@ -173,7 +177,7 @@ impl SceneState {
     }
 
     /// Set dialogue text.
-    pub fn set_dialogue(&mut self, speaker: String, pose: Option<String>, text: String) {
+    pub fn set_dialogue(&mut self, speaker: String, pose: Option<String>, text: String, is_read: bool) {
         // 新对话出现，恢复脚本驱动的文本框隐藏（`- hide`）。
         self.hide_textbox = false;
         self.dialogue = Some(DialogueState {
@@ -182,11 +186,12 @@ impl SceneState {
             full_text: text,
             displayed_chars: 0,
             complete: false,
+            is_read,
         });
     }
 
     /// Set narration (no speaker).
-    pub fn set_narration(&mut self, text: String) {
+    pub fn set_narration(&mut self, text: String, is_read: bool) {
         // 新旁白出现，恢复脚本驱动的文本框隐藏（`- hide`）。
         self.hide_textbox = false;
         self.dialogue = Some(DialogueState {
@@ -195,6 +200,7 @@ impl SceneState {
             full_text: text,
             displayed_chars: 0,
             complete: false,
+            is_read,
         });
     }
 
