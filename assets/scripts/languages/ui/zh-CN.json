@@ -112,5 +112,9 @@
   "about.version_label": "版本",
   "about.build_label": "Build",
   "about.line4": "心夏麻麻可爱喵",
-  "about.line5": "最喜欢心夏麻麻了喵"
+  "about.line5": "最喜欢心夏麻麻了喵",
+
+  "script_error.title": "剧本文件错误",
+  "script_error.message": "剧本文件存在错误，无法开始游戏。\n请检查剧本文件后重新启动。",
+  "script_error.ok": "确定"
 }

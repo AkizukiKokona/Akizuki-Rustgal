@@ -218,6 +218,15 @@ pub struct Engine {
     /// 待处理的章节切换通知（由 `->` 章节跳转设置，渲染层取走后播放动画）。
     /// None 表示无待处理通知。
     pending_chapter_notify: Option<ChapterNotify>,
+    /// 剧本错误信息。
+    ///
+    /// 当剧本编译/加载失败时，引擎以"仅标题页"模式运行：VM 使用最小占位
+    /// 剧本创建（保证引擎其他功能正常），此字段保存错误摘要。玩家仍可进入
+    /// 标题页、修改设置，但点击"开始游戏/读档/继续游戏"时会弹出剧本错误
+    /// 警告而非真正进入游戏。自动恢复在此模式下失效。
+    ///
+    /// None 表示剧本正常，引擎处于完整可用状态。
+    script_error: Option<String>,
 }
 
 impl Engine {
@@ -250,7 +259,60 @@ impl Engine {
             ui_translator: UiTranslator::new(),
             translations_dir: None,
             pending_chapter_notify: None,
+            script_error: None,
         })
+    }
+
+    /// 创建一个"仅标题页"模式的引擎，用于剧本编译/加载失败时的冗余降级。
+    ///
+    /// 引擎内部使用最小占位剧本（`# Start` + `~~`）创建 VM，保证引擎的
+    /// 设置、翻译、存档管理等非剧本相关功能正常运作。`script_error` 字段
+    /// 被设为给定的错误摘要，渲染层据此在标题页拦截游戏相关按钮并弹出
+    /// 剧本错误警告。
+    ///
+    /// 调用方仍需在创建后调用 `set_title` / `load_settings` / `load_language`
+    /// 等方法完成初始化（与 `Engine::new` 相同）。
+    pub fn new_title_only(error_msg: String) -> Self {
+        // 最小占位剧本：一个空章节 + 故事结束标记，保证 VM 可创建、可 start。
+        const PLACEHOLDER_SCRIPT: &str = "# Start\n~~\n";
+        let vm = compile_and_create_vm(PLACEHOLDER_SCRIPT)
+            .expect("占位剧本必须可编译");
+        let saves = SaveManager::new("saves", 100);
+
+        Self {
+            vm,
+            source: PLACEHOLDER_SCRIPT.to_string(),
+            scene: SceneState::new(),
+            transition: TransitionManager::new(),
+            settings: Settings::default(),
+            saves,
+            phase: EnginePhase::Title,
+            typewriter: TypewriterState::new(),
+            pending: None,
+            wait_remaining: 0.0,
+            play_time: 0.0,
+            current_section_name: String::new(),
+            #[cfg(feature = "hot-reload")]
+            hot_reloader: None,
+            read_history: HashSet::new(),
+            skip_active: false,
+            current_voice: None,
+            voice_progress: 0.0,
+            auto_play_remaining: 0.0,
+            translator: Translator::new(),
+            ui_translator: UiTranslator::new(),
+            translations_dir: None,
+            pending_chapter_notify: None,
+            script_error: Some(error_msg),
+        }
+    }
+
+    /// 查询剧本错误信息。
+    ///
+    /// 返回 `Some(错误摘要)` 表示引擎处于"仅标题页"降级模式，剧本不可用；
+    /// 返回 `None` 表示剧本正常。
+    pub fn script_error(&self) -> Option<&str> {
+        self.script_error.as_deref()
     }
 
     /// Create an engine and immediately start the game (skip title screen).
@@ -270,6 +332,10 @@ impl Engine {
 
     /// Start the game (transition from title screen to running).
     pub fn start_game(&mut self) {
+        // 剧本错误降级模式：不允许开始游戏（防御性，UI 层应已拦截）。
+        if self.script_error.is_some() {
+            return;
+        }
         if self.phase != EnginePhase::Title {
             return;
         }
@@ -834,6 +900,11 @@ impl Engine {
     pub fn load(&mut self, slot: usize) -> Vec<EngineEvent> {
         let mut events = Vec::new();
 
+        // 剧本错误降级模式：不允许读档（防御性，UI 层应已拦截）。
+        if self.script_error.is_some() {
+            return events;
+        }
+
         match self.saves.load(slot) {
             Ok(save) => {
                 self.vm.load_state(save.vm_state);
@@ -1067,6 +1138,11 @@ impl Engine {
     pub fn load_autosave(&mut self) -> Vec<EngineEvent> {
         let mut events = Vec::new();
 
+        // 剧本错误降级模式：不允许自动恢复（防御性）。
+        if self.script_error.is_some() {
+            return events;
+        }
+
         match self.saves.load_autosave() {
             Ok(save) => {
                 self.vm.load_state(save.vm_state);
@@ -1110,6 +1186,10 @@ impl Engine {
     /// Returns `false` if the `auto_recovery` setting is disabled, even when
     /// an autosave file is present on disk.
     pub fn has_autosave(&self) -> bool {
+        // 剧本错误降级模式：自动恢复失效。
+        if self.script_error.is_some() {
+            return false;
+        }
         self.settings.auto_recovery && self.saves.has_autosave()
     }
 
@@ -1156,6 +1236,11 @@ impl Engine {
     pub fn load_continue(&mut self) -> Vec<EngineEvent> {
         let mut events = Vec::new();
 
+        // 剧本错误降级模式：不允许继续游戏（防御性，UI 层应已拦截）。
+        if self.script_error.is_some() {
+            return events;
+        }
+
         match self.saves.load_continue() {
             Ok(save) => {
                 self.vm.load_state(save.vm_state);
@@ -1196,6 +1281,10 @@ impl Engine {
 
     /// Check whether a continue save exists.
     pub fn has_continue_save(&self) -> bool {
+        // 剧本错误降级模式：继续游戏不可用。
+        if self.script_error.is_some() {
+            return false;
+        }
         self.saves.has_continue_save()
     }
 
@@ -1235,6 +1324,11 @@ impl Engine {
     /// Load the quick-save slot and resume the game.
     pub fn load_quicksave(&mut self) -> Vec<EngineEvent> {
         let mut events = Vec::new();
+
+        // 剧本错误降级模式：不允许快读（防御性）。
+        if self.script_error.is_some() {
+            return events;
+        }
 
         match self.saves.load_quicksave() {
             Ok(save) => {
@@ -1277,6 +1371,10 @@ impl Engine {
 
     /// Check whether a quick-save exists.
     pub fn has_quicksave(&self) -> bool {
+        // 剧本错误降级模式：快读不可用。
+        if self.script_error.is_some() {
+            return false;
+        }
         self.saves.has_quicksave()
     }
 

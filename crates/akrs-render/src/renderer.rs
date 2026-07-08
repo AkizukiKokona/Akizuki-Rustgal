@@ -538,6 +538,8 @@ enum ConfirmType {
     BackToTitle,
     /// 未应用设置时退出设置菜单的确认。
     UnappliedSettings,
+    /// 剧本文件错误警告（仅标题页降级模式下触发）。
+    ScriptError,
 }
 
 /// Phase of a UI transition animation.
@@ -1577,6 +1579,10 @@ pub async fn run(mut engine: Engine, project_config: &ProjectConfig) {
                                     Some(ConfirmType::UnappliedSettings) => {
                                         ui_transition.start(settings_prev_mode, PendingUiAction::DiscardSettings);
                                     }
+                                    Some(ConfirmType::ScriptError) => {
+                                        // 剧本错误警告确认后返回标题页。
+                                        ui_mode = prev_mode;
+                                    }
                                     _ => {
                                         ui_mode = prev_mode;
                                     }
@@ -1728,10 +1734,22 @@ pub async fn run(mut engine: Engine, project_config: &ProjectConfig) {
                             ui_mode = note_return_mode;
                         }
                         ButtonAction::StartGame => {
-                            ui_transition.start(UiMode::Normal, PendingUiAction::StartGame);
+                            if engine.script_error().is_some() {
+                                confirm_type = Some(ConfirmType::ScriptError);
+                                confirm_return_mode = ui_mode;
+                                ui_mode = UiMode::ConfirmDialog;
+                            } else {
+                                ui_transition.start(UiMode::Normal, PendingUiAction::StartGame);
+                            }
                         }
                         ButtonAction::ContinueGame => {
-                            ui_transition.start(UiMode::Normal, PendingUiAction::ContinueGame);
+                            if engine.script_error().is_some() {
+                                confirm_type = Some(ConfirmType::ScriptError);
+                                confirm_return_mode = ui_mode;
+                                ui_mode = UiMode::ConfirmDialog;
+                            } else {
+                                ui_transition.start(UiMode::Normal, PendingUiAction::ContinueGame);
+                            }
                         }
                         ButtonAction::OpenSettings => {
                             // 进入设置时记录当前模式
@@ -1744,8 +1762,14 @@ pub async fn run(mut engine: Engine, project_config: &ProjectConfig) {
                             ui_transition.start(UiMode::SettingsMenu, PendingUiAction::None);
                         }
                         _ => {
-                            // Transition action.
-                            if let Some((target, pending)) = handle_button_action(action) {
+                            // 剧本错误降级模式：拦截"读档"按钮，弹出警告。
+                            if engine.script_error().is_some()
+                                && matches!(action, ButtonAction::LoadGame)
+                            {
+                                confirm_type = Some(ConfirmType::ScriptError);
+                                confirm_return_mode = ui_mode;
+                                ui_mode = UiMode::ConfirmDialog;
+                            } else if let Some((target, pending)) = handle_button_action(action) {
                                 ui_transition.start(target, pending);
                             }
                         }
@@ -2750,6 +2774,7 @@ fn draw_confirm_dialog(engine: &Engine, buttons: &mut Vec<ButtonRect>, sw: f32, 
     let (title, message): (&str, &str) = match confirm_type {
         Some(ConfirmType::BackToTitle) => (engine.t_ui("confirm.return_title"), engine.t_ui("confirm.return_message")),
         Some(ConfirmType::UnappliedSettings) => (engine.t_ui("confirm.unapplied"), engine.t_ui("confirm.unapplied_message")),
+        Some(ConfirmType::ScriptError) => (engine.t_ui("script_error.title"), engine.t_ui("script_error.message")),
         None => (engine.t_ui("confirm.default_title"), engine.t_ui("confirm.default_message")),
     };
 
@@ -2784,16 +2809,23 @@ fn draw_confirm_dialog(engine: &Engine, buttons: &mut Vec<ButtonRect>, sw: f32, 
     }
 
     // Action buttons.
+    // 剧本错误警告只有"确定"按钮（居中），其他类型有"确定"+"取消"两个按钮。
     let btn_w = 180.0 * scale;
     let btn_h = 50.0 * scale;
-    let gap = 30.0 * scale;
-    let total_w = btn_w * 2.0 + gap;
-    let btn1_x = center_x - total_w / 2.0;
-    let btn2_x = btn1_x + btn_w + gap;
     let btn_y = dialog_y + dialog_h - btn_h - 30.0 * scale;
 
-    draw_button(btn1_x, btn_y, btn_w, btn_h, engine.t_ui("confirm.ok"), buttons, ButtonAction::ConfirmYes, font, scale);
-    draw_button(btn2_x, btn_y, btn_w, btn_h, engine.t_ui("confirm.cancel"), buttons, ButtonAction::ConfirmNo, font, scale);
+    if confirm_type == Some(ConfirmType::ScriptError) {
+        // 单按钮居中
+        let btn_x = center_x - btn_w / 2.0;
+        draw_button(btn_x, btn_y, btn_w, btn_h, engine.t_ui("script_error.ok"), buttons, ButtonAction::ConfirmYes, font, scale);
+    } else {
+        let gap = 30.0 * scale;
+        let total_w = btn_w * 2.0 + gap;
+        let btn1_x = center_x - total_w / 2.0;
+        let btn2_x = btn1_x + btn_w + gap;
+        draw_button(btn1_x, btn_y, btn_w, btn_h, engine.t_ui("confirm.ok"), buttons, ButtonAction::ConfirmYes, font, scale);
+        draw_button(btn2_x, btn_y, btn_w, btn_h, engine.t_ui("confirm.cancel"), buttons, ButtonAction::ConfirmNo, font, scale);
+    }
 
     // 弹窗淡入遮罩：以面板底色覆盖整个面板区域，alpha = 1 - fade。
     // fade=0 时面板区域被同色矩形完全遮盖（看不见内容），fade=1 时无遮罩，

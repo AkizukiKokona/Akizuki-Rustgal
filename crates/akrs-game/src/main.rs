@@ -13,7 +13,6 @@
 use akrs_core::ProjectConfig;
 use akrs_render::window_conf;
 use akrs_runtime::Engine;
-use macroquad::prelude::*;
 use std::path::PathBuf;
 
 /// Default script path if no argument is given.
@@ -85,6 +84,9 @@ async fn main() {
 
     let (script, project_config, project_dir) = load_script_and_config();
 
+    // 编译剧本：失败时不退出，而是降级为"仅标题页"模式。
+    // 玩家仍可进入标题页、修改设置，但点击"开始游戏/读档/继续游戏"时
+    // 会弹出剧本错误警告（四国语言）。自动恢复在此模式下失效。
     let mut engine = match Engine::new(&script) {
         Ok(engine) => engine,
         Err(errors) => {
@@ -92,18 +94,20 @@ async fn main() {
             for err in &errors {
                 eprintln!("  - {:?}", err);
             }
-            // Show error in window briefly, then exit
-            loop {
-                clear_background(Color::new(0.1, 0.0, 0.0, 1.0));
-                let msg = "Script Error — check console";
-                let tw = measure_text(msg, None, 30, 1.0).width;
-                draw_text(msg, (screen_width() - tw) / 2.0, screen_height() / 2.0, 30.0, RED);
-                if is_key_pressed(KeyCode::Escape) {
-                    break;
-                }
-                next_frame().await;
-            }
-            return;
+            eprintln!("[akrs-game] 进入仅标题页降级模式。");
+            // 收集错误摘要供标题页警告对话框显示。
+            let error_summary = errors
+                .iter()
+                .map(|e| {
+                    let loc = akrs_core::format_location(&e.span);
+                    match &e.hint {
+                        Some(h) => format!("{}: {} (hint: {})", loc, e.message, h),
+                        None => format!("{}: {}", loc, e.message),
+                    }
+                })
+                .collect::<Vec<_>>()
+                .join("\n");
+            Engine::new_title_only(error_summary)
         }
     };
 

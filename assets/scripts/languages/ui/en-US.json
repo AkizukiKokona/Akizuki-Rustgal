@@ -112,5 +112,9 @@
   "about.version_label": "Version",
   "about.build_label": "Build",
   "about.line4": "心夏麻麻可爱喵",
-  "about.line5": "最喜欢心夏麻麻了喵"
+  "about.line5": "最喜欢心夏麻麻了喵",
+
+  "script_error.title": "Script Error",
+  "script_error.message": "The script file contains errors and the game cannot be started.\nPlease check the script file and restart.",
+  "script_error.ok": "OK"
 }
