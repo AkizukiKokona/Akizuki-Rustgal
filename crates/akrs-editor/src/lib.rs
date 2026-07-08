@@ -3373,9 +3373,11 @@ impl eframe::App for EditorApp {
                     ui.heading("主题配色");
                     ui.add_space(8.0);
                     ui.label(
-                        "自定义游戏内 4 种主题色。点击色块可打开调色板，\
-                         也可直接在输入框填写十六进制 #RRGGBB[AA]。\
-                         默认值即引擎内置配色。",
+                        "自定义游戏内 3 种主题色（面板背景 / 按钮背景 / 对话框渐变）。\
+                         点击色块可打开调色板，也可直接在输入框填写十六进制 #RRGGBB[AA]。\
+                         默认值即引擎内置配色。\n\
+                         文字颜色由游戏运行时按「已读 / 未读」自动着色，\
+                         玩家可在游戏内设置页自定义，故不在此处配置。",
                     );
                     ui.add_space(6.0);
 
@@ -3390,8 +3392,6 @@ impl eframe::App for EditorApp {
                     edit_color(ui, "主题色1（面板背景）：", &mut self.project_config.theme.primary);
                     ui.add_space(4.0);
                     edit_color(ui, "主题色2（按钮背景）：", &mut self.project_config.theme.secondary);
-                    ui.add_space(4.0);
-                    edit_color(ui, "文本色（按钮 / 文字）：", &mut self.project_config.theme.text);
                     ui.add_space(4.0);
                     edit_color(ui, "对话框色（文本框渐变）：", &mut self.project_config.theme.dialogue);
 
