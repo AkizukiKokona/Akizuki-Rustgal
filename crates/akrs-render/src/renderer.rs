@@ -66,19 +66,140 @@ fn color_from_u8(v: [u8; 4]) -> Color {
 }
 
 /// 计算并写入「有效主题色」：以项目主题（`ProjectConfig.theme`）为基础，
-/// 叠加玩家设置中的已读/未读文字色。每帧调用一次，确保玩家改色即时生效。
-/// 主题色1/2/对话框色的玩家覆盖在后续提交（配色标签页）接入后在此处叠加。
+/// 叠加玩家设置中的主题色覆盖与已读/未读文字色。每帧调用一次，确保玩家改色即时生效。
 fn apply_effective_theme(engine: &Engine, project_config: &ProjectConfig) {
     let p = &project_config.theme;
     let s = engine.settings();
     set_theme(GameTheme {
-        primary: color_from_u8(p.primary),
-        secondary: color_from_u8(p.secondary),
+        primary: color_from_u8(s.theme_primary.unwrap_or(p.primary)),
+        secondary: color_from_u8(s.theme_secondary.unwrap_or(p.secondary)),
         text: color_from_u8(p.text),
-        dialogue: color_from_u8(p.dialogue),
+        dialogue: color_from_u8(s.theme_dialogue.unwrap_or(p.dialogue)),
         read_text: color_from_u8(s.read_text_color),
         unread_text: color_from_u8(s.unread_text_color),
     });
+}
+
+/// 配色标签页中可编辑的颜色字段。
+#[derive(Debug, Clone, Copy, PartialEq)]
+enum ColorField {
+    /// 主题色1（面板背景）。
+    ThemePrimary,
+    /// 主题色2（按钮背景）。
+    ThemeSecondary,
+    /// 对话框色（文本框渐变）。
+    ThemeDialogue,
+    /// 已读文字色。
+    ReadText,
+    /// 未读文字色。
+    UnreadText,
+}
+
+impl ColorField {
+    /// 在配色标签页中的行索引（0..5）。
+    fn index(self) -> usize {
+        match self {
+            Self::ThemePrimary => 0,
+            Self::ThemeSecondary => 1,
+            Self::ThemeDialogue => 2,
+            Self::ReadText => 3,
+            Self::UnreadText => 4,
+        }
+    }
+
+    /// 是否为主题色字段（带「项目默认 / 自定义」开关）。
+    fn is_theme(self) -> bool {
+        matches!(self, Self::ThemePrimary | Self::ThemeSecondary | Self::ThemeDialogue)
+    }
+
+    /// 该字段当前的有效颜色（主题字段为 None 时回退项目默认）。
+    fn value(self, settings: &Settings, project: &ProjectConfig) -> [u8; 4] {
+        match self {
+            Self::ThemePrimary => settings.theme_primary.unwrap_or(project.theme.primary),
+            Self::ThemeSecondary => settings.theme_secondary.unwrap_or(project.theme.secondary),
+            Self::ThemeDialogue => settings.theme_dialogue.unwrap_or(project.theme.dialogue),
+            Self::ReadText => settings.read_text_color,
+            Self::UnreadText => settings.unread_text_color,
+        }
+    }
+
+    /// 主题字段是否处于「自定义」状态（Some）；已读/未读恒为 true。
+    fn is_custom(self, settings: &Settings) -> bool {
+        match self {
+            Self::ThemePrimary => settings.theme_primary.is_some(),
+            Self::ThemeSecondary => settings.theme_secondary.is_some(),
+            Self::ThemeDialogue => settings.theme_dialogue.is_some(),
+            _ => true,
+        }
+    }
+
+    /// 写入颜色值。主题字段写入 Some；已读/未读直接写入。
+    fn set(self, settings: &mut Settings, c: [u8; 4]) {
+        match self {
+            Self::ThemePrimary => settings.theme_primary = Some(c),
+            Self::ThemeSecondary => settings.theme_secondary = Some(c),
+            Self::ThemeDialogue => settings.theme_dialogue = Some(c),
+            Self::ReadText => settings.read_text_color = c,
+            Self::UnreadText => settings.unread_text_color = c,
+        }
+    }
+
+    /// 主题字段：切换回「项目默认」（None）。已读/未读无操作。
+    fn clear(self, settings: &mut Settings) {
+        match self {
+            Self::ThemePrimary => settings.theme_primary = None,
+            Self::ThemeSecondary => settings.theme_secondary = None,
+            Self::ThemeDialogue => settings.theme_dialogue = None,
+            _ => {}
+        }
+    }
+}
+
+/// 配色标签页调色板预设（12 色，覆盖常见视觉小说用色）。
+const COLOR_PALETTE: [[u8; 4]; 12] = [
+    [255, 255, 255, 255], // 白
+    [200, 200, 200, 255], // 浅灰
+    [120, 120, 120, 255], // 灰
+    [  0,   0,   0, 255], // 黑
+    [255,  80,  80, 255], // 红
+    [255, 160,  60, 255], // 橙
+    [255, 220,  80, 255], // 黄
+    [ 80, 220, 100, 255], // 绿
+    [ 80, 200, 255, 255], // 青
+    [ 80, 120, 255, 255], // 蓝
+    [200, 170, 230, 255], // 浅紫（已读默认）
+    [255, 180, 220, 255], // 粉
+];
+
+/// 把 `[u8;4]` 格式化为十六进制字符串。alpha 为 255 时输出 `#RRGGBB`，
+/// 否则输出 `#RRGGBBAA`。
+fn hex_string_from_color(c: [u8; 4]) -> String {
+    if c[3] == 255 {
+        format!("#{:02X}{:02X}{:02X}", c[0], c[1], c[2])
+    } else {
+        format!("#{:02X}{:02X}{:02X}{:02X}", c[0], c[1], c[2], c[3])
+    }
+}
+
+/// 解析十六进制颜色字符串，支持 `#RRGGBB` 与 `#RRGGBBAA`（`#` 可选）。
+/// 非法输入返回 None。
+fn parse_hex_color(s: &str) -> Option<[u8; 4]> {
+    let s = s.trim().trim_start_matches('#');
+    let b = s.as_bytes();
+    let h = |c: u8| -> Option<u8> {
+        match c {
+            b'0'..=b'9' => Some(c - b'0'),
+            b'a'..=b'f' => Some(c - b'a' + 10),
+            b'A'..=b'F' => Some(c - b'A' + 10),
+            _ => None,
+        }
+    };
+    let pair = |i: usize| -> Option<u8> { Some((h(b[i])? << 4) | h(b[i + 1])?) };
+    match b.len() {
+        6 => Some([pair(0)?, pair(2)?, pair(4)?, 255]),
+        8 => Some([pair(0)?, pair(2)?, pair(4)?, pair(6)?]),
+        _ => None,
+    }
 }
 
 /// 基于基色提亮（`factor > 0`）或加深（`factor < 0`），alpha 保持不变。
@@ -956,6 +1077,10 @@ pub async fn run(mut engine: Engine, project_config: &ProjectConfig) {
     // 进入弹窗时从存档读取已有备注作为初始值，确认时写回。
     let mut note_edit_slot: Option<usize> = None;
     let mut note_edit_buffer: String = String::new();
+    // 配色标签页：正在编辑十六进制的字段（None 表示无字段处于编辑态）。
+    let mut color_edit_active: Option<ColorField> = None;
+    // 配色标签页：hex 输入缓冲区（仅在 color_edit_active 为 Some 时有意义）。
+    let mut color_hex_buffer: String = String::new();
     // 备注编辑弹窗返回后应切换到的 UI 模式（SaveMenu 或 LoadMenu）。
     let mut note_return_mode: UiMode = UiMode::SaveMenu;
     // 模态弹窗（确认对话框 / 备注编辑弹窗）的淡入进度（0.0 → 1.0）。
@@ -1323,7 +1448,7 @@ pub async fn run(mut engine: Engine, project_config: &ProjectConfig) {
                 settings_active_tab = SettingsTab::Text;
             }
             // 设置菜单内部绘制背景和所有控件
-            draw_settings_menu(&mut engine, &settings_layout, &font, dropdown_open, skip_dropdown_open, ui_lang_dropdown_open, lang_dropdown_open, settings_active_tab, scale, &about_icon_texture);
+            draw_settings_menu(&mut engine, &settings_layout, &font, dropdown_open, skip_dropdown_open, ui_lang_dropdown_open, lang_dropdown_open, settings_active_tab, scale, &about_icon_texture, project_config, color_edit_active, &color_hex_buffer);
         } else if ui_mode == UiMode::ConfirmDialog {
             // 确认对话框：先绘制底层界面（保持上下文可见），再叠加 8% 黑色 + 对话框。
             // confirm_return_mode 记录了确认对话框返回后应恢复的模式，据此绘制底层。
@@ -1332,7 +1457,7 @@ pub async fn run(mut engine: Engine, project_config: &ProjectConfig) {
                     if settings_snapshot.is_none() {
                         settings_snapshot = Some(engine.settings().clone());
                     }
-                    draw_settings_menu(&mut engine, &settings_layout, &font, dropdown_open, skip_dropdown_open, ui_lang_dropdown_open, lang_dropdown_open, settings_active_tab, scale, &about_icon_texture);
+                    draw_settings_menu(&mut engine, &settings_layout, &font, dropdown_open, skip_dropdown_open, ui_lang_dropdown_open, lang_dropdown_open, settings_active_tab, scale, &about_icon_texture, project_config, color_edit_active, &color_hex_buffer);
                 }
                 UiMode::Normal => {
                     if engine.phase() == EnginePhase::Title {
@@ -1420,6 +1545,7 @@ pub async fn run(mut engine: Engine, project_config: &ProjectConfig) {
                     &mut engine, &settings_layout, &mut dragging_slider, &mut dropdown_open,
                     &mut skip_dropdown_open, &mut ui_lang_dropdown_open, &mut lang_dropdown_open, &mut settings_active_tab, scale,
                     &settings_snapshot, &mut settings_prev_mode,
+                    project_config, &mut color_edit_active, &mut color_hex_buffer,
                 ) {
                     // 如果返回确认对话框，设置确认类型
                     if target == UiMode::ConfirmDialog {
@@ -1644,6 +1770,10 @@ pub async fn run(mut engine: Engine, project_config: &ProjectConfig) {
                 note_edit_buffer.clear();
                 ui_mode = note_return_mode;
             } else if ui_mode == UiMode::SettingsMenu {
+                // 设置菜单按 Esc：若正在编辑颜色十六进制，先结束编辑而不退出菜单
+                if color_edit_active.is_some() {
+                    color_edit_active = None;
+                } else {
                 // 设置菜单按 Esc：检测是否有未应用的更改
                 dragging_slider = None;
                 let has_changes = if let Some(snapshot) = settings_snapshot.clone() {
@@ -1662,6 +1792,11 @@ pub async fn run(mut engine: Engine, project_config: &ProjectConfig) {
                         || current.skip_mode != snapshot.skip_mode
                         || current.language != snapshot.language
                         || current.ui_language != snapshot.ui_language
+                        || current.read_text_color != snapshot.read_text_color
+                        || current.unread_text_color != snapshot.unread_text_color
+                        || current.theme_primary != snapshot.theme_primary
+                        || current.theme_secondary != snapshot.theme_secondary
+                        || current.theme_dialogue != snapshot.theme_dialogue
                 } else {
                     false
                 };
@@ -1673,6 +1808,7 @@ pub async fn run(mut engine: Engine, project_config: &ProjectConfig) {
                 } else {
                     // 无更改，直接返回
                     ui_transition.start(settings_prev_mode, PendingUiAction::DiscardSettings);
+                }
                 }
             } else if ui_mode != UiMode::Normal {
                 ui_transition.start(UiMode::Normal, PendingUiAction::None);
@@ -1717,6 +1853,41 @@ pub async fn run(mut engine: Engine, project_config: &ProjectConfig) {
                 let cur_len = note_edit_buffer.chars().count();
                 if cur_len < 60 {
                     note_edit_buffer.push(c);
+                }
+            }
+        }
+
+        // 配色标签页十六进制输入：Backspace 删除、Enter 提交、字符收集 + 实时套用。
+        // Esc 已在上面处理（仅结束编辑而不退出菜单）。仅在用户实际修改缓冲区时
+        // 才尝试解析套用，避免激活主题色字段时把 None 误转为 Some。
+        if ui_mode == UiMode::SettingsMenu && color_edit_active.is_some() && !ui_transition.active {
+            let mut modified = false;
+            if is_key_pressed(KeyCode::Backspace) {
+                color_hex_buffer.pop();
+                modified = true;
+            }
+            if is_key_pressed(KeyCode::Enter) {
+                color_edit_active = None;
+            }
+            // 仅接受十六进制字符与 '#'，最长 9（#RRGGBBAA）
+            while let Some(c) = get_char_pressed() {
+                if c.is_control() {
+                    continue;
+                }
+                if !(c.is_ascii_hexdigit() || c == '#') {
+                    continue;
+                }
+                let cur = color_hex_buffer.chars().count();
+                if cur < 9 {
+                    color_hex_buffer.push(c);
+                    modified = true;
+                }
+            }
+            if modified {
+                if let Some(field) = color_edit_active {
+                    if let Some(c) = parse_hex_color(&color_hex_buffer) {
+                        field.set(engine.settings_mut(), c);
+                    }
                 }
             }
         }
@@ -3388,8 +3559,8 @@ struct SettingsLayout {
     panel_y: f32,
     panel_w: f32,
     panel_h: f32,
-    /// 标签页按钮位置（文本、音频、画面、快进、帮助、关于）。
-    tab_rects: [Rect4; 6],
+    /// 标签页按钮位置（文本、音频、画面、快进、配色、帮助、关于）。
+    tab_rects: [Rect4; 7],
     /// 内容区顶部 y（标签页下方）。
     #[allow(dead_code)]
     content_top: f32,
@@ -3397,6 +3568,9 @@ struct SettingsLayout {
     label_x: f32,
     /// X position of the value text shown to the right of each slider.
     value_x: f32,
+    /// 控件起始 x（开关 / 下拉 / 颜色编辑器等左侧）。
+    #[allow(dead_code)]
+    control_x: f32,
     /// 文本标签页：第 0 行为文本速度滑块。
     text_row_mid: f32,
     text_slider_track: Rect4,
@@ -3424,6 +3598,17 @@ struct SettingsLayout {
     skip_row_mids: [f32; 2],
     skip_toggle: Rect4,
     skip_dropdown: Rect4,
+    /// 配色标签页：5 行颜色编辑器（主题色1/2/对话框、已读、未读）的行中线 y。
+    color_row_mids: [f32; 5],
+    /// 配色标签页：每行的大色块（点击可激活十六进制编辑）。
+    color_swatch_rects: [Rect4; 5],
+    /// 配色标签页：每行的十六进制输入框（点击激活文本输入）。
+    color_hex_rects: [Rect4; 5],
+    /// 配色标签页：前 3 行（主题色）的「项目默认 / 自定义」切换按钮。
+    color_default_btn_rects: [Rect4; 3],
+    /// 配色标签页：5 行 × 12 色调色板预设小色块（共 60 个）。
+    /// 索引 = row * 12 + palette_index。
+    color_palette_rects: [Rect4; 60],
     /// "应用" button hit rect.
     apply_btn: Rect4,
     /// "取消" button hit rect.
@@ -3444,13 +3629,13 @@ fn compute_settings_layout(sw: f32, sh: f32, scale: f32) -> SettingsLayout {
     let title_top = 36.0 * scale;
 
     // 标签页（浏览器风格，位于标题下方）
-    let tab_labels = ["文本", "音频", "画面", "快进", "帮助", "关于"];
+    let tab_labels = ["文本", "音频", "画面", "快进", "配色", "帮助", "关于"];
     let tab_h = 62.0 * scale;
     let tab_top = title_top + title_size + 24.0 * scale;
     let tab_start_x = 96.0 * scale;
-    let tab_w = 168.0 * scale;
+    let tab_w = 156.0 * scale;
     let tab_gap = 5.0 * scale;
-    let mut tab_rects = [Rect4::default(); 6];
+    let mut tab_rects = [Rect4::default(); 7];
     for (i, _) in tab_labels.iter().enumerate() {
         tab_rects[i] = Rect4 {
             x: tab_start_x + i as f32 * (tab_w + tab_gap),
@@ -3569,6 +3754,57 @@ fn compute_settings_layout(sw: f32, sh: f32, scale: f32) -> SettingsLayout {
         w: 312.0 * scale, h: 53.0 * scale,
     };
 
+    // 配色标签页（5 行：主题色1、主题色2、对话框色、已读文字色、未读文字色）
+    let mut color_row_mids = [0.0; 5];
+    for i in 0..5 {
+        color_row_mids[i] = content_top + row_h * 0.5 + (i as f32 + 1.0) * row_h;
+    }
+    // 配色行内几何：色块 / 十六进制框 / 调色板。
+    // 主题色行（0,1,2）在色块后多一个「项目默认/自定义」按钮；已读/未读行（3,4）没有。
+    let swatch_size = 44.0 * scale;
+    let hex_box_w = 168.0 * scale;
+    let hex_box_h = 40.0 * scale;
+    let def_btn_w = 132.0 * scale;
+    let palette_cell = 30.0 * scale;
+    let palette_gap = 5.0 * scale;
+    let mut color_swatch_rects = [Rect4::default(); 5];
+    let mut color_hex_rects = [Rect4::default(); 5];
+    let mut color_default_btn_rects = [Rect4::default(); 3];
+    let mut color_palette_rects = [Rect4::default(); 60];
+    for i in 0..5 {
+        let mid = color_row_mids[i];
+        // 色块（所有行均位于 control_x）
+        let swatch = Rect4 {
+            x: control_x, y: mid - swatch_size / 2.0,
+            w: swatch_size, h: swatch_size,
+        };
+        color_swatch_rects[i] = swatch;
+        // 主题色行：色块右侧加「项目默认/自定义」按钮
+        let mut cursor_x = swatch.x + swatch.w + 8.0 * scale;
+        if i < 3 {
+            color_default_btn_rects[i] = Rect4 {
+                x: cursor_x, y: mid - hex_box_h / 2.0,
+                w: def_btn_w, h: hex_box_h,
+            };
+            cursor_x += def_btn_w + 8.0 * scale;
+        }
+        // 十六进制输入框
+        let hex_rect = Rect4 {
+            x: cursor_x, y: mid - hex_box_h / 2.0,
+            w: hex_box_w, h: hex_box_h,
+        };
+        color_hex_rects[i] = hex_rect;
+        // 调色板：12 个小色块
+        let pal_start_x = hex_rect.x + hex_rect.w + 16.0 * scale;
+        for j in 0..12 {
+            color_palette_rects[i * 12 + j] = Rect4 {
+                x: pal_start_x + j as f32 * (palette_cell + palette_gap),
+                y: mid - palette_cell / 2.0,
+                w: palette_cell, h: palette_cell,
+            };
+        }
+    }
+
     // 两个按钮：应用和取消
     let btn_w = 240.0 * scale;
     let btn_h = 67.0 * scale;
@@ -3586,14 +3822,114 @@ fn compute_settings_layout(sw: f32, sh: f32, scale: f32) -> SettingsLayout {
     SettingsLayout {
         panel_x, panel_y, panel_w, panel_h,
         tab_rects, content_top,
-        label_x, value_x,
+        label_x, value_x, control_x,
         text_row_mid, text_slider_track, text_slider_hit,
         auto_play_row_mids, auto_play_toggle,
         auto_play_slider_tracks, auto_play_slider_hits,
         audio_row_mids, audio_slider_tracks, audio_slider_hits,
         display_row_mids, display_toggles, display_dropdown, ui_language_dropdown, language_dropdown,
         skip_row_mids, skip_toggle, skip_dropdown,
+        color_row_mids,
+        color_swatch_rects, color_hex_rects, color_default_btn_rects, color_palette_rects,
         apply_btn, cancel_btn,
+    }
+}
+
+/// 绘制「配色」选项卡：5 行颜色编辑器（主题色1/2/对话框、已读、未读）。
+///
+/// 每行结构（从左到右）：
+/// - 标签
+/// - 大色块（点击激活十六进制编辑）
+/// - [仅主题色行]「项目默认 / 自定义」切换按钮
+/// - 十六进制输入框（点击激活文本输入，支持 #RRGGBB / #RRGGBBAA）
+/// - 12 色调色板预设（点击直接套用）
+fn draw_color_tab(engine: &Engine, layout: &SettingsLayout, font: &Option<Font>, scale: f32, project_config: &ProjectConfig, color_edit_active: Option<ColorField>, color_hex_buffer: &str) {
+    let settings = engine.settings();
+    let label_size = 34.0 * scale;
+    let hint_size = 24.0 * scale;
+    let hex_text_size = 24.0 * scale;
+    let btn_text_size = 22.0 * scale;
+
+    // 顶部提示
+    draw_text_f(engine.t_ui("settings.color.hint"), layout.label_x, layout.content_top + hint_size, hint_size,
+        Color::new(0.6, 0.75, 0.95, 0.95), font);
+
+    let fields = [ColorField::ThemePrimary, ColorField::ThemeSecondary, ColorField::ThemeDialogue, ColorField::ReadText, ColorField::UnreadText];
+    let label_keys = [
+        engine.t_ui("settings.color.theme_primary"),
+        engine.t_ui("settings.color.theme_secondary"),
+        engine.t_ui("settings.color.theme_dialogue"),
+        engine.t_ui("settings.color.read_text"),
+        engine.t_ui("settings.color.unread_text"),
+    ];
+
+    for (i, field) in fields.iter().enumerate() {
+        let mid = layout.color_row_mids[i];
+        let val = field.value(settings, project_config);
+
+        // 标签
+        draw_text_f(label_keys[i], layout.label_x, mid + 8.0 * scale, label_size, WHITE, font);
+
+        // 大色块
+        let swatch = layout.color_swatch_rects[i];
+        draw_rectangle(swatch.x, swatch.y, swatch.w, swatch.h, color_from_u8(val));
+        draw_rectangle_lines(swatch.x, swatch.y, swatch.w, swatch.h, 1.5 * scale,
+            Color::new(0.6, 0.8, 1.0, 0.9));
+
+        // 主题色行：「项目默认 / 自定义」按钮
+        if field.is_theme() {
+            let btn = layout.color_default_btn_rects[i];
+            let custom = field.is_custom(settings);
+            let (btn_label, btn_bg, btn_fg) = if custom {
+                (engine.t_ui("settings.color.use_custom"), Color::new(0.30, 0.55, 0.85, 0.9), Color::new(0.95, 0.98, 1.0, 1.0))
+            } else {
+                (engine.t_ui("settings.color.use_default"), Color::new(0.18, 0.22, 0.35, 0.9), Color::new(0.7, 0.8, 0.95, 0.95))
+            };
+            draw_rectangle(btn.x, btn.y, btn.w, btn.h, btn_bg);
+            draw_rectangle_lines(btn.x, btn.y, btn.w, btn.h, 1.2 * scale, btn_fg);
+            let tw = measure_text_f(btn_label, font, btn_text_size as u16, 1.0).width;
+            draw_text_f(btn_label, btn.x + (btn.w - tw) / 2.0, btn.y + btn.h / 2.0 + 7.0 * scale,
+                btn_text_size, btn_fg, font);
+        }
+
+        // 十六进制输入框
+        let hex = layout.color_hex_rects[i];
+        let active = color_edit_active == Some(*field);
+        let hex_bg = if active { Color::new(0.16, 0.24, 0.40, 1.0) } else { Color::new(0.12, 0.18, 0.32, 0.95) };
+        let hex_border = if active { Color::new(0.7, 0.85, 1.0, 1.0) } else { Color::new(0.45, 0.7, 0.95, 0.8) };
+        draw_rectangle(hex.x, hex.y, hex.w, hex.h, hex_bg);
+        draw_rectangle_lines(hex.x, hex.y, hex.w, hex.h, 1.5 * scale, hex_border);
+        // 框内文本：激活时显示输入缓冲区，否则显示当前色值
+        let display = if active {
+            color_hex_buffer.to_string()
+        } else {
+            hex_string_from_color(val)
+        };
+        draw_text_f(&display, hex.x + 10.0 * scale, hex.y + hex.h / 2.0 + 8.0 * scale,
+            hex_text_size, WHITE, font);
+        // 激活时画光标（闪烁竖线）
+        if active {
+            let tw = measure_text_f(&display, font, hex_text_size as u16, 1.0).width;
+            let cx = hex.x + 10.0 * scale + tw + 2.0 * scale;
+            let cy = hex.y + 6.0 * scale;
+            let ch = hex.h - 12.0 * scale;
+            // 用 floor(get_time()*2) 取整做 0.5Hz 闪烁
+            if (get_time().floor() as i64) % 2 == 0 {
+                draw_rectangle(cx, cy, 2.0 * scale, ch, WHITE);
+            }
+        }
+
+        // 调色板预设
+        for j in 0..12 {
+            let pr = layout.color_palette_rects[i * 12 + j];
+            let pc = COLOR_PALETTE[j];
+            draw_rectangle(pr.x, pr.y, pr.w, pr.h, color_from_u8(pc));
+            // 与当前色相同则加亮边框
+            let selected = pc == val;
+            draw_rectangle_lines(pr.x, pr.y, pr.w, pr.h,
+                if selected { 2.5 * scale } else { 1.0 * scale },
+                if selected { Color::new(1.0, 1.0, 0.4, 1.0) } else { Color::new(0.5, 0.7, 0.95, 0.6) });
+        }
     }
 }
 
@@ -3782,7 +4118,7 @@ fn draw_about_tab(engine: &Engine, layout: &SettingsLayout, font: &Option<Font>,
 /// Draw the interactive full-screen settings menu. Reads live values from the
 /// engine so dragging a slider is reflected immediately.  The dropdown list
 /// is drawn last (via `draw_dropdown_list`) so it floats above the back button.
-fn draw_settings_menu(engine: &mut Engine, layout: &SettingsLayout, font: &Option<Font>, dropdown_open: bool, skip_dropdown_open: bool, ui_lang_dropdown_open: bool, lang_dropdown_open: bool, active_tab: SettingsTab, scale: f32, icon_texture: &Option<Texture2D>) {
+fn draw_settings_menu(engine: &mut Engine, layout: &SettingsLayout, font: &Option<Font>, dropdown_open: bool, skip_dropdown_open: bool, ui_lang_dropdown_open: bool, lang_dropdown_open: bool, active_tab: SettingsTab, scale: f32, icon_texture: &Option<Texture2D>, project_config: &ProjectConfig, color_edit_active: Option<ColorField>, color_hex_buffer: &str) {
     // 天蓝色背景
     draw_rectangle(layout.panel_x, layout.panel_y, layout.panel_w, layout.panel_h,
         Color::new(0.1, 0.15, 0.3, 0.95));
@@ -3811,10 +4147,11 @@ fn draw_settings_menu(engine: &mut Engine, layout: &SettingsLayout, font: &Optio
         engine.t_ui("settings.tab.audio"),
         engine.t_ui("settings.tab.display"),
         engine.t_ui("settings.tab.skip"),
+        engine.t_ui("settings.tab.color"),
         engine.t_ui("settings.tab.help"),
         engine.t_ui("settings.tab.about"),
     ];
-    let tab_tabs = [SettingsTab::Text, SettingsTab::Audio, SettingsTab::Display, SettingsTab::Skip, SettingsTab::Help, SettingsTab::About];
+    let tab_tabs = [SettingsTab::Text, SettingsTab::Audio, SettingsTab::Display, SettingsTab::Skip, SettingsTab::Color, SettingsTab::Help, SettingsTab::About];
     let tab_label_size = 29.0 * scale;
     for (i, label) in tab_labels.iter().enumerate() {
         let r = layout.tab_rects[i];
@@ -3843,7 +4180,7 @@ fn draw_settings_menu(engine: &mut Engine, layout: &SettingsLayout, font: &Optio
     // 内容区分隔线（标签页下方一条横线）
     let line_y = layout.tab_rects[0].y + layout.tab_rects[0].h;
     draw_rectangle(layout.tab_rects[0].x, line_y,
-        layout.tab_rects[5].x + layout.tab_rects[5].w - layout.tab_rects[0].x, 1.5 * scale,
+        layout.tab_rects[6].x + layout.tab_rects[6].w - layout.tab_rects[0].x, 1.5 * scale,
         Color::new(0.45, 0.7, 0.95, 0.6));
 
     let settings = engine.settings();
@@ -3967,6 +4304,9 @@ fn draw_settings_menu(engine: &mut Engine, layout: &SettingsLayout, font: &Optio
             // 快进模式下拉
             draw_text_f(engine.t_ui("settings.skip_mode"), layout.label_x, layout.skip_row_mids[1] + 8.0 * scale, label_size, WHITE, font);
             draw_dropdown_box_skip_mode(engine, layout.skip_dropdown, settings.skip_mode, font, skip_dropdown_open, scale);
+        }
+        SettingsTab::Color => {
+            draw_color_tab(engine, layout, font, scale, project_config, color_edit_active, color_hex_buffer);
         }
         SettingsTab::Help => {
             draw_help_tab(engine, layout, font, scale);
@@ -4209,6 +4549,9 @@ fn handle_settings_interaction(
     scale: f32,
     settings_snapshot: &Option<Settings>,
     _settings_prev_mode: &mut UiMode,
+    project_config: &ProjectConfig,
+    color_edit_active: &mut Option<ColorField>,
+    color_hex_buffer: &mut String,
 ) -> Option<(UiMode, PendingUiAction)> {
     let (mx, my) = mouse_position();
     let down = is_mouse_button_down(MouseButton::Left);
@@ -4240,8 +4583,17 @@ fn handle_settings_interaction(
 
     // A fresh press starts a new interaction.
     if pressed {
-        // 先检查标签页点击（6 个标签：文本/音频/画面/快进/帮助/关于）
-        let tab_tabs = [SettingsTab::Text, SettingsTab::Audio, SettingsTab::Display, SettingsTab::Skip, SettingsTab::Help, SettingsTab::About];
+        // 若正在编辑颜色十六进制，且本次点击不在当前激活的 hex 输入框内，
+        // 则先结束编辑（点击其它控件即视为提交当前缓冲区）。
+        if let Some(active) = *color_edit_active {
+            let active_hex = layout.color_hex_rects[active.index()];
+            if !point_in_rect(mx, my, active_hex) {
+                *color_edit_active = None;
+            }
+        }
+
+        // 先检查标签页点击（7 个标签：文本/音频/画面/快进/配色/帮助/关于）
+        let tab_tabs = [SettingsTab::Text, SettingsTab::Audio, SettingsTab::Display, SettingsTab::Skip, SettingsTab::Color, SettingsTab::Help, SettingsTab::About];
         for (i, tab) in tab_tabs.iter().enumerate() {
             if point_in_rect(mx, my, layout.tab_rects[i]) {
                 *active_tab = *tab;
@@ -4457,6 +4809,52 @@ fn handle_settings_interaction(
             }
             // 帮助和关于页为纯展示，无交互控件
             SettingsTab::Help | SettingsTab::About => {}
+            SettingsTab::Color => {
+                let fields = [ColorField::ThemePrimary, ColorField::ThemeSecondary, ColorField::ThemeDialogue, ColorField::ReadText, ColorField::UnreadText];
+                for (i, field) in fields.iter().enumerate() {
+                    // 大色块：点击激活该字段的 hex 编辑
+                    if point_in_rect(mx, my, layout.color_swatch_rects[i]) {
+                        *color_edit_active = Some(*field);
+                        *color_hex_buffer = hex_string_from_color(field.value(engine.settings(), project_config));
+                        return None;
+                    }
+                    // [主题色行]「项目默认 / 自定义」按钮
+                    if field.is_theme() && point_in_rect(mx, my, layout.color_default_btn_rects[i]) {
+                        let settings = engine.settings_mut();
+                        if field.is_custom(settings) {
+                            // 自定义 → 项目默认
+                            field.clear(settings);
+                        } else {
+                            // 项目默认 → 自定义（用项目默认值初始化）
+                            let v = field.value(settings, project_config);
+                            field.set(settings, v);
+                        }
+                        // 切换后若该字段正处于编辑状态，结束编辑
+                        if *color_edit_active == Some(*field) {
+                            *color_edit_active = None;
+                        }
+                        return None;
+                    }
+                    // hex 输入框：点击激活编辑（点击当前已激活的框则保持）
+                    if point_in_rect(mx, my, layout.color_hex_rects[i]) {
+                        *color_edit_active = Some(*field);
+                        *color_hex_buffer = hex_string_from_color(field.value(engine.settings(), project_config));
+                        return None;
+                    }
+                    // 调色板预设：点击直接套用
+                    for j in 0..12 {
+                        if point_in_rect(mx, my, layout.color_palette_rects[i * 12 + j]) {
+                            let c = COLOR_PALETTE[j];
+                            field.set(engine.settings_mut(), c);
+                            // 若正在编辑该字段，同步刷新缓冲区
+                            if *color_edit_active == Some(*field) {
+                                *color_hex_buffer = hex_string_from_color(c);
+                            }
+                            return None;
+                        }
+                    }
+                }
+            }
         }
 
         // 应用按钮：保存设置并返回
@@ -4484,6 +4882,11 @@ fn handle_settings_interaction(
                     || current.auto_play_delay_without_voice != snapshot.auto_play_delay_without_voice
                     || current.language != snapshot.language
                     || current.ui_language != snapshot.ui_language
+                    || current.read_text_color != snapshot.read_text_color
+                    || current.unread_text_color != snapshot.unread_text_color
+                    || current.theme_primary != snapshot.theme_primary
+                    || current.theme_secondary != snapshot.theme_secondary
+                    || current.theme_dialogue != snapshot.theme_dialogue
             } else {
                 false
             };

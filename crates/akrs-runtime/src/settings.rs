@@ -44,6 +44,8 @@ pub enum SettingsTab {
     Display,
     /// 快进设置。
     Skip,
+    /// 配色自定义。
+    Color,
     /// 帮助：键位功能对照。
     Help,
     /// 关于：引擎信息。
@@ -57,13 +59,14 @@ impl SettingsTab {
             Self::Audio => "音频",
             Self::Display => "画面",
             Self::Skip => "快进",
+            Self::Color => "配色",
             Self::Help => "帮助",
             Self::About => "关于",
         }
     }
 
     pub fn all() -> &'static [Self] {
-        &[Self::Text, Self::Audio, Self::Display, Self::Skip, Self::Help, Self::About]
+        &[Self::Text, Self::Audio, Self::Display, Self::Skip, Self::Color, Self::Help, Self::About]
     }
 }
 
@@ -131,6 +134,15 @@ pub struct Settings {
     /// 默认白色 [255, 255, 255, 255]。
     #[serde(default = "default_unread_text_color")]
     pub unread_text_color: [u8; 4],
+    /// 主题色1（面板背景）玩家覆盖。`None` = 使用项目主题（`ProjectConfig.theme.primary`）。
+    #[serde(default)]
+    pub theme_primary: Option<[u8; 4]>,
+    /// 主题色2（按钮背景）玩家覆盖。`None` = 使用项目主题。
+    #[serde(default)]
+    pub theme_secondary: Option<[u8; 4]>,
+    /// 对话框色（文本框渐变）玩家覆盖。`None` = 使用项目主题。
+    #[serde(default)]
+    pub theme_dialogue: Option<[u8; 4]>,
 }
 
 fn default_read_text_color() -> [u8; 4] {
@@ -173,6 +185,9 @@ impl Default for Settings {
             debug_terminal: false,
             read_text_color: default_read_text_color(),
             unread_text_color: default_unread_text_color(),
+            theme_primary: None,
+            theme_secondary: None,
+            theme_dialogue: None,
         }
     }
 }
