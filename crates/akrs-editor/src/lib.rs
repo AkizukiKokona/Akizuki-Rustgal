@@ -2162,7 +2162,7 @@ impl EditorApp {
         );
         ui.horizontal(|ui| {
             if ui.button("复制到剪贴板").clicked() {
-                ctx.output_mut(|o| o.copied_text = syntax.clone());
+                ctx.output_mut(|o| o.commands.add(egui::OutputCommand::CopyText(syntax.clone())));
                 self.status = "语法已复制到剪贴板".to_string();
             }
             if ui.button("追加到脚本").clicked() {
@@ -2359,7 +2359,7 @@ impl EditorApp {
         );
         ui.horizontal(|ui| {
             if ui.button("复制到剪贴板").clicked() {
-                ctx.output_mut(|o| o.copied_text = syntax.clone());
+                ctx.output_mut(|o| o.commands.add(egui::OutputCommand::CopyText(syntax.clone())));
                 self.status = "语法已复制到剪贴板".to_string();
             }
             if ui.button("追加到脚本").clicked() {
@@ -2460,7 +2460,7 @@ impl EditorApp {
         ui.add_space(8.0);
         ui.horizontal(|ui| {
             if ui.button("复制播放语法").clicked() {
-                ctx.output_mut(|o| o.copied_text = play_syntax.clone());
+                ctx.output_mut(|o| o.commands.add(egui::OutputCommand::CopyText(play_syntax.clone())));
                 self.status = "播放语法已复制到剪贴板".to_string();
             }
             if ui.button("追加播放语法").clicked() {
@@ -2474,7 +2474,7 @@ impl EditorApp {
         });
         ui.horizontal(|ui| {
             if ui.button("复制关闭语法").clicked() {
-                ctx.output_mut(|o| o.copied_text = stop_syntax.to_string());
+                ctx.output_mut(|o| o.commands.add(egui::OutputCommand::CopyText(stop_syntax.to_string())));
                 self.status = "关闭语法已复制到剪贴板".to_string();
             }
             if ui.button("追加关闭语法").clicked() {
@@ -3988,7 +3988,7 @@ impl eframe::App for EditorApp {
                         let cmd = "export RUSTUP_DIST_SERVER=https://mirrors.tuna.tsinghua.edu.cn/rustup";
                         ui.label(egui::RichText::new(cmd).monospace().color(egui::Color32::from_rgb(120, 200, 120)));
                         if ui.small_button("复制").clicked() {
-                            ui.output_mut(|o| o.copied_text = cmd.to_string());
+                            ui.output_mut(|o| o.commands.add(egui::OutputCommand::CopyText(cmd.to_string())));
                         }
                     });
 
@@ -3999,7 +3999,7 @@ impl eframe::App for EditorApp {
                         let cmd = "curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh";
                         ui.label(egui::RichText::new(cmd).monospace().color(egui::Color32::from_rgb(120, 200, 120)));
                         if ui.small_button("复制").clicked() {
-                            ui.output_mut(|o| o.copied_text = cmd.to_string());
+                            ui.output_mut(|o| o.commands.add(egui::OutputCommand::CopyText(cmd.to_string())));
                         }
                     });
 
@@ -4008,7 +4008,7 @@ impl eframe::App for EditorApp {
                     ui.add_space(2.0);
                     ui.horizontal(|ui| {
                         if ui.link("https://rustup.rs").clicked() {
-                            ui.output_mut(|o| o.open_url = Some(egui::output::OpenUrl::same_tab("https://rustup.rs")));
+                            ui.output_mut(|o| o.commands.add(egui::OutputCommand::OpenUrl(egui::OpenUrl::same_tab("https://rustup.rs"))));
                         }
                     });
 
@@ -4040,9 +4040,16 @@ impl eframe::App for EditorApp {
 /// 启动 GUI 编辑器应用。
 pub fn run_editor() -> Result<(), eframe::Error> {
     let icon = load_icon();
+    // eframe 0.29：窗口配置（尺寸/图标/全屏等）从 NativeOptions 顶层字段迁移到
+    // viewport: ViewportBuilder。app creator 闭包返回 Result<Box<dyn App>, ...>。
+    let viewport = egui::ViewportBuilder::default()
+        .with_inner_size(egui::Vec2::new(1280.0, 820.0));
+    let viewport = match icon {
+        Some(icon) => viewport.with_icon(std::sync::Arc::new(icon)),
+        None => viewport,
+    };
     let options = eframe::NativeOptions {
-        initial_window_size: Some(egui::Vec2::new(1280.0, 820.0)),
-        icon_data: icon,
+        viewport,
         ..Default::default()
     };
     eframe::run_native(
@@ -4050,7 +4057,7 @@ pub fn run_editor() -> Result<(), eframe::Error> {
         options,
         Box::new(|cc| {
             install_cjk_fonts(&cc.egui_ctx);
-            Box::new(EditorApp::default())
+            Ok(Box::new(EditorApp::default()))
         }),
     )
 }
@@ -4562,8 +4569,8 @@ fn highlight_remainder(job: &mut egui::text::LayoutJob, text: &str, base: egui::
 }
 
 /// 构建带指定文字颜色的等宽 `TextFormat`。
-fn text_format(color: egui::Color32) -> egui::text::TextFormat {
-    egui::text::TextFormat {
+fn text_format(color: egui::Color32) -> egui::TextFormat {
+    egui::TextFormat {
         font_id: egui::FontId::monospace(FONT_SIZE),
         color,
         ..Default::default()
@@ -4571,8 +4578,8 @@ fn text_format(color: egui::Color32) -> egui::text::TextFormat {
 }
 
 /// 构建配对高亮专用 `TextFormat`：流程色前景 + 亮黄背景，用于 `=>`/`<=` 配对标记。
-fn highlight_format() -> egui::text::TextFormat {
-    egui::text::TextFormat {
+fn highlight_format() -> egui::TextFormat {
+    egui::TextFormat {
         font_id: egui::FontId::monospace(FONT_SIZE),
         color: COLOR_FLOW,
         background: COLOR_PAIR_HIGHLIGHT,

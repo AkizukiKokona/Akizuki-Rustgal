@@ -1,15 +1,15 @@
 [workspace]
 resolver = "2"
-# 注：akrs-editor 暂时从 members 中排除。原因：任务3 引入 wgpu 22（wasm 门控
-# 依赖 wasm-bindgen-futures ^0.4.42）与编辑器 eframe 0.21（wasm 门控依赖
-# wasm-bindgen-futures ^0.4，仅能解析到 0.4.61→js-sys=0.3.88 已 yanked）在
-# 统一锁文件中无法共存。编辑器源码保持不变，待 eframe 升级（独立任务）后
-# 重新加入。游戏渲染（akrs-render/akrs-game）不受影响。
+# 任务4：akrs-editor 重新加入 workspace。原排除原因为 eframe 0.21 的 wasm 门控
+# 依赖与任务3 引入的 wgpu 22 冲突；现已将 eframe/egui 升级到 0.29（首个使用
+# wgpu 22 的版本），wasm 依赖统一到 ^0.4 系列，冲突消除。编辑器沿用 glow
+# 后端（eframe 0.29 默认），不额外拉入 wgpu。
 members = [
     "crates/akrs-core",
     "crates/akrs-macros",
     "crates/akrs-runtime",
     "crates/akrs-render",
+    "crates/akrs-editor",
     "crates/akrs-pack",
     "crates/akrs-cli",
     "crates/akrs-game",
@@ -61,13 +61,12 @@ image = { version = "0.24", default-features = false, features = ["png"] }
 pollster = "0.4"
 # bytemuck: 顶点数据零拷贝上传（wgpu vertex buffer）。
 bytemuck = { version = "1", features = ["derive"] }
-# `default-features = false` drops eframe's `accesskit` feature, which on Linux
-# would otherwise pull in the `atspi`/`zbus` accessibility stack. This project
-# does not require accessibility support, so we keep only `glow` (rendering) +
-# `default_fonts`. (Originally also a workaround for Rust 1.75; no longer needed
-# on 1.92 but retained as a deliberate design choice.)
-eframe = { version = "0.21", default-features = false, features = ["glow", "default_fonts"] }
-egui = "0.21"
+# eframe 0.29 是首个使用 wgpu 22 的版本（与 akrs-render 的 wgpu 22 共享同一锁文件
+# 条目，无冲突）。编辑器沿用 glow 后端（0.29 默认），不额外拉入 wgpu 依赖。
+# `default-features = false` 关闭 `accesskit`（Linux 会拉入 atspi/zbus 无障碍栈，
+# 本项目不需要），仅保留 `glow`（渲染）+ `default_fonts`。
+eframe = { version = "0.29", default-features = false, features = ["glow", "default_fonts"] }
+egui = "0.29"
 
 [patch.crates-io]
 macroquad = { path = "patches/macroquad" }
