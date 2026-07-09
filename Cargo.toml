@@ -1,15 +1,14 @@
 [workspace]
 resolver = "2"
-# 注：akrs-editor 暂时从 members 中排除。原因：任务3 引入 wgpu 22（wasm 门控
-# 依赖 wasm-bindgen-futures ^0.4.42）与编辑器 eframe 0.21（wasm 门控依赖
-# wasm-bindgen-futures ^0.4，仅能解析到 0.4.61→js-sys=0.3.88 已 yanked）在
-# 统一锁文件中无法共存。编辑器源码保持不变，待 eframe 升级（独立任务）后
-# 重新加入。游戏渲染（akrs-render/akrs-game）不受影响。
+# 任务5：akrs-editor 重新加入 workspace。编辑器已从 eframe/egui 迁移到 iced 0.13。
+# iced 0.13 使用 wgpu 22 + winit 0.29，与 akrs-render 完全共享同一锁文件条目，
+# 无冲突。eframe/egui 不再被任何 crate 使用，已从依赖中移除。
 members = [
     "crates/akrs-core",
     "crates/akrs-macros",
     "crates/akrs-runtime",
     "crates/akrs-render",
+    "crates/akrs-editor",
     "crates/akrs-pack",
     "crates/akrs-cli",
     "crates/akrs-game",
@@ -61,13 +60,11 @@ image = { version = "0.24", default-features = false, features = ["png"] }
 pollster = "0.4"
 # bytemuck: 顶点数据零拷贝上传（wgpu vertex buffer）。
 bytemuck = { version = "1", features = ["derive"] }
-# `default-features = false` drops eframe's `accesskit` feature, which on Linux
-# would otherwise pull in the `atspi`/`zbus` accessibility stack. This project
-# does not require accessibility support, so we keep only `glow` (rendering) +
-# `default_fonts`. (Originally also a workaround for Rust 1.75; no longer needed
-# on 1.92 but retained as a deliberate design choice.)
-eframe = { version = "0.21", default-features = false, features = ["glow", "default_fonts"] }
-egui = "0.21"
+# iced 0.13：编辑器 GUI 框架（任务5 替换 eframe/egui）。受 Elm 启发的跨平台 GUI
+# 库，Elm 架构（State + Message + update + view）。iced 0.13 使用 wgpu 22 +
+# winit 0.29，与 akrs-render 共享同一锁文件条目，无冲突。默认 features 包含
+# wgpu 渲染器；关闭 tiny-skia（软件渲染兜底，本项目不需要）与 debug 叠层。
+iced = "0.13"
 
 [patch.crates-io]
 macroquad = { path = "patches/macroquad" }
