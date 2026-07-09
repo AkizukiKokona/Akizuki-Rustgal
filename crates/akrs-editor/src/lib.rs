@@ -18,7 +18,7 @@ use std::io::Read;
 use eframe::egui;
 use egui::{ColorImage, TextureHandle};
 
-use akrs_core::{compile, format_location, CompileError, ErrSeverity, Position, ProjectConfig, RecentProjects};
+use akrs_core::{compile, format_location, CompileError, DismissedWarnings, ErrSeverity, Position, ProjectConfig, RecentProjects};
 use akrs_runtime::{Engine, EnginePhase};
 
 // ---------------------------------------------------------------------------
@@ -298,6 +298,10 @@ pub struct EditorApp {
     rpy_import_target: PathBuf,
     /// rpy 导入：转换警告信息。
     rpy_import_warnings: Vec<String>,
+    /// 是否显示项目警告弹窗（打开项目时若作者留有警告且未被本地忽略则置 true）。
+    show_project_warning: bool,
+    /// 本地「不再显示」的项目警告忽略列表（持久化到编辑器数据目录）。
+    dismissed_warnings: DismissedWarnings,
 }
 
 /// 可翻译行的类型。
@@ -468,6 +472,7 @@ impl Default for EditorApp {
     fn default() -> Self {
         let work_dir = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
         let recent_projects = RecentProjects::load();
+        let dismissed_warnings = DismissedWarnings::load();
         let mut app = Self {
             editor_content: String::new(),
             current_file: None,
@@ -508,6 +513,8 @@ impl Default for EditorApp {
             rpy_import_source: None,
             rpy_import_target: PathBuf::new(),
             rpy_import_warnings: Vec::new(),
+            show_project_warning: false,
+            dismissed_warnings,
         };
         app.refresh_file_list();
         app
@@ -779,6 +786,14 @@ impl EditorApp {
         self.music_preview.available.clear();
 
         self.status = format!("已打开项目：{}", project_name);
+
+        // 项目警告：作者在 project.json 里留的提示文字，打开项目时弹出。
+        // 已被玩家本地「不再显示」忽略过的不弹。
+        if !self.project_config.warning.trim().is_empty()
+            && !self.dismissed_warnings.is_dismissed(project_dir)
+        {
+            self.show_project_warning = true;
+        }
     }
 
     /// 保存项目配置（project.json）。
@@ -3105,50 +3120,56 @@ impl eframe::App for EditorApp {
         if self.show_shortcuts {
             egui::Window::new("快捷键帮助")
                 .open(&mut self.show_shortcuts)
-                .resizable(false)
+                .resizable(true)
                 .collapsible(false)
                 .default_width(450.0)
+                .default_height(420.0)
                 .show(ctx, |ui| {
-                    ui.heading("键盘快捷键");
-                    ui.add_space(12.0);
-                    ui.label(egui::RichText::new("文件操作").strong());
-                    ui.separator();
-                    let file_shortcuts = [
-                        ("Ctrl+N", "新建剧本"),
-                        ("Ctrl+O", "打开文件"),
-                        ("Ctrl+S", "保存文件"),
-                        ("Ctrl+R", "运行剧本"),
-                        ("Ctrl+H", "显示此帮助窗口"),
-                    ];
-                    for (key, desc) in &file_shortcuts {
-                        ui.horizontal(|ui| {
+                    // 内容较多时竖向滚动，避免窗口过高被主窗口截断。
+                    egui::ScrollArea::vertical()
+                        .max_height(ctx.screen_rect().height() * 0.8)
+                        .show(ui, |ui| {
+                            ui.heading("键盘快捷键");
+                            ui.add_space(12.0);
+                            ui.label(egui::RichText::new("文件操作").strong());
+                            ui.separator();
+                            let file_shortcuts = [
+                                ("Ctrl+N", "新建剧本"),
+                                ("Ctrl+O", "打开文件"),
+                                ("Ctrl+S", "保存文件"),
+                                ("Ctrl+R", "运行剧本"),
+                                ("Ctrl+H", "显示此帮助窗口"),
+                            ];
+                            for (key, desc) in &file_shortcuts {
+                                ui.horizontal(|ui| {
+                                    ui.add_space(8.0);
+                                    ui.label(egui::RichText::new(*key).monospace().color(egui::Color32::from_rgb(200, 180, 255)));
+                                    ui.label("—");
+                                    ui.label(*desc);
+                                });
+                            }
                             ui.add_space(8.0);
-                            ui.label(egui::RichText::new(*key).monospace().color(egui::Color32::from_rgb(200, 180, 255)));
-                            ui.label("—");
-                            ui.label(*desc);
+                            ui.label(egui::RichText::new("快速插入语法").strong());
+                            ui.separator();
+                            let insert_shortcuts = [
+                                ("Ctrl+1", "+ 角色", "立绘上场（0.5秒淡入）"),
+                                ("Ctrl+2", "- 角色", "立绘下场（0.5秒淡出）"),
+                                ("按钮 ~", "+ 角色 (pose) swap", "差分更换（仅换pose，无过渡）"),
+                                ("Ctrl+3", "# 章节", "章节标题"),
+                                ("Ctrl+4", "@bg 背景", "背景指令"),
+                            ];
+                            for (key, syntax, desc) in &insert_shortcuts {
+                                ui.horizontal(|ui| {
+                                    ui.add_space(8.0);
+                                    ui.label(egui::RichText::new(*key).monospace().color(egui::Color32::from_rgb(180, 220, 255)));
+                                    ui.label("—");
+                                    ui.label(egui::RichText::new(*syntax).monospace().strong());
+                                    ui.label(format!("（{}）", desc));
+                                });
+                            }
+                            ui.add_space(12.0);
+                            ui.label("也可在顶部工具栏的「插入」按钮区域点击插入语法。");
                         });
-                    }
-                    ui.add_space(8.0);
-                    ui.label(egui::RichText::new("快速插入语法").strong());
-                    ui.separator();
-                    let insert_shortcuts = [
-                        ("Ctrl+1", "+ 角色", "立绘上场（0.5秒淡入）"),
-                        ("Ctrl+2", "- 角色", "立绘下场（0.5秒淡出）"),
-                        ("按钮 ~", "+ 角色 (pose) swap", "差分更换（仅换pose，无过渡）"),
-                        ("Ctrl+3", "# 章节", "章节标题"),
-                        ("Ctrl+4", "@bg 背景", "背景指令"),
-                    ];
-                    for (key, syntax, desc) in &insert_shortcuts {
-                        ui.horizontal(|ui| {
-                            ui.add_space(8.0);
-                            ui.label(egui::RichText::new(*key).monospace().color(egui::Color32::from_rgb(180, 220, 255)));
-                            ui.label("—");
-                            ui.label(egui::RichText::new(*syntax).monospace().strong());
-                            ui.label(format!("（{}）", desc));
-                        });
-                    }
-                    ui.add_space(12.0);
-                    ui.label("也可在顶部工具栏的「插入」按钮区域点击插入语法。");
                 });
         }
 
@@ -3485,17 +3506,22 @@ impl eframe::App for EditorApp {
             egui::Window::new("项目设置")
                 .open(&mut open)
                 .collapsible(false)
-                .resizable(false)
+                .resizable(true)
                 .default_width(480.0)
+                .default_height(560.0)
                 .anchor(egui::Align2::CENTER_CENTER, egui::Vec2::ZERO)
                 .show(ctx, |ui| {
-                    ui.add_space(8.0);
+                    // 表单项很多，整体包竖向滚动，避免窗口高度超出主窗口被截断。
+                    egui::ScrollArea::vertical()
+                        .max_height(ctx.screen_rect().height() * 0.85)
+                        .show(ui, |ui| {
+                            ui.add_space(8.0);
 
-                    ui.heading("标题设置");
-                    ui.add_space(8.0);
+                            ui.heading("标题设置");
+                            ui.add_space(8.0);
 
-                    // 主标题输入
-                    ui.horizontal(|ui| {
+                            // 主标题输入
+                            ui.horizontal(|ui| {
                         ui.label("主标题：");
                         let resp = ui.add_sized(
                             [ui.available_width(), 28.0],
@@ -3673,6 +3699,23 @@ impl eframe::App for EditorApp {
 
                     ui.add_space(16.0);
                     ui.separator();
+                    ui.add_space(12.0);
+
+                    ui.heading("项目警告");
+                    ui.add_space(8.0);
+                    ui.label(
+                        "用编辑器打开本项目时弹出的作者提示文字（彩蛋/版权声明等）。\
+                         留空则不弹出。玩家可在弹窗里选「不再显示」（仅本地生效）。",
+                    );
+                    ui.add_space(4.0);
+                    ui.add_sized(
+                        [ui.available_width(), 80.0],
+                        egui::TextEdit::multiline(&mut self.project_config.warning)
+                            .hint_text("例如：本作为心夏同人作品，角色立绘及背景等版权属于原作者"),
+                    );
+
+                    ui.add_space(16.0);
+                    ui.separator();
                     ui.add_space(8.0);
 
                     ui.horizontal(|ui| {
@@ -3683,6 +3726,7 @@ impl eframe::App for EditorApp {
                             close = true;
                         }
                     });
+                        }); // 关闭 ScrollArea
                 });
 
             // 处理标题更改
@@ -3970,13 +4014,17 @@ impl eframe::App for EditorApp {
                 .default_width(480.0)
                 .anchor(egui::Align2::CENTER_CENTER, egui::Vec2::ZERO)
                 .show(ctx, |ui| {
-                    ui.add_space(8.0);
+                    // 内容偏长，包竖向滚动避免小屏幕下被截断。
+                    egui::ScrollArea::vertical()
+                        .max_height(ctx.screen_rect().height() * 0.8)
+                        .show(ui, |ui| {
+                            ui.add_space(8.0);
 
-                    ui.label(
-                        egui::RichText::new("⚠️ 系统未检测到 Rust/Cargo")
-                            .size(18.0)
-                            .color(egui::Color32::from_rgb(255, 180, 80)),
-                    );
+                            ui.label(
+                                egui::RichText::new("⚠️ 系统未检测到 Rust/Cargo")
+                                    .size(18.0)
+                                    .color(egui::Color32::from_rgb(255, 180, 80)),
+                            );
                     ui.add_space(8.0);
 
                     ui.label("打包和预览功能需要 Rust 工具链。请按以下步骤安装：");
@@ -4024,10 +4072,57 @@ impl eframe::App for EditorApp {
                             close = true;
                         }
                     });
+                        }); // 关闭 ScrollArea
                 });
 
             if close {
                 self.show_cargo_guide = false;
+            }
+        }
+
+        // ---- 项目警告弹窗（作者留的提示，打开项目时显示）-------------------
+        if self.show_project_warning {
+            let mut close = false;
+            let mut dismiss = false;
+
+            egui::Window::new("项目提示")
+                .collapsible(false)
+                .resizable(false)
+                .default_width(440.0)
+                .anchor(egui::Align2::CENTER_CENTER, egui::Vec2::ZERO)
+                .show(ctx, |ui| {
+                    ui.add_space(8.0);
+                    ui.label(
+                        egui::RichText::new("⚠️ 作者提示")
+                            .size(18.0)
+                            .color(egui::Color32::from_rgb(255, 200, 100)),
+                    );
+                    ui.add_space(8.0);
+                    // 警告正文：可能较长，包竖向滚动避免被窗口截断。
+                    egui::ScrollArea::vertical()
+                        .max_height(ctx.screen_rect().height() * 0.6)
+                        .show(ui, |ui| {
+                            ui.label(&self.project_config.warning);
+                        });
+                    ui.add_space(12.0);
+                    ui.separator();
+                    ui.add_space(8.0);
+                    ui.horizontal(|ui| {
+                        if ui.button("确定").clicked() {
+                            close = true;
+                        }
+                        if ui.button("不再显示").clicked() {
+                            dismiss = true;
+                            close = true;
+                        }
+                    });
+                });
+
+            if dismiss {
+                self.dismissed_warnings.dismiss(&self.work_dir);
+            }
+            if close {
+                self.show_project_warning = false;
             }
         }
     }
