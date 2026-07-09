@@ -9,8 +9,8 @@ use akrs_runtime::{
     SaveMetadata, SaveSlot,
     crash,
 };
-use macroquad::audio::{play_sound, set_sound_volume, stop_sound, PlaySoundParams, Sound};
-use macroquad::prelude::*;
+use crate::audio::{play_sound, set_sound_volume, stop_sound, PlaySoundParams, Sound};
+use crate::wgpu_backend::prelude::*;
 use std::path::PathBuf;
 
 /// 运行时主题配色（macroquad `Color` 形式）。
@@ -818,43 +818,33 @@ enum ButtonAction {
     PlayEpilogue(usize),
 }
 
-/// 窗口配置 for macroquad。
-/// 启用高 DPI 渲染以避免"假高清"模糊问题。
+/// 窗口配置 for wgpu/winit 后端。
 /// 窗口尺寸约为屏幕面积的 1/2，系统自动居中。
-pub fn window_conf() -> macroquad::miniquad::conf::Conf {
+pub fn window_conf() -> crate::wgpu_backend::WindowConfig {
     let (screen_w, screen_h) = get_screen_size();
     // 窗口创建前 DPI 未知，按 1.0 保守估算；启动后 run() 内会根据真实
     // DPI 重新调整尺寸并居中。
     let (win_w, win_h) = calculate_window_size(screen_w, screen_h, 1.0);
 
-    macroquad::miniquad::conf::Conf {
-        window_title: "Akizuki*Rustgal".to_string(),
-        window_width: win_w,
-        window_height: win_h,
+    crate::wgpu_backend::WindowConfig {
+        title: "Akizuki*Rustgal".to_string(),
+        width: win_w.max(1) as u32,
+        height: win_h.max(1) as u32,
         fullscreen: false,
-        // 启用高 DPI 支持，确保渲染分辨率与显示分辨率匹配
-        high_dpi: true,
-        icon: Some(load_kokona_icon_or_fallback()),
-        ..Default::default()
+        icon_rgba: load_kokona_icon_or_fallback(),
     }
 }
 
 /// Try to load the kokona.png icon; fall back to a programmatically-generated
 /// crescent-moon icon if the PNG raw-RGBA data is missing or mismatched.
-fn load_kokona_icon_or_fallback() -> macroquad::miniquad::conf::Icon {
-    let small: [u8; 16 * 16 * 4] = match icon_bytes_from_raw(include_bytes!("../../../assets/icon_kokona_16.bin")) {
-        Ok(b) => b,
-        Err(_) => make_icon_16(),
-    };
+/// 返回 (width, height, rgba_bytes)，供 winit `Icon::from_rgba` 使用。
+fn load_kokona_icon_or_fallback() -> Option<(u32, u32, Vec<u8>)> {
+    // 使用 32×32 图标作为窗口图标（winit 只需单一尺寸，系统自动缩放）。
     let medium: [u8; 32 * 32 * 4] = match icon_bytes_from_raw(include_bytes!("../../../assets/icon_kokona_32.bin")) {
         Ok(b) => b,
         Err(_) => make_icon_32(),
     };
-    let big: [u8; 64 * 64 * 4] = match icon_bytes_from_raw(include_bytes!("../../../assets/icon_kokona_64.bin")) {
-        Ok(b) => b,
-        Err(_) => make_icon_64(),
-    };
-    macroquad::miniquad::conf::Icon { small, medium, big }
+    Some((32, 32, medium.to_vec()))
 }
 
 /// Convert a raw byte slice to a fixed-size RGBA array.
@@ -868,6 +858,9 @@ fn icon_bytes_from_raw<const N: usize>(data: &[u8]) -> Result<[u8; N], ()> {
 }
 
 /// Programmatic fallback icon: a crescent moon on an indigo background.
+/// 16×16 / 64×64 变体当前未被使用（winit 单尺寸图标仅取 32×32），
+/// 保留以备多尺寸图标需求。
+#[allow(dead_code)]
 fn make_icon_16() -> [u8; 16 * 16 * 4] {
     let mut buf = [0u8; 16 * 16 * 4];
     for y in 0..16u32 { for x in 0..16u32 { let i = ((y*16+x)*4) as usize; let (r,g,b) = pixel_color(x as f32/16.0, y as f32/16.0); buf[i]=r; buf[i+1]=g; buf[i+2]=b; buf[i+3]=255; }}
@@ -880,6 +873,7 @@ fn make_icon_32() -> [u8; 32 * 32 * 4] {
     buf
 }
 
+#[allow(dead_code)]
 fn make_icon_64() -> [u8; 64 * 64 * 4] {
     let mut buf = [0u8; 64 * 64 * 4];
     for y in 0..64u32 { for x in 0..64u32 { let i = ((y*64+x)*4) as usize; let (r,g,b) = pixel_color(x as f32/64.0, y as f32/64.0); buf[i]=r; buf[i+1]=g; buf[i+2]=b; buf[i+3]=255; }}
@@ -964,32 +958,42 @@ impl HudVisibility {
     }
 }
 
-/// Entry point: launch the game with a macroquad window.
-///
-/// This is an async function that must be called from a `#[macroquad::main]` async main:
+/// Entry point: launch the game with a wgpu/winit window.
 ///
 /// ```ignore
-/// #[macroquad::main(akrs_render::window_conf())]
-/// async fn main() {
+/// fn main() {
 ///     let engine = Engine::new(SCRIPT).unwrap();
-///     akrs_render::run(engine).await;
+///     akrs_render::run(engine, &project_config);
 /// }
 /// ```
-pub async fn run(mut engine: Engine, project_config: &ProjectConfig) {
+pub fn run(mut engine: Engine, project_config: &ProjectConfig) {
+    // 创建 winit 事件循环 + 窗口 + wgpu surface。
+    let conf = window_conf();
+    let mut event_loop = winit::event_loop::EventLoop::new()
+        .expect("failed to create event loop");
+    let mut window_builder = winit::window::WindowBuilder::new()
+        .with_title(&conf.title)
+        .with_inner_size(winit::dpi::LogicalSize::new(conf.width, conf.height))
+        .with_resizable(true);
+    if let Some((iw, ih, ref rgba)) = conf.icon_rgba {
+        if let Ok(icon) = winit::window::Icon::from_rgba(rgba.clone(), iw, ih) {
+            window_builder = window_builder.with_window_icon(Some(icon));
+        }
+    }
+    let window = window_builder
+        .build(&event_loop)
+        .expect("failed to create window");
+    let (surface, _format) = crate::wgpu_backend::init_graphics(&window);
+
     // 启动时先用白色填充，避免"先黑一帧再渲染"的视觉瑕疵。
     clear_background(WHITE);
-    next_frame().await;
 
     // 应用项目配置的初始窗口大小和全屏状态。
-    // 窗口标题受限于 miniquad 0.3 无运行时 API，暂无法动态修改，
-    // 保留在 ProjectConfig.window_title 字段中，待后续升级启用。
     if project_config.start_fullscreen {
         set_fullscreen(true);
     } else {
         // 用真实 DPI 重新计算窗口尺寸并居中。
-        // window_conf() 创建窗口时 DPI 未知，按 1.0 估算，
-        // 此处拿到真实 DPI 后修正，确保 150% 缩放下不会超屏。
-        let dpi = macroquad::window::dpi_scale();
+        let dpi = dpi_scale();
         let screen_phys = get_screen_size();
         let (final_w, final_h) = clip_resolution_to_screen(
             project_config.default_resolution,
@@ -1007,7 +1011,7 @@ pub async fn run(mut engine: Engine, project_config: &ProjectConfig) {
     let mut assets = AssetManager::new();
     // 预加载关于页头像（kokona.png，位于项目根目录），加载失败时为 None，关于页画占位框。
     // 路径 ../kokona.png 相对 assets/ 基目录解析为项目根目录的 kokona.png。
-    let about_icon_texture = assets.get_texture(AssetKind::Title, "../kokona.png").await;
+    let about_icon_texture = assets.get_texture(AssetKind::Title, "../kokona.png");
     // Load Chinese font for proper CJK text rendering, with system-font fallback.
     let (font, fallback_font) = load_font_with_fallback();
     set_fallback_font(fallback_font);
@@ -1166,11 +1170,40 @@ pub async fn run(mut engine: Engine, project_config: &ProjectConfig) {
     // 写入 thread_local 供绘制函数读取。每帧重新计算，使玩家改色即时生效。
     apply_effective_theme(&engine, project_config);
 
+    let mut last_surface_size = (
+        window.inner_size().width,
+        window.inner_size().height,
+    );
     loop {
+        crate::wgpu_backend::begin_frame();
+        crate::wgpu_backend::pump_events(&mut event_loop, Some(std::time::Duration::ZERO));
+
+        // 窗口尺寸变化时重新配置 wgpu surface。
+        let cur_size = (
+            window.inner_size().width,
+            window.inner_size().height,
+        );
+        if cur_size != last_surface_size {
+            crate::wgpu_backend::reconfigure_surface(&surface, cur_size.0, cur_size.1);
+            last_surface_size = cur_size;
+        }
+
+        // 应用待处理的窗口控制请求（全屏切换 / 尺寸调整）。
+        if let Some(fs) = crate::wgpu_backend::take_pending_fullscreen() {
+            if fs {
+                window.set_fullscreen(Some(winit::window::Fullscreen::Borderless(None)));
+            } else {
+                window.set_fullscreen(None);
+            }
+        }
+        if let Some((lw, lh)) = crate::wgpu_backend::take_pending_resize() {
+            let _ = window.request_inner_size(winit::dpi::LogicalSize::new(lw, lh));
+        }
+
         let dt = get_frame_time();
         let (sw, sh) = (screen_width(), screen_height());
         // 当前显示器真实 DPI 倍率（如 150% 缩放返回 1.5）。
-        let dpi = macroquad::window::dpi_scale();
+        let dpi = dpi_scale();
         // UI scale factor relative to the 1920×1080 design baseline.
         // 基于物理像素计算，避免高 DPI 下 UI 过小。
         let scale = ui_scale(sw, sh, dpi);
@@ -1244,7 +1277,7 @@ pub async fn run(mut engine: Engine, project_config: &ProjectConfig) {
                     }
                     if !name.is_empty() {
                         // 加载并循环播放新 BGM
-                        if let Some(sound) = assets.get_sound(AssetKind::Music, name).await {
+                        if let Some(sound) = assets.get_sound(AssetKind::Music, name) {
                             let vol = engine.settings().bgm_volume;
                             play_sound(
                                 sound,
@@ -1256,7 +1289,7 @@ pub async fn run(mut engine: Engine, project_config: &ProjectConfig) {
                 }
                 EngineEvent::SoundPlayed { name } => {
                     // 一次性播放音效
-                    if let Some(sound) = assets.get_sound(AssetKind::Sound, name).await {
+                    if let Some(sound) = assets.get_sound(AssetKind::Sound, name) {
                         let vol = engine.settings().sfx_volume;
                         play_sound(
                             sound,
@@ -1271,7 +1304,7 @@ pub async fn run(mut engine: Engine, project_config: &ProjectConfig) {
                     }
                     if !name.is_empty() {
                         // 加载并播放新语音（一次性，不循环）
-                        if let Some(sound) = assets.get_sound(AssetKind::Voice, name).await {
+                        if let Some(sound) = assets.get_sound(AssetKind::Voice, name) {
                             let vol = engine.settings().voice_volume;
                             play_sound(
                                 sound,
@@ -1349,7 +1382,7 @@ pub async fn run(mut engine: Engine, project_config: &ProjectConfig) {
             if !title_music_played {
                 title_music_played = true;
                 if current_bgm.is_none() {
-                    if let Some(sound) = assets.get_sound(AssetKind::Music, &title_music_name).await {
+                    if let Some(sound) = assets.get_sound(AssetKind::Music, &title_music_name) {
                         let vol = engine.settings().bgm_volume;
                         play_sound(
                             sound,
@@ -1639,7 +1672,7 @@ pub async fn run(mut engine: Engine, project_config: &ProjectConfig) {
             );
         } else if ui_mode == UiMode::AutoSavePrompt {
             // 异常中断恢复提示：以 title.png 为背景 + 10% 黑布遮罩 + 居中对话框
-            draw_title_background(sw, sh, &mut assets, &title_bg_name).await;
+            draw_title_background(sw, sh, &mut assets, &title_bg_name);
             draw_rectangle(0.0, 0.0, sw, sh, Color::new(0.0, 0.0, 0.0, 0.10));
             draw_autosave_prompt(&engine, &mut buttons, sw, sh, &font, scale);
         } else if ui_mode == UiMode::SettingsMenu {
@@ -1662,13 +1695,13 @@ pub async fn run(mut engine: Engine, project_config: &ProjectConfig) {
                 }
                 UiMode::Normal => {
                     if engine.phase() == EnginePhase::Title {
-                        draw_title_screen(&engine, &mut buttons, sw, sh, &mut assets, &font, scale, has_continue_save, &title_bg_name).await;
+                        draw_title_screen(&engine, &mut buttons, sw, sh, &mut assets, &font, scale, has_continue_save, &title_bg_name);
                     } else if engine.phase() == EnginePhase::StoryEnded {
-                        draw_scene(&engine, &mut assets, sw, sh, true, &font, scale).await;
+                        draw_scene(&engine, &mut assets, sw, sh, true, &font, scale);
                     } else {
                         // 游戏中：只绘制场景（不绘制可交互 HUD，因为确认对话框期间不需要 HUD 交互）。
                         // 脚本驱动的 `- hide` 同样隐藏对话框。
-                        draw_scene(&engine, &mut assets, sw, sh, !(hud_hidden || engine.scene().hide_textbox), &font, scale).await;
+                        draw_scene(&engine, &mut assets, sw, sh, !(hud_hidden || engine.scene().hide_textbox), &font, scale);
                     }
                 }
                 _ => {
@@ -1685,8 +1718,8 @@ pub async fn run(mut engine: Engine, project_config: &ProjectConfig) {
             // 40% 黑色遮罩 + 居中输入框 + 确认/取消按钮。
             draw_rectangle(0.0, 0.0, sw, sh, Color::new(0.05, 0.05, 0.1, 1.0));
             match note_return_mode {
-                UiMode::SaveMenu => draw_save_menu(&engine, &mut buttons, sw, sh, &font, scale, save_page, save_displayed_slots, &mut assets).await,
-                UiMode::LoadMenu => draw_load_menu(&engine, &mut buttons, sw, sh, &font, scale, load_page, load_displayed_slots, &mut assets).await,
+                UiMode::SaveMenu => draw_save_menu(&engine, &mut buttons, sw, sh, &font, scale, save_page, save_displayed_slots, &mut assets),
+                UiMode::LoadMenu => draw_load_menu(&engine, &mut buttons, sw, sh, &font, scale, load_page, load_displayed_slots, &mut assets),
                 _ => {}
             }
             // 40% 黑色遮罩（比确认对话框更深，突出输入框）。
@@ -1698,14 +1731,14 @@ pub async fn run(mut engine: Engine, project_config: &ProjectConfig) {
             // Save/Load menus: full-screen opaque background + full-screen grid.
             draw_rectangle(0.0, 0.0, sw, sh, Color::new(0.05, 0.05, 0.1, 1.0));
             match ui_mode {
-                UiMode::SaveMenu => draw_save_menu(&engine, &mut buttons, sw, sh, &font, scale, save_page, save_displayed_slots, &mut assets).await,
-                UiMode::LoadMenu => draw_load_menu(&engine, &mut buttons, sw, sh, &font, scale, load_page, load_displayed_slots, &mut assets).await,
+                UiMode::SaveMenu => draw_save_menu(&engine, &mut buttons, sw, sh, &font, scale, save_page, save_displayed_slots, &mut assets),
+                UiMode::LoadMenu => draw_load_menu(&engine, &mut buttons, sw, sh, &font, scale, load_page, load_displayed_slots, &mut assets),
                 _ => {}
             }
         } else if engine.phase() == EnginePhase::Title {
-            draw_title_screen(&engine, &mut buttons, sw, sh, &mut assets, &font, scale, has_continue_save, &title_bg_name).await;
+            draw_title_screen(&engine, &mut buttons, sw, sh, &mut assets, &font, scale, has_continue_save, &title_bg_name);
         } else if engine.phase() == EnginePhase::StoryEnded {
-            draw_scene(&engine, &mut assets, sw, sh, true, &font, scale).await;
+            draw_scene(&engine, &mut assets, sw, sh, true, &font, scale);
         } else {
             // In-game: draw the scene. When the HUD is hidden, only the
             // background and characters are drawn (no dialogue box, choices,
@@ -1713,7 +1746,7 @@ pub async fn run(mut engine: Engine, project_config: &ProjectConfig) {
             // 脚本驱动的 `- hide` 与手动隐藏行为一致：隐藏对话框与 HUD 按钮。
             let script_hide = engine.scene().hide_textbox;
             let eff_hide = hud_hidden || script_hide;
-            draw_scene(&engine, &mut assets, sw, sh, !eff_hide, &font, scale).await;
+            draw_scene(&engine, &mut assets, sw, sh, !eff_hide, &font, scale);
             if !eff_hide {
                 // 检测鼠标是否在 HUD 触发区域内，更新显隐进度。
                 let (tx, ty, tw, th) = hud_trigger_rect(sw, sh, scale);
@@ -2277,15 +2310,15 @@ pub async fn run(mut engine: Engine, project_config: &ProjectConfig) {
             draw_chapter_toast(&chapter_anim, sw, sh, &font, scale);
         }
 
-        next_frame().await;
+        crate::wgpu_backend::render_frame(&surface);
     }
 }
 
 // ─── Drawing functions ───
 
 /// 绘制标题页背景图（cover 模式，16:9 裁切适应），回退为天蓝色渐变。
-async fn draw_title_background(sw: f32, sh: f32, assets: &mut AssetManager, bg_name: &str) {
-    let title_bg = assets.get_texture(AssetKind::Title, bg_name).await;
+fn draw_title_background(sw: f32, sh: f32, assets: &mut AssetManager, bg_name: &str) {
+    let title_bg = assets.get_texture(AssetKind::Title, bg_name);
     if let Some(tex) = title_bg {
         let tex_w = tex.width();
         let tex_h = tex.height();
@@ -2318,8 +2351,8 @@ async fn draw_title_background(sw: f32, sh: f32, assets: &mut AssetManager, bg_n
     }
 }
 
-async fn draw_title_screen(engine: &Engine, buttons: &mut Vec<ButtonRect>, sw: f32, sh: f32, assets: &mut AssetManager, font: &Option<Font>, scale: f32, has_continue_save: bool, title_bg_name: &str) {
-    draw_title_background(sw, sh, assets, title_bg_name).await;
+fn draw_title_screen(engine: &Engine, buttons: &mut Vec<ButtonRect>, sw: f32, sh: f32, assets: &mut AssetManager, font: &Option<Font>, scale: f32, has_continue_save: bool, title_bg_name: &str) {
+    draw_title_background(sw, sh, assets, title_bg_name);
 
     let scene = engine.scene();
 
@@ -2411,14 +2444,14 @@ async fn draw_title_screen(engine: &Engine, buttons: &mut Vec<ButtonRect>, sw: f
     }
 }
 
-async fn draw_scene(engine: &Engine, assets: &mut AssetManager, sw: f32, sh: f32, show_ui: bool, font: &Option<Font>, scale: f32) {
+fn draw_scene(engine: &Engine, assets: &mut AssetManager, sw: f32, sh: f32, show_ui: bool, font: &Option<Font>, scale: f32) {
     let scene = engine.scene();
 
     // Draw background
-    draw_background(scene, assets, sw, sh).await;
+    draw_background(scene, assets, sw, sh);
 
     // Draw characters
-    draw_characters(scene, assets, sw, sh, font, scale).await;
+    draw_characters(scene, assets, sw, sh, font, scale);
 
     // Draw transition overlay
     draw_transition(scene, sw, sh);
@@ -2511,7 +2544,7 @@ fn draw_chapter_toast(anim: &ChapterAnimation, sw: f32, sh: f32, font: &Option<F
     }
 }
 
-async fn draw_background(scene: &SceneState, assets: &mut AssetManager, sw: f32, sh: f32) {
+fn draw_background(scene: &SceneState, assets: &mut AssetManager, sw: f32, sh: f32) {
     // 背景交叉淡入：当处于 bg_crossfade 过渡时，同时绘制旧背景（淡出）与新背景（淡入）。
     // 不画全屏遮罩，对话框等 UI 在背景之上正常绘制、不被遮挡。
     if let Some(overlay) = &scene.transition {
@@ -2524,14 +2557,14 @@ async fn draw_background(scene: &SceneState, assets: &mut AssetManager, sw: f32,
             };
             // 先画旧背景（淡出）。
             if let Some(prev) = &scene.prev_background {
-                draw_single_background(prev, assets, sw, sh, 1.0 - t).await;
+                draw_single_background(prev, assets, sw, sh, 1.0 - t);
             } else {
                 // 无旧背景：用黑底淡出。
                 draw_rectangle(0.0, 0.0, sw, sh, Color::new(0.0, 0.0, 0.0, 1.0 - t));
             }
             // 再画新背景（淡入）。
             if let Some(bg) = &scene.background {
-                draw_single_background(bg, assets, sw, sh, t).await;
+                draw_single_background(bg, assets, sw, sh, t);
             } else {
                 draw_rectangle(0.0, 0.0, sw, sh, Color::new(0.0, 0.0, 0.0, t));
             }
@@ -2541,7 +2574,7 @@ async fn draw_background(scene: &SceneState, assets: &mut AssetManager, sw: f32,
 
     // 普通模式：只画当前背景。
     if let Some(bg) = &scene.background {
-        draw_single_background(bg, assets, sw, sh, bg.alpha).await;
+        draw_single_background(bg, assets, sw, sh, bg.alpha);
     } else {
         // Default: black background
         draw_rectangle(0.0, 0.0, sw, sh, BLACK);
@@ -2550,8 +2583,8 @@ async fn draw_background(scene: &SceneState, assets: &mut AssetManager, sw: f32,
 
 /// 绘制单个背景图层（按 cover 模式缩放铺满屏幕），alpha 由调用方指定。
 /// 交叉淡入时分别以互补 alpha 调用两次绘制新旧背景。
-async fn draw_single_background(bg: &BackgroundState, assets: &mut AssetManager, sw: f32, sh: f32, alpha: f32) {
-    if let Some(tex) = assets.get_texture(AssetKind::Bg, &bg.name).await {
+fn draw_single_background(bg: &BackgroundState, assets: &mut AssetManager, sw: f32, sh: f32, alpha: f32) {
+    if let Some(tex) = assets.get_texture(AssetKind::Bg, &bg.name) {
         // Draw texture scaled to screen
         let tex_w = tex.width();
         let tex_h = tex.height();
@@ -2582,7 +2615,7 @@ async fn draw_single_background(bg: &BackgroundState, assets: &mut AssetManager,
     }
 }
 
-async fn draw_characters(scene: &SceneState, assets: &mut AssetManager, sw: f32, sh: f32, font: &Option<Font>, scale: f32) {
+fn draw_characters(scene: &SceneState, assets: &mut AssetManager, sw: f32, sh: f32, font: &Option<Font>, scale: f32) {
     for char_state in &scene.characters {
         // 优先使用精确百分比位置（custom_x/custom_y）；否则回退到 position 字段。
         let x_frac = char_state.custom_x.unwrap_or_else(|| char_state.position.x_fraction());
@@ -2595,7 +2628,7 @@ async fn draw_characters(scene: &SceneState, assets: &mut AssetManager, sw: f32,
             char_state.name.clone()
         };
 
-        if let Some(tex) = assets.get_texture(AssetKind::Character, &sprite_name).await {
+        if let Some(tex) = assets.get_texture(AssetKind::Character, &sprite_name) {
             let tex_w = tex.width();
             let tex_h = tex.height();
             // 默认立绘高度为屏幕高度的 80%，再乘以 char_state.scale。
@@ -3450,14 +3483,14 @@ fn draw_panel(sw: f32, sh: f32, title: &str, font: &Option<Font>, scale: f32) {
     draw_text_f(title, (sw - tw) / 2.0, sh * 0.09, title_size, WHITE, font);
 }
 
-async fn draw_save_menu(engine: &Engine, buttons: &mut Vec<ButtonRect>, sw: f32, sh: f32, font: &Option<Font>, scale: f32, page: usize, displayed_slots: usize, assets: &mut AssetManager) {
+fn draw_save_menu(engine: &Engine, buttons: &mut Vec<ButtonRect>, sw: f32, sh: f32, font: &Option<Font>, scale: f32, page: usize, displayed_slots: usize, assets: &mut AssetManager) {
     draw_panel(sw, sh, engine.t_ui("save.save_title"), font, scale);
 
     let saves = engine.saves();
     let max_slots = saves.max_slots();
     let all_saves = saves.list_saves();
 
-    draw_slot_grid(engine, sw, sh, font, scale, page, displayed_slots, max_slots, &all_saves, buttons, true, assets).await;
+    draw_slot_grid(engine, sw, sh, font, scale, page, displayed_slots, max_slots, &all_saves, buttons, true, assets);
 
     // Back button (bottom-left).
     let back_w = 240.0 * scale;
@@ -3475,14 +3508,14 @@ async fn draw_save_menu(engine: &Engine, buttons: &mut Vec<ButtonRect>, sw: f32,
     );
 }
 
-async fn draw_load_menu(engine: &Engine, buttons: &mut Vec<ButtonRect>, sw: f32, sh: f32, font: &Option<Font>, scale: f32, page: usize, displayed_slots: usize, assets: &mut AssetManager) {
+fn draw_load_menu(engine: &Engine, buttons: &mut Vec<ButtonRect>, sw: f32, sh: f32, font: &Option<Font>, scale: f32, page: usize, displayed_slots: usize, assets: &mut AssetManager) {
     draw_panel(sw, sh, engine.t_ui("save.load_title"), font, scale);
 
     let saves = engine.saves();
     let max_slots = saves.max_slots();
     let all_saves = saves.list_saves();
 
-    draw_slot_grid(engine, sw, sh, font, scale, page, displayed_slots, max_slots, &all_saves, buttons, false, assets).await;
+    draw_slot_grid(engine, sw, sh, font, scale, page, displayed_slots, max_slots, &all_saves, buttons, false, assets);
 
     // Back button (bottom-left).
     let back_w = 240.0 * scale;
@@ -3507,7 +3540,7 @@ async fn draw_load_menu(engine: &Engine, buttons: &mut Vec<ButtonRect>, sw: f32,
 /// iterates over `displayed_slots` (the number of slots currently surfaced to
 /// the player) rather than the hard `max_slots` cap, so the player can grow
 /// the visible range one page at a time via the "+" button.
-async fn draw_slot_grid(
+fn draw_slot_grid(
     engine: &Engine,
     sw: f32,
     sh: f32,
@@ -3562,7 +3595,7 @@ async fn draw_slot_grid(
         } else {
             ButtonAction::LoadSlot(slot)
         };
-        if let Some(t) = draw_slot_cell(engine, x, y, cell_w, cell_h, slot, meta_clone.as_ref(), buttons, font, eff, action, assets).await {
+        if let Some(t) = draw_slot_cell(engine, x, y, cell_w, cell_h, slot, meta_clone.as_ref(), buttons, font, eff, action, assets) {
             hovered_tooltip = Some(t);
         }
     }
@@ -3592,7 +3625,7 @@ async fn draw_slot_grid(
 /// Returns `Some(text)` containing the full save description when the mouse
 /// hovers over a populated cell, so the caller can render a tooltip with the
 /// untruncated text on top of every other element.
-async fn draw_slot_cell(
+fn draw_slot_cell(
     engine: &Engine,
     x: f32,
     y: f32,
@@ -3658,7 +3691,7 @@ async fn draw_slot_cell(
 
         // 左侧缩略图：读取存档的完整数据（含场景快照）重绘。
         let full_save: Option<SaveSlot> = engine.saves().load_slot_full(slot);
-        draw_slot_thumbnail(full_save.as_ref(), assets, thumb_x, thumb_y, thumb_w, thumb_h, scale, font).await;
+        draw_slot_thumbnail(full_save.as_ref(), assets, thumb_x, thumb_y, thumb_w, thumb_h, scale, font);
 
         // 右侧文字栏：章节名 + 描述 + 备注。
         let section_size = 18.0 * scale;
@@ -3801,7 +3834,7 @@ async fn draw_slot_cell(
 /// 画面一致）。背景按 contain 模式缩放（完整显示在区域内，不超出边框），
 /// 立绘按原比例缩小到缩略图高度。无场景快照时：存档存在则用标题图（title.png）
 /// 作为兜底画面，确保每个有存档的槽位都有预览图；无存档则绘制占位符文字。
-async fn draw_slot_thumbnail(
+fn draw_slot_thumbnail(
     save: Option<&SaveSlot>,
     assets: &mut AssetManager,
     x: f32,
@@ -3823,7 +3856,7 @@ async fn draw_slot_thumbnail(
             // 仅当 save 为 None（理论上不会发生，调用方仅在有存档时调用本函数）
             // 才回退到占位符文字。
             if save.is_some() {
-                if let Some(tex) = assets.get_texture(AssetKind::Title, "./title.png").await {
+                if let Some(tex) = assets.get_texture(AssetKind::Title, "./title.png") {
                     let tex_w = tex.width();
                     let tex_h = tex.height();
                     if tex_w > 0.0 && tex_h > 0.0 {
@@ -3868,7 +3901,7 @@ async fn draw_slot_thumbnail(
     // 与主场景 draw_background 一致，让缩略图"和用户看到的一样"。
     // 用 draw_texture_clipped 把绘制限定在缩略图矩形 (x, y, w, h) 内。
     if let Some(bg) = &scene.background {
-        if let Some(tex) = assets.get_texture(AssetKind::Bg, &bg.name).await {
+        if let Some(tex) = assets.get_texture(AssetKind::Bg, &bg.name) {
             let tex_w = tex.width();
             let tex_h = tex.height();
             if tex_w > 0.0 && tex_h > 0.0 {
@@ -3899,7 +3932,7 @@ async fn draw_slot_thumbnail(
         let x_frac = char_state.custom_x.unwrap_or_else(|| char_state.position.x_fraction());
         let y_frac = char_state.custom_y.unwrap_or(1.0);
         let sprite_name = char_state.pose.clone().unwrap_or_else(|| char_state.name.clone());
-        if let Some(tex) = assets.get_texture(AssetKind::Character, &sprite_name).await {
+        if let Some(tex) = assets.get_texture(AssetKind::Character, &sprite_name) {
             let tex_w = tex.width();
             let tex_h = tex.height();
             if tex_w > 0.0 && tex_h > 0.0 {
@@ -4749,7 +4782,7 @@ fn draw_about_tab(engine: &Engine, layout: &SettingsLayout, font: &Option<Font>,
             let dh = tex_h * s;
             let dx = icon_x + (icon_w - dw) / 2.0;
             let dy = icon_y + (icon_h - dh) / 2.0;
-            draw_texture_ex(*tex, dx, dy, WHITE, DrawTextureParams {
+            draw_texture_ex(tex.clone(), dx, dy, WHITE, DrawTextureParams {
                 dest_size: Some(vec2(dw, dh)),
                 ..Default::default()
             });

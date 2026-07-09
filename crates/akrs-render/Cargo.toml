@@ -7,6 +7,19 @@ license.workspace = true
 [dependencies]
 akrs-core = { workspace = true }
 akrs-runtime = { workspace = true }
+# 渲染后端（任务3）：wgpu + winit + 图像解码 + 顶点零拷贝 + 同步阻塞。
+wgpu = { workspace = true }
+winit = { workspace = true }
+image = { workspace = true }
+pollster = { workspace = true }
+bytemuck = { workspace = true }
+# 音频后端（任务1 内置重做）：kira（cpal + symphonia）。
+kira = { workspace = true }
+# 文本后端（任务2 内置重做）：cosmic-text（harfbuzz + swash）。
+cosmic-text = { workspace = true }
+# 旧渲染后端：保留以渐进迁移。`default-features = false` 关闭 audio
+# （quad-snd → quad-alsa-sys）避免与 kira→cpal→alsa-sys 在 `links="alsa"` 冲突。
+# 任务3 完成后此依赖将被移除。
 macroquad = { workspace = true }
 
 # Windows 平台专用：用于真实显示器尺寸检测、窗口居中、控制台分配。

@@ -25,4 +25,8 @@ mod assets;
 mod platform;
 mod renderer;
 
+pub mod audio;
+pub mod text;
+pub mod wgpu_backend;
+
 pub use renderer::{run, window_conf};

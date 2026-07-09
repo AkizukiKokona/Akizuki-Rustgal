@@ -1,11 +1,15 @@
 [workspace]
 resolver = "2"
+# 注：akrs-editor 暂时从 members 中排除。原因：任务3 引入 wgpu 22（wasm 门控
+# 依赖 wasm-bindgen-futures ^0.4.42）与编辑器 eframe 0.21（wasm 门控依赖
+# wasm-bindgen-futures ^0.4，仅能解析到 0.4.61→js-sys=0.3.88 已 yanked）在
+# 统一锁文件中无法共存。编辑器源码保持不变，待 eframe 升级（独立任务）后
+# 重新加入。游戏渲染（akrs-render/akrs-game）不受影响。
 members = [
     "crates/akrs-core",
     "crates/akrs-macros",
     "crates/akrs-runtime",
     "crates/akrs-render",
-    "crates/akrs-editor",
     "crates/akrs-pack",
     "crates/akrs-cli",
     "crates/akrs-game",
@@ -34,7 +38,29 @@ syn = { version = "2", features = ["full", "extra-traits"] }
 quote = "1"
 proc-macro2 = { version = "1", features = ["span-locations"] }
 proc-macro-error2 = "2"
-macroquad = "0.3"
+# macroquad: 旧渲染后端，任务3 迁移到 wgpu 后将移除。当前保留以渐进迁移：
+# `default-features = false` 关闭 audio feature（quad-snd → quad-alsa-sys），
+# 避免与 kira→cpal→alsa-sys 在 `links = "alsa"` 上冲突。
+macroquad = { version = "0.3", default-features = false }
+# kira: 音频引擎（cpal backend + symphonia 解码 mp3/ogg/vorbis/flac/wav，纯 Rust）。
+kira = "0.12"
+# cosmic-text: 文本 shaping/layout/raster（harfrust + swash，纯 Rust）。
+cosmic-text = "0.18"
+# wgpu: 新渲染后端（任务3），替换 macroquad/miniquad 的 OpenGL 后端。
+# `default-features = false` 关闭 webgpu/webgl（拉入 wasm 链）。
+# vulkan 后端由 wgpu-core 的 cfg(target_os) 依赖在 Linux/Windows 自动启用，
+# 无需也不能作为 user feature 指定；metal/dx12 显式开启。这样 wgpu 在原生
+# 桌面不引入 js-sys/web-sys，避免与编辑器 eframe 的 wasm 链冲突。
+wgpu = { version = "22", default-features = false, features = ["wgsl", "metal", "dx12"] }
+# winit: 窗口与事件系统。`rwh_06` 与 wgpu 22 的 surface 创建兼容。
+winit = { version = "0.29", features = ["rwh_06"] }
+# image: PNG 解码（同步加载纹理，替换 macroquad 的 async load_texture）。
+image = { version = "0.24", default-features = false, features = ["png"] }
+# pollster: 同步阻塞 wgpu 异步初始化（request_adapter/request_device）。
+# pollster 最新版为 0.4（无 1.x），API `block_on` 跨版本兼容。
+pollster = "0.4"
+# bytemuck: 顶点数据零拷贝上传（wgpu vertex buffer）。
+bytemuck = { version = "1", features = ["derive"] }
 # `default-features = false` drops eframe's `accesskit` feature, which on Linux
 # would otherwise pull in the `atspi`/`zbus` accessibility stack. This project
 # does not require accessibility support, so we keep only `glow` (rendering) +

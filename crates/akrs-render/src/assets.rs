@@ -10,8 +10,8 @@
 //!
 //! Missing resources produce a warning and a placeholder is used instead.
 
-use macroquad::audio::{load_sound, Sound};
-use macroquad::prelude::*;
+use crate::audio::{self, Sound};
+use crate::wgpu_backend::{self, FilterMode, Texture2D};
 use std::collections::HashMap;
 use std::path::PathBuf;
 
@@ -73,10 +73,10 @@ impl AssetManager {
     /// Load a texture by resource name. Returns None if the file doesn't exist.
     /// Logs a warning to stderr on missing resources.
     /// Automatically tries appending .png if the file isn't found as-is.
-    pub async fn get_texture(&mut self, kind: AssetKind, name: &str) -> Option<Texture2D> {
+    pub fn get_texture(&mut self, kind: AssetKind, name: &str) -> Option<Texture2D> {
         let key = format!("{:?}/{}", kind, name);
         if let Some(cached) = self.cache.get(&key) {
-            return *cached;
+            return cached.clone();
         }
 
         let path = self.resolve_path(kind, name);
@@ -95,10 +95,13 @@ impl AssetManager {
             }
         };
 
-        match load_texture(&final_path).await {
-            Ok(texture) => {
+        match image::open(&final_path) {
+            Ok(img) => {
+                let rgba = img.to_rgba8();
+                let (w, h) = rgba.dimensions();
+                let texture = wgpu_backend::create_texture(w, h, &rgba);
                 texture.set_filter(FilterMode::Linear);
-                self.cache.insert(key, Some(texture));
+                self.cache.insert(key, Some(texture.clone()));
                 Some(texture)
             }
             Err(e) => {
@@ -150,9 +153,9 @@ impl AssetManager {
         None
     }
 
-    /// 异步加载音频并缓存（懒加载）。
+    /// 同步加载音频并缓存（懒加载）。
     /// 文件不存在或加载失败时返回 None 并打印警告，缓存 None 避免重复尝试。
-    pub async fn get_sound(&mut self, kind: AssetKind, name: &str) -> Option<Sound> {
+    pub fn get_sound(&mut self, kind: AssetKind, name: &str) -> Option<Sound> {
         let key = format!("{:?}/{}", kind, name);
         if let Some(cached) = self.sound_cache.get(&key) {
             return *cached;
@@ -171,13 +174,20 @@ impl AssetManager {
         };
 
         let path_str = path.to_string_lossy().to_string();
-        match load_sound(&path_str).await {
-            Ok(sound) => {
-                self.sound_cache.insert(key, Some(sound));
-                Some(sound)
-            }
+        match std::fs::read(&path) {
+            Ok(bytes) => match audio::load_sound_from_bytes(&bytes) {
+                Ok(sound) => {
+                    self.sound_cache.insert(key, Some(sound));
+                    Some(sound)
+                }
+                Err(e) => {
+                    eprintln!("[Warning] Failed to load sound '{}': {}", path_str, e);
+                    self.sound_cache.insert(key, None);
+                    None
+                }
+            },
             Err(e) => {
-                eprintln!("[Warning] Failed to load sound '{}': {}", path_str, e);
+                eprintln!("[Warning] Failed to read sound '{}': {}", path_str, e);
                 self.sound_cache.insert(key, None);
                 None
             }

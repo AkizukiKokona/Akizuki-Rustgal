@@ -1,7 +1,7 @@
-//! akrs-game: Graphical game launcher using macroquad renderer.
+//! akrs-game: Graphical game launcher using wgpu/winit renderer.
 //!
 //! Reads a script file (default: scripts/demo.akrs) and launches
-//! the macroquad-based graphical renderer.
+//! the wgpu/winit-based graphical renderer.
 //!
 //! Usage:
 //!   akrs-game                  — run scripts/demo.akrs
@@ -11,7 +11,6 @@
 #![cfg_attr(target_os = "windows", windows_subsystem = "windows")]
 
 use akrs_core::ProjectConfig;
-use akrs_render::window_conf;
 use akrs_runtime::{Engine, crash::{self, CrashInfo, error_code}};
 use std::path::PathBuf;
 
@@ -72,8 +71,7 @@ fn load_script_and_config() -> (String, ProjectConfig, PathBuf) {
     (source, config, project_dir)
 }
 
-#[macroquad::main(window_conf())]
-async fn main() {
+fn main() {
     // Install a panic hook so that if the game crashes the console window
     // stays open long enough for the player to read the error message.
     std::panic::set_hook(Box::new(|panic_info| {
@@ -138,5 +136,5 @@ async fn main() {
         engine.load_ui_language(&effective_ui_lang, &translations_dir);
     }
 
-    akrs_render::run(engine, &project_config).await;
+    akrs_render::run(engine, &project_config);
 }
