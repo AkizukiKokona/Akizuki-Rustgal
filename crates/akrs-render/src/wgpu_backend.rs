@@ -838,6 +838,221 @@ pub fn draw_rectangle_lines(x: f32, y: f32, w: f32, h: f32, thickness: f32, colo
     draw_rectangle(x + w - t, y, t, h, color); // 右
 }
 
+/// 直线：用旋转的细矩形近似（macroquad `draw_line`）。宽度由 `thickness` 给出。
+pub fn draw_line(x1: f32, y1: f32, x2: f32, y2: f32, thickness: f32, color: Color) {
+    let dx = x2 - x1;
+    let dy = y2 - y1;
+    let len = (dx * dx + dy * dy).sqrt();
+    if len < 0.5 {
+        return;
+    }
+    // 以 (x1,y1) 为起点、沿 (dx,dy) 方向铺一条 thickness×len 的矩形。
+    let nx = -dy / len; // 法线
+    let ny = dx / len;
+    let hx = nx * thickness * 0.5;
+    let hy = ny * thickness * 0.5;
+    // 四个角
+    let (ax, ay) = (x1 + hx, y1 + hy);
+    let (bx, by) = (x2 + hx, y2 + hy);
+    let (cx, cy) = (x2 - hx, y2 - hy);
+    let (dxp, dyp) = (x1 - hx, y1 - hy);
+    let c = [color.r, color.g, color.b, color.a];
+    BACKEND.with(|b| {
+        if let Some(be) = b.borrow_mut().as_mut() {
+            let tex_id = be.white_id();
+            let start = be.vertices.len() as u32;
+            be.vertices.extend_from_slice(&[
+                Vertex { pos: [ax, ay], color: c, uv: [0.0, 0.0] },
+                Vertex { pos: [bx, by], color: c, uv: [0.0, 0.0] },
+                Vertex { pos: [cx, cy], color: c, uv: [0.0, 0.0] },
+                Vertex { pos: [ax, ay], color: c, uv: [0.0, 0.0] },
+                Vertex { pos: [cx, cy], color: c, uv: [0.0, 0.0] },
+                Vertex { pos: [dxp, dyp], color: c, uv: [0.0, 0.0] },
+            ]);
+            be.draw_cmds.push(DrawCmd { tex_id, first: start, count: 6 });
+        }
+    });
+}
+
+/// 圆角实心矩形（任务4 新增）。`radius` 为圆角半径，会被裁剪到 min(w,h)/2。
+/// 实现方式：中心十字矩形 + 4 条边矩形 + 4 个 90° 三角扇圆角，全部用 white 纹理着色。
+pub fn draw_rectangle_rounded(x: f32, y: f32, w: f32, h: f32, radius: f32, color: Color) {
+    if w <= 0.0 || h <= 0.0 {
+        return;
+    }
+    let r = radius.min(w * 0.5).min(h * 0.5).max(0.0);
+    if r < 1.0 {
+        // 半径太小，退化为直角矩形，避免顶点爆炸。
+        draw_rectangle(x, y, w, h, color);
+        return;
+    }
+    let c = [color.r, color.g, color.b, color.a];
+    let segments_per_corner = 8u32; // 每个圆角 8 段，足够平滑
+    BACKEND.with(|b| {
+        if let Some(be) = b.borrow_mut().as_mut() {
+            let tex_id = be.white_id();
+            let start = be.vertices.len() as u32;
+
+            // 中心矩形（x+r .. x+w-r, y+r .. y+h-r）
+            let cx0 = x + r;
+            let cx1 = x + w - r;
+            let cy0 = y + r;
+            let cy1 = y + h - r;
+            be.vertices.extend_from_slice(&[
+                Vertex { pos: [cx0, cy0], color: c, uv: [0.0, 0.0] },
+                Vertex { pos: [cx1, cy0], color: c, uv: [0.0, 0.0] },
+                Vertex { pos: [cx1, cy1], color: c, uv: [0.0, 0.0] },
+                Vertex { pos: [cx0, cy0], color: c, uv: [0.0, 0.0] },
+                Vertex { pos: [cx1, cy1], color: c, uv: [0.0, 0.0] },
+                Vertex { pos: [cx0, cy1], color: c, uv: [0.0, 0.0] },
+            ]);
+
+            // 上边矩形（x+r..x+w-r, y..y+r）
+            be.vertices.extend_from_slice(&[
+                Vertex { pos: [cx0, y], color: c, uv: [0.0, 0.0] },
+                Vertex { pos: [cx1, y], color: c, uv: [0.0, 0.0] },
+                Vertex { pos: [cx1, cy0], color: c, uv: [0.0, 0.0] },
+                Vertex { pos: [cx0, y], color: c, uv: [0.0, 0.0] },
+                Vertex { pos: [cx1, cy0], color: c, uv: [0.0, 0.0] },
+                Vertex { pos: [cx0, cy0], color: c, uv: [0.0, 0.0] },
+            ]);
+            // 下边矩形（x+r..x+w-r, y+h-r..y+h）
+            be.vertices.extend_from_slice(&[
+                Vertex { pos: [cx0, cy1], color: c, uv: [0.0, 0.0] },
+                Vertex { pos: [cx1, cy1], color: c, uv: [0.0, 0.0] },
+                Vertex { pos: [cx1, y + h], color: c, uv: [0.0, 0.0] },
+                Vertex { pos: [cx0, cy1], color: c, uv: [0.0, 0.0] },
+                Vertex { pos: [cx1, y + h], color: c, uv: [0.0, 0.0] },
+                Vertex { pos: [cx0, y + h], color: c, uv: [0.0, 0.0] },
+            ]);
+            // 左边矩形（x..x+r, y+r..y+h-r）
+            be.vertices.extend_from_slice(&[
+                Vertex { pos: [x, cy0], color: c, uv: [0.0, 0.0] },
+                Vertex { pos: [cx0, cy0], color: c, uv: [0.0, 0.0] },
+                Vertex { pos: [cx0, cy1], color: c, uv: [0.0, 0.0] },
+                Vertex { pos: [x, cy0], color: c, uv: [0.0, 0.0] },
+                Vertex { pos: [cx0, cy1], color: c, uv: [0.0, 0.0] },
+                Vertex { pos: [x, cy1], color: c, uv: [0.0, 0.0] },
+            ]);
+            // 右边矩形（x+w-r..x+w, y+r..y+h-r）
+            be.vertices.extend_from_slice(&[
+                Vertex { pos: [cx1, cy0], color: c, uv: [0.0, 0.0] },
+                Vertex { pos: [x + w, cy0], color: c, uv: [0.0, 0.0] },
+                Vertex { pos: [x + w, cy1], color: c, uv: [0.0, 0.0] },
+                Vertex { pos: [cx1, cy0], color: c, uv: [0.0, 0.0] },
+                Vertex { pos: [x + w, cy1], color: c, uv: [0.0, 0.0] },
+                Vertex { pos: [cx1, cy1], color: c, uv: [0.0, 0.0] },
+            ]);
+
+            // 四个圆角：三角扇。圆心 = 角的中心点，从一条边到另一条边扫 90°。
+            // 左上角：圆心 (x+r, y+r)，角度从 180° 到 270°（即 π 到 3π/2）
+            push_corner_fan(be, x + r, y + r, r, std::f32::consts::PI, std::f32::consts::PI * 1.5, segments_per_corner, c);
+            // 右上角：圆心 (x+w-r, y+r)，角度从 270° 到 360°（3π/2 到 2π）
+            push_corner_fan(be, x + w - r, y + r, r, std::f32::consts::PI * 1.5, std::f32::consts::TAU, segments_per_corner, c);
+            // 右下角：圆心 (x+w-r, y+h-r)，角度从 0° 到 90°（0 到 π/2）
+            push_corner_fan(be, x + w - r, y + h - r, r, 0.0, std::f32::consts::FRAC_PI_2, segments_per_corner, c);
+            // 左下角：圆心 (x+r, y+h-r)，角度从 90° 到 180°（π/2 到 π）
+            push_corner_fan(be, x + r, y + h - r, r, std::f32::consts::FRAC_PI_2, std::f32::consts::PI, segments_per_corner, c);
+
+            let count = be.vertices.len() as u32 - start;
+            be.draw_cmds.push(DrawCmd { tex_id, first: start, count });
+        }
+    });
+}
+
+/// 圆角描边矩形（任务4 新增）。`thickness` 为边框粗细，`radius` 为圆角半径。
+pub fn draw_rectangle_lines_rounded(x: f32, y: f32, w: f32, h: f32, radius: f32, thickness: f32, color: Color) {
+    if w <= 0.0 || h <= 0.0 || thickness <= 0.0 {
+        return;
+    }
+    let r = radius.min(w * 0.5).min(h * 0.5).max(0.0);
+    if r < 1.0 {
+        draw_rectangle_lines(x, y, w, h, thickness, color);
+        return;
+    }
+    let t = thickness.min(r); // 边框粗细不超过圆角半径，避免圆角处重叠
+    // 外圆角矩形 - 内圆角矩形（用两个圆角矩形相减近似：画外层，再用透明色画内层）
+    // 但立即模式不支持减法。改用 8 段圆弧 + 4 条直线边拼成边框。
+    let c = [color.r, color.g, color.b, color.a];
+    let segments_per_corner = 8u32;
+
+    let or = r; let ir = (r - t).max(0.0);
+
+    BACKEND.with(|b| {
+        if let Some(be) = b.borrow_mut().as_mut() {
+            let tex_id = be.white_id();
+            let start = be.vertices.len() as u32;
+
+            // 四条直边（梯形）：上、下、左、右
+            push_trapezoid(be, x + r, y, x + w - r, y, x + w - r - t, y + t, x + r + t, y + t, c);
+            push_trapezoid(be, x + r, y + h, x + w - r, y + h, x + w - r - t, y + h - t, x + r + t, y + h - t, c);
+            push_trapezoid(be, x, y + r, x, y + h - r, x + t, y + h - r - t, x + t, y + r + t, c);
+            push_trapezoid(be, x + w, y + r, x + w, y + h - r, x + w - t, y + h - r - t, x + w - t, y + r + t, c);
+
+            // 四个圆角环：外弧 + 内弧组成四边形条带
+            push_corner_ring(be, x + r, y + r, or, ir, std::f32::consts::PI, std::f32::consts::PI * 1.5, segments_per_corner, c);
+            push_corner_ring(be, x + w - r, y + r, or, ir, std::f32::consts::PI * 1.5, std::f32::consts::TAU, segments_per_corner, c);
+            push_corner_ring(be, x + w - r, y + h - r, or, ir, 0.0, std::f32::consts::FRAC_PI_2, segments_per_corner, c);
+            push_corner_ring(be, x + r, y + h - r, or, ir, std::f32::consts::FRAC_PI_2, std::f32::consts::PI, segments_per_corner, c);
+
+            let count = be.vertices.len() as u32 - start;
+            be.draw_cmds.push(DrawCmd { tex_id, first: start, count });
+        }
+    });
+}
+
+/// 内部辅助：向顶点队列推入一个 90° 圆角三角扇（实心）。
+fn push_corner_fan(be: &mut Backend, cx: f32, cy: f32, r: f32, ang_start: f32, ang_end: f32, segments: u32, color: [f32; 4]) {
+    let center = Vertex { pos: [cx, cy], color, uv: [0.0, 0.0] };
+    let mut prev = (cx + r * ang_start.cos(), cy + r * ang_start.sin());
+    for i in 1..=segments {
+        let ang = ang_start + (ang_end - ang_start) * (i as f32 / segments as f32);
+        let cur = (cx + r * ang.cos(), cy + r * ang.sin());
+        be.vertices.extend_from_slice(&[
+            center,
+            Vertex { pos: [prev.0, prev.1], color, uv: [0.0, 0.0] },
+            Vertex { pos: [cur.0, cur.1], color, uv: [0.0, 0.0] },
+        ]);
+        prev = cur;
+    }
+}
+
+/// 内部辅助：向顶点队列推入一个梯形四边形（4 个顶点 → 2 三角形）。
+fn push_trapezoid(be: &mut Backend, ax: f32, ay: f32, bx: f32, by: f32, cx: f32, cy: f32, dx: f32, dy: f32, color: [f32; 4]) {
+    be.vertices.extend_from_slice(&[
+        Vertex { pos: [ax, ay], color, uv: [0.0, 0.0] },
+        Vertex { pos: [bx, by], color, uv: [0.0, 0.0] },
+        Vertex { pos: [cx, cy], color, uv: [0.0, 0.0] },
+        Vertex { pos: [ax, ay], color, uv: [0.0, 0.0] },
+        Vertex { pos: [cx, cy], color, uv: [0.0, 0.0] },
+        Vertex { pos: [dx, dy], color, uv: [0.0, 0.0] },
+    ]);
+}
+
+/// 内部辅助：向顶点队列推入一个圆角环段（外弧 + 内弧组成的四边形条带）。
+fn push_corner_ring(be: &mut Backend, cx: f32, cy: f32, r_out: f32, r_in: f32, ang_start: f32, ang_end: f32, segments: u32, color: [f32; 4]) {
+    if r_in >= r_out {
+        return;
+    }
+    let mut prev_out = (cx + r_out * ang_start.cos(), cy + r_out * ang_start.sin());
+    let mut prev_in = (cx + r_in * ang_start.cos(), cy + r_in * ang_start.sin());
+    for i in 1..=segments {
+        let ang = ang_start + (ang_end - ang_start) * (i as f32 / segments as f32);
+        let cur_out = (cx + r_out * ang.cos(), cy + r_out * ang.sin());
+        let cur_in = (cx + r_in * ang.cos(), cy + r_in * ang.sin());
+        be.vertices.extend_from_slice(&[
+            Vertex { pos: [prev_out.0, prev_out.1], color, uv: [0.0, 0.0] },
+            Vertex { pos: [cur_out.0, cur_out.1], color, uv: [0.0, 0.0] },
+            Vertex { pos: [cur_in.0, cur_in.1], color, uv: [0.0, 0.0] },
+            Vertex { pos: [prev_out.0, prev_out.1], color, uv: [0.0, 0.0] },
+            Vertex { pos: [cur_in.0, cur_in.1], color, uv: [0.0, 0.0] },
+            Vertex { pos: [prev_in.0, prev_in.1], color, uv: [0.0, 0.0] },
+        ]);
+        prev_out = cur_out;
+        prev_in = cur_in;
+    }
+}
+
 /// 实心圆：用三角扇近似（macroquad `draw_circle`）。
 pub fn draw_circle(cx: f32, cy: f32, r: f32, color: Color) {
     if r <= 0.0 {
@@ -973,7 +1188,8 @@ pub fn pump_events(
 
 pub mod prelude {
     pub use super::{
-        draw_circle, draw_rectangle, draw_rectangle_lines, draw_texture_ex,
+        draw_circle, draw_line, draw_rectangle, draw_rectangle_lines,
+        draw_rectangle_lines_rounded, draw_rectangle_rounded, draw_texture_ex,
         get_char_pressed, get_frame_time, get_time, is_key_pressed,
         is_mouse_button_down, is_mouse_button_pressed, is_mouse_button_released,
         is_quit_requested, mouse_position, mouse_wheel, prevent_quit,

@@ -2524,10 +2524,11 @@ fn draw_chapter_toast(anim: &ChapterAnimation, sw: f32, sh: f32, font: &Option<F
     let offset_y = anim.toast_offset(toast_h + top_margin);
     let draw_y = rest_y + offset_y;
 
-    // 白底（约 30% 透明 → alpha 0.7）。圆角效果用 glamera 不便，这里用矩形 + 细边框。
-    draw_rectangle(toast_x, draw_y, toast_w, toast_h, Color::new(1.0, 1.0, 1.0, 0.7));
+    // 白底（约 30% 透明 → alpha 0.7）。任务4：改用圆角面板 + 圆角细边框。
+    let toast_radius = 10.0 * scale;
+    draw_rectangle_rounded(toast_x, draw_y, toast_w, toast_h, toast_radius, Color::new(1.0, 1.0, 1.0, 0.7));
     // 细边框增强层次感。
-    draw_rectangle_lines(toast_x, draw_y, toast_w, toast_h, 2.0 * scale, Color::new(0.0, 0.0, 0.0, 0.15));
+    draw_rectangle_lines_rounded(toast_x, draw_y, toast_w, toast_h, toast_radius, 2.0 * scale, Color::new(0.0, 0.0, 0.0, 0.15));
 
     let text_color = Color::new(0.10, 0.10, 0.14, 1.0);
 
@@ -2802,8 +2803,9 @@ fn draw_choices(choices: &akrs_runtime::ChoicesState, sw: f32, sh: f32, font: &O
         } else {
             Color::new(0.2, 0.4, 0.7, 0.85)
         };
-        draw_rectangle(opt_x, opt_y, opt_w, opt_h, bg_color);
-        draw_rectangle_lines(opt_x, opt_y, opt_w, opt_h, 2.0 * scale,
+        let opt_radius = (opt_h * 0.25).min(10.0 * scale);
+        draw_rectangle_rounded(opt_x, opt_y, opt_w, opt_h, opt_radius, bg_color);
+        draw_rectangle_lines_rounded(opt_x, opt_y, opt_w, opt_h, opt_radius, 2.0 * scale,
             if is_selected { Color::new(0.6, 0.85, 1.0, 1.0) } else { Color::new(0.4, 0.6, 0.85, 0.6) });
 
         let opt_font = 24.0 * scale;
@@ -2924,20 +2926,23 @@ fn draw_autosave_prompt(engine: &Engine, buttons: &mut Vec<ButtonRect>, sw: f32,
     let dialog_x = (sw - dialog_w) / 2.0;
     let dialog_y = (sh - dialog_h) / 2.0;
 
-    // Panel background + border.
+    // Panel background + border（圆角面板）。
     let tp = theme().primary;
-    draw_rectangle(
+    let panel_radius = 12.0 * scale;
+    draw_rectangle_rounded(
         dialog_x,
         dialog_y,
         dialog_w,
         dialog_h,
+        panel_radius,
         Color::new(tp.r, tp.g, tp.b, 0.97),
     );
-    draw_rectangle_lines(
+    draw_rectangle_lines_rounded(
         dialog_x,
         dialog_y,
         dialog_w,
         dialog_h,
+        panel_radius,
         2.0 * scale,
         Color::new(0.29, 0.62, 1.0, 0.9),
     );
@@ -3040,10 +3045,11 @@ fn draw_note_edit_dialog(
     let dialog_x = (sw - dialog_w) / 2.0;
     let dialog_y = (sh - dialog_h) / 2.0;
 
-    // 面板背景 + 边框。
+    // 面板背景 + 边框（圆角面板）。
     let tp = theme().primary;
-    draw_rectangle(dialog_x, dialog_y, dialog_w, dialog_h, Color::new(tp.r, tp.g, tp.b, 0.97));
-    draw_rectangle_lines(dialog_x, dialog_y, dialog_w, dialog_h, 2.0 * scale, Color::new(0.29, 0.62, 1.0, 0.9));
+    let panel_radius = 12.0 * scale;
+    draw_rectangle_rounded(dialog_x, dialog_y, dialog_w, dialog_h, panel_radius, Color::new(tp.r, tp.g, tp.b, 0.97));
+    draw_rectangle_lines_rounded(dialog_x, dialog_y, dialog_w, dialog_h, panel_radius, 2.0 * scale, Color::new(0.29, 0.62, 1.0, 0.9));
 
     let pad = 28.0 * scale;
     // 标题。带槽位时用 note.edit_title_slot（含 {slot} 占位符），否则用 note.edit_title。
@@ -3110,7 +3116,7 @@ fn draw_note_edit_dialog(
     // fade=0 时面板区域被同色矩形完全遮盖（看不见内容），fade=1 时无遮罩，
     // 中间过程内容平滑淡入，避免弹窗瞬间弹出。
     if fade < 1.0 {
-        draw_rectangle(dialog_x, dialog_y, dialog_w, dialog_h, {
+        draw_rectangle_rounded(dialog_x, dialog_y, dialog_w, dialog_h, panel_radius, {
             let tp = theme().primary;
             Color::new(tp.r, tp.g, tp.b, 1.0 - fade)
         });
@@ -3126,20 +3132,23 @@ fn draw_confirm_dialog(engine: &Engine, buttons: &mut Vec<ButtonRect>, sw: f32, 
     let dialog_x = (sw - dialog_w) / 2.0;
     let dialog_y = (sh - dialog_h) / 2.0;
 
-    // Panel background + border.
+    // Panel background + border（圆角面板）。
     let tp = theme().primary;
-    draw_rectangle(
+    let panel_radius = 12.0 * scale;
+    draw_rectangle_rounded(
         dialog_x,
         dialog_y,
         dialog_w,
         dialog_h,
+        panel_radius,
         Color::new(tp.r, tp.g, tp.b, 0.97),
     );
-    draw_rectangle_lines(
+    draw_rectangle_lines_rounded(
         dialog_x,
         dialog_y,
         dialog_w,
         dialog_h,
+        panel_radius,
         2.0 * scale,
         Color::new(0.29, 0.62, 1.0, 0.9),
     );
@@ -3216,7 +3225,7 @@ fn draw_confirm_dialog(engine: &Engine, buttons: &mut Vec<ButtonRect>, sw: f32, 
     // fade=0 时面板区域被同色矩形完全遮盖（看不见内容），fade=1 时无遮罩，
     // 中间过程内容平滑淡入，避免弹窗瞬间弹出。
     if fade < 1.0 {
-        draw_rectangle(dialog_x, dialog_y, dialog_w, dialog_h, {
+        draw_rectangle_rounded(dialog_x, dialog_y, dialog_w, dialog_h, panel_radius, {
             let tp = theme().primary;
             Color::new(tp.r, tp.g, tp.b, 1.0 - fade)
         });
@@ -3334,9 +3343,10 @@ fn draw_crash_screen(
     if can_continue {
         draw_button(bx, by, bw, bh, engine.t_ui("crash.continue"), buttons, ButtonAction::CrashContinue, font, scale);
     } else {
-        // 置灰且不注册（不可点击）。
-        draw_rectangle(bx, by, bw, bh, Color::new(0.13, 0.4, 0.7, 1.0));
-        draw_rectangle_lines(bx, by, bw, bh, 2.0 * scale, Color::new(0.5, 0.7, 0.9, 0.7));
+        // 置灰且不注册（不可点击）。任务4：圆角化以与正常按钮一致。
+        let dis_radius = (bh * 0.25).min(8.0 * scale);
+        draw_rectangle_rounded(bx, by, bw, bh, dis_radius, Color::new(0.13, 0.4, 0.7, 1.0));
+        draw_rectangle_lines_rounded(bx, by, bw, bh, dis_radius, 2.0 * scale, Color::new(0.5, 0.7, 0.9, 0.7));
         let fs = (bh * 0.4).min(28.0 * scale);
         let lbl = engine.t_ui("crash.continue");
         let tw = measure_text_f(lbl, font, fs as u16, 1.0).width;
@@ -3642,9 +3652,10 @@ fn draw_slot_cell(
     let (mx, my) = mouse_position();
     let hover = mx >= x && mx <= x + w && my >= y && my <= y + h;
 
-    // Cell background（天蓝色主题）。
-    draw_rectangle(x, y, w, h, Color::new(0.15, 0.3, 0.55, 0.95));
-    draw_rectangle_lines(x, y, w, h, 1.5 * scale, Color::new(0.45, 0.7, 0.95, 0.7));
+    // Cell background（天蓝色主题）。任务4：圆角化单元格。
+    let cell_radius = 10.0 * scale;
+    draw_rectangle_rounded(x, y, w, h, cell_radius, Color::new(0.15, 0.3, 0.55, 0.95));
+    draw_rectangle_lines_rounded(x, y, w, h, cell_radius, 1.5 * scale, Color::new(0.45, 0.7, 0.95, 0.7));
 
     let pad = 14.0 * scale;
     let slot_label = format!("{} {}", engine.t_ui("save.slot"), slot + 1);
@@ -3775,14 +3786,16 @@ fn draw_slot_cell(
         let (nmx, nmy) = mouse_position();
         let note_hover = nmx >= note_btn_x && nmx <= note_btn_x + note_btn_w
             && nmy >= note_btn_y && nmy <= note_btn_y + note_btn_h;
-        draw_rectangle(
+        let note_radius = (note_btn_h * 0.3).min(6.0 * scale);
+        draw_rectangle_rounded(
             note_btn_x,
             note_btn_y,
             note_btn_w,
             note_btn_h,
+            note_radius,
             if note_hover { Color::new(0.25, 0.45, 0.7, 1.0) } else { Color::new(0.18, 0.32, 0.55, 1.0) },
         );
-        draw_rectangle_lines(note_btn_x, note_btn_y, note_btn_w, note_btn_h, 1.0 * scale, Color::new(0.45, 0.7, 0.95, 0.6));
+        draw_rectangle_lines_rounded(note_btn_x, note_btn_y, note_btn_w, note_btn_h, note_radius, 1.0 * scale, Color::new(0.45, 0.7, 0.95, 0.6));
         let nlw = measure_text_f(note_label, font, note_label_size as u16, 1.0).width;
         draw_text_f(
             note_label,
@@ -3813,7 +3826,7 @@ fn draw_slot_cell(
             Color::new(0.5, 0.5, 0.55, 1.0),
             font,
         );
-        draw_rectangle(x, y, w, h, Color::new(0.0, 0.0, 0.0, 0.4));
+        draw_rectangle_rounded(x, y, w, h, cell_radius, Color::new(0.0, 0.0, 0.0, 0.4));
     }
 
     buttons.push(ButtonRect {
@@ -4846,16 +4859,18 @@ fn draw_about_tab(engine: &Engine, layout: &SettingsLayout, font: &Option<Font>,
 /// engine so dragging a slider is reflected immediately.  The dropdown list
 /// is drawn last (via `draw_dropdown_list`) so it floats above the back button.
 fn draw_settings_menu(engine: &mut Engine, layout: &SettingsLayout, font: &Option<Font>, dropdown_open: bool, skip_dropdown_open: bool, ui_lang_dropdown_open: bool, lang_dropdown_open: bool, active_tab: SettingsTab, scale: f32, icon_texture: &Option<Texture2D>, project_config: &ProjectConfig, color_edit_active: Option<ColorField>, color_hex_buffer: &str) {
-    // 天蓝色背景
-    draw_rectangle(layout.panel_x, layout.panel_y, layout.panel_w, layout.panel_h,
+    // 天蓝色背景。任务4：圆角化设置面板。
+    let panel_radius = 12.0 * scale;
+    draw_rectangle_rounded(layout.panel_x, layout.panel_y, layout.panel_w, layout.panel_h, panel_radius,
         Color::new(0.1, 0.15, 0.3, 0.95));
 
     // Subtle full-screen frame around the settings page.
-    draw_rectangle_lines(
+    draw_rectangle_lines_rounded(
         layout.panel_x,
         layout.panel_y,
         layout.panel_w,
         layout.panel_h,
+        panel_radius,
         2.0 * scale,
         Color::new(0.45, 0.7, 0.95, 0.8),
     );
@@ -5127,8 +5142,8 @@ fn draw_toggle(r: Rect4, on: bool, font: &Option<Font>, scale: f32) {
 /// expanded list is drawn separately by `draw_dropdown_list_resolution` so it can be
 /// rendered on top of all other controls.
 fn draw_dropdown_box_resolution(r: Rect4, resolution: (u32, u32), font: &Option<Font>, open: bool, scale: f32) {
-    draw_rectangle(r.x, r.y, r.w, r.h, Color::new(0.15, 0.25, 0.45, 0.9));
-    draw_rectangle_lines(r.x, r.y, r.w, r.h, 1.5 * scale, Color::new(0.45, 0.7, 0.95, 0.8));
+    draw_rectangle_rounded(r.x, r.y, r.w, r.h, 6.0 * scale, Color::new(0.15, 0.25, 0.45, 0.9));
+    draw_rectangle_lines_rounded(r.x, r.y, r.w, r.h, 6.0 * scale, 1.5 * scale, Color::new(0.45, 0.7, 0.95, 0.8));
     let label = format!("{}x{}", resolution.0, resolution.1);
     let label_size = 20.0 * scale;
     draw_text_f(&label, r.x + 12.0 * scale, r.y + r.h / 2.0 + 7.0 * scale, label_size, WHITE, font);
@@ -5153,8 +5168,8 @@ fn draw_dropdown_list_resolution(r: Rect4, resolution: (u32, u32), font: &Option
     let presets = Settings::resolution_presets();
     let list_h = item_h * presets.len() as f32;
     // List background.
-    draw_rectangle(r.x, r.y + r.h, r.w, list_h, Color::new(0.12, 0.2, 0.35, 0.97));
-    draw_rectangle_lines(r.x, r.y + r.h, r.w, list_h, 1.0 * scale, Color::new(0.45, 0.7, 0.95, 0.6));
+    draw_rectangle_rounded(r.x, r.y + r.h, r.w, list_h, 6.0 * scale, Color::new(0.12, 0.2, 0.35, 0.97));
+    draw_rectangle_lines_rounded(r.x, r.y + r.h, r.w, list_h, 6.0 * scale, 1.0 * scale, Color::new(0.45, 0.7, 0.95, 0.6));
     let item_size = 18.0 * scale;
     for (i, (w, h)) in presets.iter().enumerate() {
         let iy = r.y + r.h + i as f32 * item_h;
@@ -5174,8 +5189,8 @@ fn draw_dropdown_list_resolution(r: Rect4, resolution: (u32, u32), font: &Option
 /// `display_label` 是折叠框里显示的文本（已由调用方拼好）。
 fn draw_dropdown_box_language(r: Rect4, current_lang: &str, display_label: &str, font: &Option<Font>, open: bool, scale: f32) {
     let _ = current_lang;
-    draw_rectangle(r.x, r.y, r.w, r.h, Color::new(0.15, 0.25, 0.45, 0.9));
-    draw_rectangle_lines(r.x, r.y, r.w, r.h, 1.5 * scale, Color::new(0.45, 0.7, 0.95, 0.8));
+    draw_rectangle_rounded(r.x, r.y, r.w, r.h, 6.0 * scale, Color::new(0.15, 0.25, 0.45, 0.9));
+    draw_rectangle_lines_rounded(r.x, r.y, r.w, r.h, 6.0 * scale, 1.5 * scale, Color::new(0.45, 0.7, 0.95, 0.8));
     let label_size = 20.0 * scale;
     draw_text_f(display_label, r.x + 12.0 * scale, r.y + r.h / 2.0 + 7.0 * scale, label_size, WHITE, font);
     let arrow = if open { "v" } else { ">" };
@@ -5201,8 +5216,8 @@ fn draw_dropdown_list_language(r: Rect4, available: &[(String, String)], current
         options.push((code.clone(), format!("{} ({})", name, code)));
     }
     let list_h = item_h * options.len() as f32;
-    draw_rectangle(r.x, r.y + r.h, r.w, list_h, Color::new(0.12, 0.2, 0.35, 0.97));
-    draw_rectangle_lines(r.x, r.y + r.h, r.w, list_h, 1.0 * scale, Color::new(0.45, 0.7, 0.95, 0.6));
+    draw_rectangle_rounded(r.x, r.y + r.h, r.w, list_h, 6.0 * scale, Color::new(0.12, 0.2, 0.35, 0.97));
+    draw_rectangle_lines_rounded(r.x, r.y + r.h, r.w, list_h, 6.0 * scale, 1.0 * scale, Color::new(0.45, 0.7, 0.95, 0.6));
     let item_size = 18.0 * scale;
     for (i, (code, label)) in options.iter().enumerate() {
         let iy = r.y + r.h + i as f32 * item_h;
@@ -5218,8 +5233,8 @@ fn draw_dropdown_list_language(r: Rect4, available: &[(String, String)], current
 
 /// 快进模式下拉菜单的折叠框。
 fn draw_dropdown_box_skip_mode(engine: &Engine, r: Rect4, mode: SkipMode, font: &Option<Font>, open: bool, scale: f32) {
-    draw_rectangle(r.x, r.y, r.w, r.h, Color::new(0.15, 0.25, 0.45, 0.9));
-    draw_rectangle_lines(r.x, r.y, r.w, r.h, 1.5 * scale, Color::new(0.45, 0.7, 0.95, 0.8));
+    draw_rectangle_rounded(r.x, r.y, r.w, r.h, 6.0 * scale, Color::new(0.15, 0.25, 0.45, 0.9));
+    draw_rectangle_lines_rounded(r.x, r.y, r.w, r.h, 6.0 * scale, 1.5 * scale, Color::new(0.45, 0.7, 0.95, 0.8));
     let label = match mode {
         SkipMode::TextOnly => engine.t_ui("skip_mode.text_only"),
         SkipMode::WithVoice => engine.t_ui("skip_mode.with_voice"),
@@ -5244,8 +5259,8 @@ fn draw_dropdown_list_skip_mode(engine: &Engine, r: Rect4, mode: SkipMode, font:
     let options = [SkipMode::TextOnly, SkipMode::WithVoice];
     let labels = [engine.t_ui("skip_mode.text_only"), engine.t_ui("skip_mode.with_voice")];
     let list_h = item_h * options.len() as f32;
-    draw_rectangle(r.x, r.y + r.h, r.w, list_h, Color::new(0.12, 0.2, 0.35, 0.97));
-    draw_rectangle_lines(r.x, r.y + r.h, r.w, list_h, 1.0 * scale, Color::new(0.45, 0.7, 0.95, 0.6));
+    draw_rectangle_rounded(r.x, r.y + r.h, r.w, list_h, 6.0 * scale, Color::new(0.12, 0.2, 0.35, 0.97));
+    draw_rectangle_lines_rounded(r.x, r.y + r.h, r.w, list_h, 6.0 * scale, 1.0 * scale, Color::new(0.45, 0.7, 0.95, 0.6));
     let item_size = 18.0 * scale;
     for (i, opt) in options.iter().enumerate() {
         let iy = r.y + r.h + i as f32 * item_h;
@@ -5797,13 +5812,14 @@ fn draw_button(
     // 按钮配色：基于主题色2（secondary）派生悬停/默认两态。
     let t = theme();
     let bg_color = if hover { shade(t.secondary, 0.15) } else { t.secondary };
-    draw_rectangle(x, y, w, h, bg_color);
+    let radius = (h * 0.25).min(8.0 * scale);
+    draw_rectangle_rounded(x, y, w, h, radius, bg_color);
     let border = if hover {
         Color::new(shade(t.secondary, 0.40).r, shade(t.secondary, 0.40).g, shade(t.secondary, 0.40).b, 1.0)
     } else {
         Color::new(shade(t.secondary, 0.20).r, shade(t.secondary, 0.20).g, shade(t.secondary, 0.20).b, 0.8)
     };
-    draw_rectangle_lines(x, y, w, h, 2.0 * scale, border);
+    draw_rectangle_lines_rounded(x, y, w, h, radius, 2.0 * scale, border);
 
     // Font size scales with the button height, capped to keep labels legible.
     let font_size = (h * 0.4).min(28.0 * scale);
@@ -5938,8 +5954,9 @@ fn draw_small_button(
         let bg = shade(t.secondary, -0.35);
         let border = shade(t.secondary, -0.20);
         let bg_color = Color::new(bg.r, bg.g, bg.b, 0.55 * alpha);
-        draw_rectangle(x, y, w, h, bg_color);
-        draw_rectangle_lines(x, y, w, h, 1.5 * scale, Color::new(border.r, border.g, border.b, 0.45 * alpha));
+        let radius = (h * 0.25).min(6.0 * scale);
+        draw_rectangle_rounded(x, y, w, h, radius, bg_color);
+        draw_rectangle_lines_rounded(x, y, w, h, radius, 1.5 * scale, Color::new(border.r, border.g, border.b, 0.45 * alpha));
         let font_size = 20.0 * scale;
         let tw = measure_text_f(label, font, font_size as u16, 1.0).width;
         let text_color = Color::new(t.text.r, t.text.g, t.text.b, 0.45 * alpha);
@@ -5986,9 +6003,10 @@ fn draw_small_button(
     let draw_y = y + (h - draw_h) / 2.0 + dy;
 
     let bg_color = Color::new(bg.r, bg.g, bg.b, bg_a_base * alpha);
-    draw_rectangle(draw_x, draw_y, draw_w, draw_h, bg_color);
-    draw_rectangle_lines(
-        draw_x, draw_y, draw_w, draw_h,
+    let radius = (draw_h * 0.25).min(6.0 * scale);
+    draw_rectangle_rounded(draw_x, draw_y, draw_w, draw_h, radius, bg_color);
+    draw_rectangle_lines_rounded(
+        draw_x, draw_y, draw_w, draw_h, radius,
         1.5 * scale,
         Color::new(border.r, border.g, border.b, border_a_base * alpha),
     );
