@@ -174,20 +174,29 @@ impl AssetManager {
         };
 
         let path_str = path.to_string_lossy().to_string();
-        match std::fs::read(&path) {
-            Ok(bytes) => match audio::load_sound_from_bytes(&bytes) {
-                Ok(sound) => {
-                    self.sound_cache.insert(key, Some(sound));
-                    Some(sound)
-                }
-                Err(e) => {
-                    eprintln!("[Warning] Failed to load sound '{}': {}", path_str, e);
-                    self.sound_cache.insert(key, None);
-                    None
-                }
-            },
+        // BGM 流式播放（不全量驻留内存）；SE/语音整段驻留以便快速触发。
+        // 各自带 SoundKind，使 play_sound 能路由到对应 track、settings 的三个音量字段
+        // 能独立生效。
+        let result: Result<Sound, String> = match kind {
+            AssetKind::Music => audio::load_streaming_sound(&path, audio::SoundKind::Bgm),
+            AssetKind::Voice => std::fs::read(&path)
+                .map_err(|e| e.to_string())
+                .and_then(|b| audio::load_sound_kind_from_bytes(&b, audio::SoundKind::Voice)),
+            _ => {
+                // AssetKind::Sound 走 SE；Bg/Character/Title 不会经 get_sound，
+                // 兜底按 SE 处理。
+                std::fs::read(&path)
+                    .map_err(|e| e.to_string())
+                    .and_then(|b| audio::load_sound_kind_from_bytes(&b, audio::SoundKind::Se))
+            }
+        };
+        match result {
+            Ok(sound) => {
+                self.sound_cache.insert(key, Some(sound));
+                Some(sound)
+            }
             Err(e) => {
-                eprintln!("[Warning] Failed to read sound '{}': {}", path_str, e);
+                eprintln!("[Warning] Failed to load sound '{}': {}", path_str, e);
                 self.sound_cache.insert(key, None);
                 None
             }

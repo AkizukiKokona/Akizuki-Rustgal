@@ -9,7 +9,10 @@ use akrs_runtime::{
     SaveMetadata, SaveSlot,
     crash,
 };
-use crate::audio::{play_sound, set_sound_volume, stop_sound, PlaySoundParams, Sound};
+use crate::audio::{
+    play_sound, set_track_volume, stop_bgm_with_crossfade, stop_sound, BGM_CROSSFADE_DURATION,
+    PlaySoundParams, Sound, SoundKind,
+};
 use crate::wgpu_backend::prelude::*;
 use std::path::PathBuf;
 
@@ -1056,10 +1059,11 @@ pub fn run(mut engine: Engine, project_config: &ProjectConfig) {
     // 当前正在播放的语音句柄（None 表示无语音在播放）。
     // 新对话/旁白出现时先 stop 旧的，再 play 新的（一次性，不循环）。
     let mut current_voice: Option<Sound> = None;
-    // 上一帧应用的 BGM 音量，用于检测设置变更并实时同步。
-    let mut prev_bgm_volume: f32 = engine.settings().bgm_volume;
-    // 上一帧应用的语音音量，用于检测设置变更并实时同步。
-    let mut prev_voice_volume: f32 = engine.settings().voice_volume;
+    // 上一帧应用的三轨音量。初值 -1.0（非法音量）用于强制首帧同步一次，
+    // 使 track 音量在播放任何声音前就绑定到当前 settings。
+    let mut prev_bgm_volume: f32 = -1.0;
+    let mut prev_sfx_volume: f32 = -1.0;
+    let mut prev_voice_volume: f32 = -1.0;
     // 标题音乐是否已开始播放。
     let mut title_music_played = false;
     // Whether the in-game dialogue box and HUD button group are hidden via
@@ -1273,15 +1277,15 @@ pub fn run(mut engine: Engine, project_config: &ProjectConfig) {
                 EngineEvent::MusicChanged { name } => {
                     // 先停止当前 BGM（无论 name 是否为空）
                     if let Some(bgm) = current_bgm.take() {
-                        stop_sound(bgm);
+                        stop_bgm_with_crossfade(bgm, BGM_CROSSFADE_DURATION);
                     }
                     if !name.is_empty() {
                         // 加载并循环播放新 BGM
                         if let Some(sound) = assets.get_sound(AssetKind::Music, name) {
-                            let vol = engine.settings().bgm_volume;
+                            // 音量交给 BGM track（由 settings.bgm_volume 控制），此处传 1.0。
                             play_sound(
                                 sound,
-                                PlaySoundParams { looped: true, volume: vol },
+                                PlaySoundParams { looped: true, volume: 1.0 },
                             );
                             current_bgm = Some(sound);
                         }
@@ -1290,10 +1294,10 @@ pub fn run(mut engine: Engine, project_config: &ProjectConfig) {
                 EngineEvent::SoundPlayed { name } => {
                     // 一次性播放音效
                     if let Some(sound) = assets.get_sound(AssetKind::Sound, name) {
-                        let vol = engine.settings().sfx_volume;
+                        // 音量交给 SE track（由 settings.sfx_volume 控制），此处传 1.0。
                         play_sound(
                             sound,
-                            PlaySoundParams { looped: false, volume: vol },
+                            PlaySoundParams { looped: false, volume: 1.0 },
                         );
                     }
                 }
@@ -1305,10 +1309,10 @@ pub fn run(mut engine: Engine, project_config: &ProjectConfig) {
                     if !name.is_empty() {
                         // 加载并播放新语音（一次性，不循环）
                         if let Some(sound) = assets.get_sound(AssetKind::Voice, name) {
-                            let vol = engine.settings().voice_volume;
+                            // 音量交给 Voice track（由 settings.voice_volume 控制），此处传 1.0。
                             play_sound(
                                 sound,
-                                PlaySoundParams { looped: false, volume: vol },
+                                PlaySoundParams { looped: false, volume: 1.0 },
                             );
                             current_voice = Some(sound);
                         }
@@ -1317,7 +1321,7 @@ pub fn run(mut engine: Engine, project_config: &ProjectConfig) {
                 EngineEvent::GameStarted => {
                     // 玩家从标题进入游戏，停止标题音乐与残留语音
                     if let Some(bgm) = current_bgm.take() {
-                        stop_sound(bgm);
+                        stop_bgm_with_crossfade(bgm, BGM_CROSSFADE_DURATION);
                     }
                     if let Some(voice) = current_voice.take() {
                         stop_sound(voice);
@@ -1326,7 +1330,7 @@ pub fn run(mut engine: Engine, project_config: &ProjectConfig) {
                 EngineEvent::StoryEnded => {
                     // 故事结束，停止所有 BGM 与语音
                     if let Some(bgm) = current_bgm.take() {
-                        stop_sound(bgm);
+                        stop_bgm_with_crossfade(bgm, BGM_CROSSFADE_DURATION);
                     }
                     if let Some(voice) = current_voice.take() {
                         stop_sound(voice);
@@ -1383,10 +1387,10 @@ pub fn run(mut engine: Engine, project_config: &ProjectConfig) {
                 title_music_played = true;
                 if current_bgm.is_none() {
                     if let Some(sound) = assets.get_sound(AssetKind::Music, &title_music_name) {
-                        let vol = engine.settings().bgm_volume;
+                        // 音量交给 BGM track（由 settings.bgm_volume 控制），此处传 1.0。
                         play_sound(
                             sound,
-                            PlaySoundParams { looped: true, volume: vol },
+                            PlaySoundParams { looped: true, volume: 1.0 },
                         );
                         current_bgm = Some(sound);
                     }
@@ -1397,20 +1401,21 @@ pub fn run(mut engine: Engine, project_config: &ProjectConfig) {
             title_music_played = false;
         }
 
-        // 实时同步 BGM 音量：当设置页调整 BGM 音量时立即生效
+        // 实时同步三轨音量：当设置页调整 BGM/SE/Voice 音量时立即生效。
+        // 直接设置对应 track 的音量，无需依赖当前是否有声音在播放（track 始终存在）。
         let cur_bgm_vol = engine.settings().bgm_volume;
         if cur_bgm_vol != prev_bgm_volume {
-            if let Some(bgm) = current_bgm {
-                set_sound_volume(bgm, cur_bgm_vol);
-            }
+            set_track_volume(SoundKind::Bgm, cur_bgm_vol);
             prev_bgm_volume = cur_bgm_vol;
         }
-        // 实时同步语音音量：当设置页调整语音音量时立即生效
+        let cur_sfx_vol = engine.settings().sfx_volume;
+        if cur_sfx_vol != prev_sfx_volume {
+            set_track_volume(SoundKind::Se, cur_sfx_vol);
+            prev_sfx_volume = cur_sfx_vol;
+        }
         let cur_voice_vol = engine.settings().voice_volume;
         if cur_voice_vol != prev_voice_volume {
-            if let Some(voice) = current_voice {
-                set_sound_volume(voice, cur_voice_vol);
-            }
+            set_track_volume(SoundKind::Voice, cur_voice_vol);
             prev_voice_volume = cur_voice_vol;
         }
 
