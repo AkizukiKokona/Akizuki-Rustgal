@@ -215,6 +215,393 @@ impl Default for MusicPreview {
 }
 
 // ---------------------------------------------------------------------------
+// 蓝图模式
+// ---------------------------------------------------------------------------
+
+/// 蓝图节点类型。由节点文本的首字符/首词推断，仅影响颜色和标签。
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum NodeKind {
+    Section,
+    Dialogue,
+    Narration,
+    Command,
+    Direction,
+    Choice,
+    Flow,
+    Visit,
+    Return,
+    Wait,
+    StoryEnd,
+    Ending,
+    Unlock,
+    VarOp,
+    Other,
+}
+
+/// 蓝图节点：对应剧本中的一行（或多行）指令。
+struct BlueprintNode {
+    id: usize,
+    kind: NodeKind,
+    /// 画布坐标（不含 pan 偏移）。
+    pos: egui::Pos2,
+    /// 节点文本内容（即 `.akrs` 脚本行）。
+    text: String,
+}
+
+/// 蓝图连线：从某节点的输出引脚连到另一节点的输入引脚。
+struct BlueprintLink {
+    from: usize,
+    to: usize,
+}
+
+/// 蓝图编辑器状态。
+struct BlueprintState {
+    nodes: Vec<BlueprintNode>,
+    links: Vec<BlueprintLink>,
+    next_id: usize,
+    /// 画布平移偏移。
+    pan: egui::Vec2,
+    /// 当前选中的节点 ID。
+    selected: Option<usize>,
+    /// 正在拖动的节点 ID。
+    drag_node: Option<usize>,
+    /// 拖动偏移（鼠标位置 - 节点位置）。
+    drag_offset: egui::Vec2,
+    /// 右键按下时的位置（用于区分"点击"与"拖动"）。
+    right_press_pos: Option<egui::Pos2>,
+    /// 右键按下后是否发生了拖动。
+    right_moved: bool,
+    /// 正在从某节点输出引脚拉线。
+    connecting_from: Option<usize>,
+    /// 拉线时鼠标当前位置（画布坐标）。
+    connecting_pos: egui::Pos2,
+    /// 右键菜单弹出位置（屏幕坐标）。
+    context_menu_pos: Option<egui::Pos2>,
+}
+
+impl Default for BlueprintState {
+    fn default() -> Self {
+        Self {
+            nodes: Vec::new(),
+            links: Vec::new(),
+            next_id: 0,
+            pan: egui::Vec2::ZERO,
+            selected: None,
+            drag_node: None,
+            drag_offset: egui::Vec2::ZERO,
+            right_press_pos: None,
+            right_moved: false,
+            connecting_from: None,
+            connecting_pos: egui::Pos2::ZERO,
+            context_menu_pos: None,
+        }
+    }
+}
+
+impl BlueprintState {
+    /// 添加一个新节点，返回其 ID。
+    fn add_node(&mut self, kind: NodeKind, pos: egui::Pos2, text: String) -> usize {
+        let id = self.next_id;
+        self.next_id += 1;
+        self.nodes.push(BlueprintNode { id, kind, pos, text });
+        id
+    }
+
+    /// 删除指定节点及其所有连线。
+    fn remove_node(&mut self, id: usize) {
+        self.nodes.retain(|n| n.id != id);
+        self.links.retain(|l| l.from != id && l.to != id);
+        if self.selected == Some(id) {
+            self.selected = None;
+        }
+    }
+
+    /// 添加一条连线（去重：同 from→to 只保留一条）。
+    fn add_link(&mut self, from: usize, to: usize) {
+        if from == to {
+            return;
+        }
+        if self.links.iter().any(|l| l.from == from && l.to == to) {
+            return;
+        }
+        // 每个输入引脚只接受一条连线：移除已有的入线。
+        self.links.retain(|l| l.to != to);
+        self.links.push(BlueprintLink { from, to });
+    }
+
+    /// 根据文本推断节点类型。
+    fn detect_kind(text: &str) -> NodeKind {
+        let t = text.trim_start();
+        if t.starts_with('#') {
+            NodeKind::Section
+        } else if t.starts_with('+') {
+            NodeKind::Direction
+        } else if t.starts_with('-') {
+            NodeKind::Direction
+        } else if t.starts_with('@') {
+            NodeKind::Command
+        } else if t.starts_with('?') {
+            NodeKind::Choice
+        } else if t.starts_with("->") {
+            NodeKind::Flow
+        } else if t.starts_with("=>") {
+            NodeKind::Visit
+        } else if t.starts_with("<=") {
+            NodeKind::Return
+        } else if t.starts_with("~~") {
+            NodeKind::Wait
+        } else if t.starts_with("end") {
+            NodeKind::StoryEnd
+        } else if t.starts_with("ending") {
+            NodeKind::Ending
+        } else if t.starts_with("unlock") {
+            NodeKind::Unlock
+        } else if t.starts_with('$') {
+            NodeKind::VarOp
+        } else if t.starts_with('"') {
+            NodeKind::Narration
+        } else if t.contains(':') && t.contains('"') {
+            NodeKind::Dialogue
+        } else {
+            NodeKind::Other
+        }
+    }
+
+    /// 节点类型对应的标题栏颜色。
+    fn kind_color(kind: NodeKind) -> egui::Color32 {
+        match kind {
+            NodeKind::Section => egui::Color32::from_rgb(70, 110, 200),
+            NodeKind::Dialogue => egui::Color32::from_rgb(60, 140, 80),
+            NodeKind::Narration => egui::Color32::from_rgb(90, 160, 100),
+            NodeKind::Command => egui::Color32::from_rgb(200, 140, 50),
+            NodeKind::Direction => egui::Color32::from_rgb(150, 80, 200),
+            NodeKind::Choice => egui::Color32::from_rgb(200, 180, 50),
+            NodeKind::Flow => egui::Color32::from_rgb(50, 180, 200),
+            NodeKind::Visit => egui::Color32::from_rgb(80, 150, 200),
+            NodeKind::Return => egui::Color32::from_rgb(120, 120, 130),
+            NodeKind::Wait => egui::Color32::from_rgb(200, 100, 150),
+            NodeKind::StoryEnd => egui::Color32::from_rgb(200, 60, 60),
+            NodeKind::Ending => egui::Color32::from_rgb(180, 80, 160),
+            NodeKind::Unlock => egui::Color32::from_rgb(160, 100, 180),
+            NodeKind::VarOp => egui::Color32::from_rgb(100, 130, 160),
+            NodeKind::Other => egui::Color32::from_rgb(100, 100, 110),
+        }
+    }
+
+    /// 节点类型对应的中文标签。
+    fn kind_label(kind: NodeKind) -> &'static str {
+        match kind {
+            NodeKind::Section => "章节",
+            NodeKind::Dialogue => "对话",
+            NodeKind::Narration => "旁白",
+            NodeKind::Command => "命令",
+            NodeKind::Direction => "立绘",
+            NodeKind::Choice => "选择",
+            NodeKind::Flow => "跳转",
+            NodeKind::Visit => "访问",
+            NodeKind::Return => "返回",
+            NodeKind::Wait => "等待",
+            NodeKind::StoryEnd => "结局",
+            NodeKind::Ending => "结局声明",
+            NodeKind::Unlock => "解锁",
+            NodeKind::VarOp => "变量",
+            NodeKind::Other => "其他",
+        }
+    }
+
+    /// 估算节点尺寸（固定宽度，高度随行数自适应）。
+    fn node_size(text: &str) -> egui::Vec2 {
+        let width = 200.0;
+        let header_h = 22.0;
+        let line_count = text.lines().count().max(1);
+        let body_h = (line_count as f32 * 15.0 + 12.0).max(36.0);
+        egui::Vec2::new(width, header_h + body_h)
+    }
+
+    /// 从脚本文本生成蓝图节点（自动布局 + 顺序连线）。
+    fn from_script(&mut self, text: &str) {
+        self.nodes.clear();
+        self.links.clear();
+        self.next_id = 0;
+        self.selected = None;
+
+        let col_width = 240.0;
+        let row_height = 110.0;
+        let mut col = 0usize;
+        let mut row = 0usize;
+
+        for line in text.lines() {
+            if line.trim().is_empty() {
+                continue;
+            }
+            let kind = Self::detect_kind(line);
+            // 章节节点另起一列。
+            if kind == NodeKind::Section && !self.nodes.is_empty() {
+                col += 1;
+                row = 0;
+            }
+            let pos = egui::pos2(
+                col as f32 * col_width + 20.0,
+                row as f32 * row_height + 20.0,
+            );
+            let id = self.add_node(kind, pos, line.to_string());
+            // 与上一个节点顺序连线（跨章节不连）。
+            if row > 0 {
+                if let Some(prev) = self.nodes.iter().rev().nth(1) {
+                    self.links.push(BlueprintLink {
+                        from: prev.id,
+                        to: id,
+                    });
+                }
+            }
+            row += 1;
+        }
+    }
+
+    /// 从蓝图节点生成脚本文本。
+    ///
+    /// 若有连线，按连线顺序（DFS 遍历）输出；无连线则按创建顺序输出。
+    fn to_script(&self) -> String {
+        if self.nodes.is_empty() {
+            return String::new();
+        }
+        if self.links.is_empty() {
+            return self
+                .nodes
+                .iter()
+                .map(|n| n.text.as_str())
+                .collect::<Vec<_>>()
+                .join("\n");
+        }
+        // 找到没有入线的节点作为起点。
+        let has_incoming = |id: usize| self.links.iter().any(|l| l.to == id);
+        let mut order: Vec<usize> = Vec::new();
+        let mut visited: Vec<usize> = Vec::new();
+        let starts: Vec<usize> = self
+            .nodes
+            .iter()
+            .filter(|n| !has_incoming(n.id))
+            .map(|n| n.id)
+            .collect();
+        let starts = if starts.is_empty() {
+            self.nodes.first().map(|n| vec![n.id]).unwrap_or_default()
+        } else {
+            starts
+        };
+        // DFS 遍历。
+        let mut stack: Vec<usize> = starts.into_iter().rev().collect();
+        while let Some(id) = stack.pop() {
+            if visited.contains(&id) {
+                continue;
+            }
+            visited.push(id);
+            order.push(id);
+            let nexts: Vec<usize> = self
+                .links
+                .iter()
+                .filter(|l| l.from == id)
+                .map(|l| l.to)
+                .collect();
+            for next in nexts.into_iter().rev() {
+                stack.push(next);
+            }
+        }
+        // 追加未访问的节点。
+        for node in &self.nodes {
+            if !visited.contains(&node.id) {
+                order.push(node.id);
+            }
+        }
+        order
+            .iter()
+            .filter_map(|id| self.nodes.iter().find(|n| n.id == *id))
+            .map(|n| n.text.as_str())
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
+    /// 自动整理布局：按章节分组，组内垂直排列，章节间水平排列。
+    fn auto_layout(&mut self) {
+        if self.nodes.is_empty() {
+            return;
+        }
+        let col_width = 240.0;
+        let row_height = 110.0;
+        let mut col = 0usize;
+        let mut row = 0usize;
+        for node in &mut self.nodes {
+            if node.kind == NodeKind::Section && row > 0 {
+                col += 1;
+                row = 0;
+            }
+            node.pos = egui::pos2(
+                col as f32 * col_width + 20.0,
+                row as f32 * row_height + 20.0,
+            );
+            row += 1;
+        }
+    }
+
+    /// 命中测试：返回指定画布坐标处的节点 ID（优先命中标题栏）。
+    fn node_at(&self, canvas_pos: egui::Pos2) -> Option<usize> {
+        // 从后往前测试（后绘制的在上层）。
+        for node in self.nodes.iter().rev() {
+            let size = Self::node_size(&node.text);
+            let rect = egui::Rect::from_min_size(node.pos, size);
+            if rect.contains(canvas_pos) {
+                return Some(node.id);
+            }
+        }
+        None
+    }
+
+    /// 命中测试：返回指定画布坐标处的输出引脚所属节点 ID。
+    fn output_pin_at(&self, canvas_pos: egui::Pos2) -> Option<usize> {
+        let r = 8.0; // 引脚命中半径
+        for node in &self.nodes {
+            let size = Self::node_size(&node.text);
+            let rect = egui::Rect::from_min_size(node.pos, size);
+            let pin = egui::pos2(rect.center().x, rect.bottom());
+            if canvas_pos.distance(pin) <= r {
+                return Some(node.id);
+            }
+        }
+        None
+    }
+
+    /// 命中测试：返回指定画布坐标处的输入引脚所属节点 ID。
+    fn input_pin_at(&self, canvas_pos: egui::Pos2) -> Option<usize> {
+        let r = 8.0;
+        for node in &self.nodes {
+            let size = Self::node_size(&node.text);
+            let rect = egui::Rect::from_min_size(node.pos, size);
+            let pin = egui::pos2(rect.center().x, rect.top());
+            if canvas_pos.distance(pin) <= r {
+                return Some(node.id);
+            }
+        }
+        None
+    }
+}
+
+/// 蓝图右键菜单中可选的节点模板。
+const NODE_TEMPLATES: &[(&str, &str)] = &[
+    ("章节", "# NewSection 章节标题"),
+    ("对话", "角色: \"对话内容\""),
+    ("旁白", "\"旁白内容\""),
+    ("背景", "@bg background"),
+    ("音乐", "@music music"),
+    ("立绘上场", "+ 角色 at 0.5,1.0 size 1.0"),
+    ("立绘下场", "- 角色"),
+    ("选择", "? 提示\n| 选项A\n| 选项B\n?"),
+    ("跳转", "-> TargetSection"),
+    ("访问", "=> TargetSection"),
+    ("返回", "<="),
+    ("等待", "~~ 1.0"),
+    ("结局", "end"),
+];
+
+// ---------------------------------------------------------------------------
 // 编辑器应用状态
 // ---------------------------------------------------------------------------
 
@@ -309,6 +696,10 @@ pub struct EditorApp {
     show_save_reminder: bool,
     /// 本地「不再显示」的项目警告忽略列表（持久化到编辑器数据目录）。
     dismissed_warnings: DismissedWarnings,
+    /// 是否处于蓝图模式（可视化节点编辑）。
+    blueprint_mode: bool,
+    /// 蓝图编辑器状态。
+    blueprint: BlueprintState,
 }
 
 /// 可翻译行的类型。
@@ -524,6 +915,8 @@ impl Default for EditorApp {
             show_project_warning: false,
             show_save_reminder: false,
             dismissed_warnings,
+            blueprint_mode: false,
+            blueprint: BlueprintState::default(),
         };
         app.refresh_file_list();
         app
@@ -1516,37 +1909,469 @@ impl EditorApp {
                 // 悬停 tooltip：鼠标在 => / <= 上时显示配对信息。
                 self.show_flow_hover_tooltip(ui.ctx(), &output, &marks, &pairs);
 
-                // Ctrl+点击剧本中的 `+ 角色 ... at x,y size N` 行时，
-                // 右侧立绘预览跳转到该参数。
-                if output.response.clicked()
-                    && ui.input(|i| i.modifiers.ctrl)
-                {
-                    if let Some(ci) = cursor_ccursor {
-                        // 从字符位置找到所在行。
-                        let line_start = self.editor_content[..ci.min(self.editor_content.len())]
-                            .rfind('\n')
-                            .map(|p| p + 1)
-                            .unwrap_or(0);
-                        let line_end = self.editor_content[ci.min(self.editor_content.len())..]
-                            .find('\n')
-                            .map(|p| ci + p)
-                            .unwrap_or(self.editor_content.len());
-                        let line = &self.editor_content[line_start..line_end];
-                        if let Some(preview) = parse_sprite_line(line) {
-                            self.status = format!(
-                                "已跳转到立绘预览：{} ({})",
-                                preview.character_name, preview.selected
-                            );
-                            self.sprite_preview.character_name = preview.character_name;
-                            self.sprite_preview.selected = preview.selected;
-                            self.sprite_preview.x_percent = preview.x;
-                            self.sprite_preview.y_percent = preview.y;
-                            self.sprite_preview.scale = preview.scale;
-                            self.sprite_preview.load_error = None;
+                // Ctrl+点击剧本中的指令行时，右侧预览跳转到对应参数。
+                // 不使用 output.response.clicked()——egui 的 TextEdit 会将
+                // Ctrl+点击解释为"选词"操作并消费点击事件，导致 clicked() 不触发。
+                // 改用原始输入检测：button_pressed + interact_pos（点击瞬间位置），
+                // 再通过 galley 将屏幕坐标转换为字符索引，找到所在行。
+                let ctrl_click = ui.input(|i| {
+                    i.pointer.button_pressed(egui::PointerButton::Primary) && i.modifiers.ctrl
+                });
+                if ctrl_click {
+                    if let Some(click_pos) = ui.input(|i| i.pointer.interact_pos()) {
+                        if output.response.rect.contains(click_pos) {
+                            // 将屏幕坐标转为文本局部坐标，再用 galley 找到字符索引。
+                            let local = click_pos - output.text_draw_pos;
+                            let cursor = output.galley.cursor_from_pos(local);
+                            let ci = cursor.ccursor.index;
+                            let ci_clamped = ci.min(self.editor_content.len());
+                            let line_start = self.editor_content[..ci_clamped]
+                                .rfind('\n')
+                                .map(|p| p + 1)
+                                .unwrap_or(0);
+                            let line_end = self.editor_content[ci_clamped..]
+                                .find('\n')
+                                .map(|p| ci_clamped + p)
+                                .unwrap_or(self.editor_content.len());
+                            let line = &self.editor_content[line_start..line_end];
+                            // 尝试解析为立绘指令（+ ...）。
+                            if let Some(preview) = parse_sprite_line(line) {
+                                self.status = format!(
+                                    "已跳转到立绘预览：{} ({})",
+                                    preview.character_name, preview.selected
+                                );
+                                self.sprite_preview.character_name = preview.character_name;
+                                self.sprite_preview.selected = preview.selected;
+                                self.sprite_preview.x_percent = preview.x;
+                                self.sprite_preview.y_percent = preview.y;
+                                self.sprite_preview.scale = preview.scale;
+                                self.sprite_preview.load_error = None;
+                                self.preview_tab = PreviewTab::Sprite;
+                            }
+                            // 尝试解析为命令行（@bg / @music ...）。
+                            else if let Some(cmd) = parse_command_line(line) {
+                                match cmd.kind.as_str() {
+                                    "bg" => {
+                                        self.bg_preview.selected = cmd.target.clone();
+                                        self.bg_preview.load_error = None;
+                                        self.preview_tab = PreviewTab::Background;
+                                        self.status = format!(
+                                            "已跳转到背景预览：{}",
+                                            cmd.target
+                                        );
+                                    }
+                                    "music" => {
+                                        self.music_preview.selected = cmd.target.clone();
+                                        self.preview_tab = PreviewTab::Music;
+                                        self.status = format!(
+                                            "已跳转到音乐预览：{}",
+                                            cmd.target
+                                        );
+                                    }
+                                    _ => {}
+                                }
+                            }
                         }
                     }
                 }
             });
+    }
+
+    /// 切换蓝图模式与文本模式。
+    ///
+    /// 切换到蓝图时从当前脚本导入节点；切换回文本时将蓝图导出为脚本。
+    fn toggle_blueprint_mode(&mut self) {
+        if self.blueprint_mode {
+            let script = self.blueprint.to_script();
+            if !script.is_empty() {
+                self.editor_content = script;
+            }
+            self.blueprint_mode = false;
+            self.status = "已切换到文本模式".to_string();
+        } else {
+            if !self.editor_content.trim().is_empty() {
+                self.blueprint.from_script(&self.editor_content);
+            }
+            self.blueprint_mode = true;
+            self.status = "已切换到蓝图模式".to_string();
+        }
+    }
+
+    /// 蓝图模式画布：可视化节点编辑。
+    ///
+    /// 交互方式（参考 UE 蓝图，精简版）：
+    /// - **左键拖动节点**：移动节点位置
+    /// - **左键点击节点**：选中（底部出现文本编辑栏）
+    /// - **左键拖动输出引脚→输入引脚**：创建连线
+    /// - **右键拖动空白**：平移画布
+    /// - **右键点击空白**（不拖动）：弹出添加节点菜单
+    /// - **Delete 键**：删除选中节点
+    /// - **Escape 键**：关闭右键菜单
+    fn show_blueprint(&mut self, ui: &mut egui::Ui) {
+        // ---- 工具栏 ----
+        ui.horizontal_wrapped(|ui| {
+            if ui.button("从脚本导入").clicked() {
+                self.blueprint.from_script(&self.editor_content);
+                self.status = "已从脚本导入蓝图".to_string();
+            }
+            if ui.button("生成脚本").clicked() {
+                self.editor_content = self.blueprint.to_script();
+                self.status = "已从蓝图生成脚本".to_string();
+            }
+            if ui.button("整理布局").clicked() {
+                self.blueprint.auto_layout();
+                self.status = "已整理布局".to_string();
+            }
+            if ui.button("清空").clicked() {
+                self.blueprint.nodes.clear();
+                self.blueprint.links.clear();
+                self.blueprint.selected = None;
+                self.blueprint.next_id = 0;
+                self.status = "已清空蓝图".to_string();
+            }
+            ui.separator();
+            ui.label(
+                egui::RichText::new("右键拖动=平移 | 左键拖动=移动 | 拖引脚=连线 | Del=删除")
+                    .small()
+                    .color(egui::Color32::from_rgb(150, 150, 160)),
+            );
+        });
+        ui.separator();
+
+        // ---- 画布区域 ----
+        let available = ui.available_size();
+        let text_edit_h = 100.0;
+        let canvas_h = (available.y - text_edit_h).max(100.0);
+        let (canvas_rect, _) = ui.allocate_exact_size(
+            egui::Vec2::new(available.x, canvas_h),
+            egui::Sense::click_and_drag(),
+        );
+        let painter = ui.painter();
+        let pan = self.blueprint.pan;
+
+        // 背景
+        painter.rect_filled(canvas_rect, 0.0, egui::Color32::from_rgb(18, 18, 26));
+
+        // 网格点
+        let grid_size = 40.0;
+        let start_x = canvas_rect.left() + pan.x.rem_euclid(grid_size);
+        let start_y = canvas_rect.top() + pan.y.rem_euclid(grid_size);
+        let mut gx = start_x;
+        while gx < canvas_rect.right() {
+            let mut gy = start_y;
+            while gy < canvas_rect.bottom() {
+                painter.circle_filled(
+                    egui::pos2(gx, gy),
+                    1.0,
+                    egui::Color32::from_rgb(45, 45, 58),
+                );
+                gy += grid_size;
+            }
+            gx += grid_size;
+        }
+
+        // ---- 读取输入 ----
+        let mouse_pos = ui
+            .input(|i| i.pointer.hover_pos())
+            .unwrap_or(egui::Pos2::ZERO);
+        let primary_pressed =
+            ui.input(|i| i.pointer.button_pressed(egui::PointerButton::Primary));
+        let primary_down =
+            ui.input(|i| i.pointer.button_down(egui::PointerButton::Primary));
+        let primary_released =
+            ui.input(|i| i.pointer.button_released(egui::PointerButton::Primary));
+        let secondary_pressed =
+            ui.input(|i| i.pointer.button_pressed(egui::PointerButton::Secondary));
+        let secondary_down =
+            ui.input(|i| i.pointer.button_down(egui::PointerButton::Secondary));
+        let secondary_released =
+            ui.input(|i| i.pointer.button_released(egui::PointerButton::Secondary));
+        let delta = ui.input(|i| i.pointer.delta());
+        let in_canvas = canvas_rect.contains(mouse_pos);
+        // 画布坐标 = 屏幕坐标 - 画布原点 - 平移偏移
+        // 注意：Pos2 - Pos2 = Vec2，需转回 Pos2 以匹配节点命中测试等接口。
+        let canvas_pos = (mouse_pos - canvas_rect.min - pan).to_pos2();
+
+        // ---- 处理交互（可变借用 self.blueprint）----
+        {
+            let bp = &mut self.blueprint;
+
+            // 左键按下：选择 / 拖动 / 开始连线
+            if primary_pressed && in_canvas && bp.context_menu_pos.is_none() {
+                // 优先检测输出引脚（开始连线）
+                if let Some(from_id) = bp.output_pin_at(canvas_pos) {
+                    bp.connecting_from = Some(from_id);
+                    bp.connecting_pos = canvas_pos;
+                } else if let Some(node_id) = bp.node_at(canvas_pos) {
+                    // 选中并准备拖动
+                    let node_pos = bp
+                        .nodes
+                        .iter()
+                        .find(|n| n.id == node_id)
+                        .map(|n| n.pos)
+                        .unwrap_or_default();
+                    bp.drag_node = Some(node_id);
+                    bp.drag_offset = canvas_pos - node_pos;
+                    bp.selected = Some(node_id);
+                } else {
+                    // 点击空白：取消选中
+                    bp.selected = None;
+                }
+            }
+
+            // 左键持续按下：拖动节点 / 更新连线位置
+            if primary_down {
+                if let Some(node_id) = bp.drag_node {
+                    if let Some(node) = bp.nodes.iter_mut().find(|n| n.id == node_id) {
+                        node.pos = canvas_pos - bp.drag_offset;
+                    }
+                }
+                if bp.connecting_from.is_some() {
+                    bp.connecting_pos = canvas_pos;
+                }
+            }
+
+            // 左键释放：完成连线
+            if primary_released {
+                if let Some(from_id) = bp.connecting_from {
+                    if let Some(to_id) = bp.input_pin_at(canvas_pos) {
+                        bp.add_link(from_id, to_id);
+                    }
+                    bp.connecting_from = None;
+                }
+                bp.drag_node = None;
+            }
+
+            // 右键按下：记录起点
+            if secondary_pressed && in_canvas {
+                bp.right_press_pos = Some(mouse_pos);
+                bp.right_moved = false;
+            }
+            // 右键持续按下：平移
+            if secondary_down {
+                if let Some(start) = bp.right_press_pos {
+                    if (mouse_pos - start).length() > 4.0 {
+                        bp.right_moved = true;
+                    }
+                    if bp.right_moved {
+                        bp.pan += delta;
+                    }
+                }
+            }
+            // 右键释放：若未拖动则弹出右键菜单
+            if secondary_released {
+                if !bp.right_moved && in_canvas {
+                    bp.context_menu_pos = Some(mouse_pos);
+                }
+                bp.right_press_pos = None;
+                bp.right_moved = false;
+            }
+
+            // Delete 键：删除选中节点
+            if ui.input(|i| i.key_pressed(egui::Key::Delete)) {
+                if let Some(id) = bp.selected {
+                    bp.remove_node(id);
+                }
+            }
+            // Escape：关闭右键菜单
+            if ui.input(|i| i.key_pressed(egui::Key::Escape)) {
+                bp.context_menu_pos = None;
+            }
+        }
+
+        // ---- 绘制连线 ----（不可变借用 self.blueprint + painter）
+        let bp = &self.blueprint;
+        let clipped = painter.with_clip_rect(canvas_rect);
+        for link in &bp.links {
+            let from_node = bp.nodes.iter().find(|n| n.id == link.from);
+            let to_node = bp.nodes.iter().find(|n| n.id == link.to);
+            if let (Some(from), Some(to)) = (from_node, to_node) {
+                let from_size = BlueprintState::node_size(&from.text);
+                let to_size = BlueprintState::node_size(&to.text);
+                let from_pin = egui::pos2(
+                    from.pos.x + from_size.x / 2.0 + pan.x + canvas_rect.min.x,
+                    from.pos.y + from_size.y + pan.y + canvas_rect.min.y,
+                );
+                let to_pin = egui::pos2(
+                    to.pos.x + to_size.x / 2.0 + pan.x + canvas_rect.min.x,
+                    to.pos.y + pan.y + canvas_rect.min.y,
+                );
+                let ctrl_off = ((to_pin.y - from_pin.y).abs() * 0.5).max(20.0);
+                clipped.add(egui::epaint::CubicBezierShape {
+                    points: [
+                        from_pin,
+                        egui::pos2(from_pin.x, from_pin.y + ctrl_off),
+                        egui::pos2(to_pin.x, to_pin.y - ctrl_off),
+                        to_pin,
+                    ],
+                    closed: false,
+                    fill: egui::Color32::TRANSPARENT,
+                    stroke: egui::Stroke::new(2.0, egui::Color32::from_rgb(120, 160, 220)),
+                });
+            }
+        }
+
+        // 绘制正在拉出的连线
+        if let Some(from_id) = bp.connecting_from {
+            if let Some(from) = bp.nodes.iter().find(|n| n.id == from_id) {
+                let from_size = BlueprintState::node_size(&from.text);
+                let from_pin = egui::pos2(
+                    from.pos.x + from_size.x / 2.0 + pan.x + canvas_rect.min.x,
+                    from.pos.y + from_size.y + pan.y + canvas_rect.min.y,
+                );
+                let to_pin = egui::pos2(
+                    bp.connecting_pos.x + pan.x + canvas_rect.min.x,
+                    bp.connecting_pos.y + pan.y + canvas_rect.min.y,
+                );
+                let ctrl_off = ((to_pin.y - from_pin.y).abs() * 0.5).max(20.0);
+                clipped.add(egui::epaint::CubicBezierShape {
+                    points: [
+                        from_pin,
+                        egui::pos2(from_pin.x, from_pin.y + ctrl_off),
+                        egui::pos2(to_pin.x, to_pin.y - ctrl_off),
+                        to_pin,
+                    ],
+                    closed: false,
+                    fill: egui::Color32::TRANSPARENT,
+                    stroke: egui::Stroke::new(2.0, egui::Color32::from_rgb(255, 200, 80)),
+                });
+            }
+        }
+
+        // ---- 绘制节点 ----
+        for node in &bp.nodes {
+            let size = BlueprintState::node_size(&node.text);
+            let screen_pos = egui::pos2(
+                node.pos.x + pan.x + canvas_rect.min.x,
+                node.pos.y + pan.y + canvas_rect.min.y,
+            );
+            let rect = egui::Rect::from_min_size(screen_pos, size);
+            let header_color = BlueprintState::kind_color(node.kind);
+            let is_selected = bp.selected == Some(node.id);
+
+            // 节点背景
+            clipped.rect_filled(rect, 3.0, egui::Color32::from_rgb(38, 38, 48));
+            // 标题栏
+            let header_rect =
+                egui::Rect::from_min_size(screen_pos, egui::Vec2::new(size.x, 22.0));
+            clipped.rect_filled(header_rect, 3.0, header_color);
+            // 选中边框
+            if is_selected {
+                clipped.rect_stroke(
+                    rect,
+                    3.0,
+                    egui::Stroke::new(2.0, egui::Color32::from_rgb(255, 220, 80)),
+                );
+            }
+            // 标题文字
+            clipped.text(
+                header_rect.center(),
+                egui::Align2::CENTER_CENTER,
+                BlueprintState::kind_label(node.kind),
+                egui::FontId::proportional(12.0),
+                egui::Color32::WHITE,
+            );
+            // 正文（截断显示前几行）
+            let preview: String = node.text.lines().take(4).collect::<Vec<_>>().join("\n");
+            clipped.text(
+                egui::pos2(screen_pos.x + 8.0, screen_pos.y + 26.0),
+                egui::Align2::LEFT_TOP,
+                &preview,
+                egui::FontId::monospace(11.0),
+                egui::Color32::from_rgb(200, 210, 220),
+            );
+            // 输入引脚（顶部中心）
+            let in_pin = egui::pos2(rect.center().x, rect.top());
+            clipped.circle_filled(in_pin, 5.0, egui::Color32::from_rgb(100, 180, 255));
+            clipped.circle_stroke(
+                in_pin,
+                5.0,
+                egui::Stroke::new(1.5, egui::Color32::from_rgb(60, 60, 80)),
+            );
+            // 输出引脚（底部中心）
+            let out_pin = egui::pos2(rect.center().x, rect.bottom());
+            clipped.circle_filled(out_pin, 5.0, egui::Color32::from_rgb(255, 180, 100));
+            clipped.circle_stroke(
+                out_pin,
+                5.0,
+                egui::Stroke::new(1.5, egui::Color32::from_rgb(60, 60, 80)),
+            );
+        }
+
+        // 空画布提示
+        if bp.nodes.is_empty() {
+            clipped.text(
+                canvas_rect.center(),
+                egui::Align2::CENTER_CENTER,
+                "右键点击空白处添加节点，或点击「从脚本导入」",
+                egui::FontId::proportional(14.0),
+                egui::Color32::from_rgb(120, 130, 150),
+            );
+        }
+
+        // ---- 右键菜单 ----
+        if let Some(menu_pos) = self.blueprint.context_menu_pos {
+            let mut close_menu = false;
+            let menu_pos_copy = menu_pos;
+            let pan_copy = self.blueprint.pan;
+            let canvas_min = canvas_rect.min;
+            let response = egui::Area::new(egui::Id::new("bp_context_menu"))
+                .order(egui::Order::Foreground)
+                .fixed_pos(menu_pos)
+                .show(ui.ctx(), |ui| {
+                    egui::Frame::popup(ui.style()).show(ui, |ui| {
+                        ui.set_min_width(130.0);
+                        ui.label("添加节点：");
+                        for (label, template) in NODE_TEMPLATES {
+                            if ui.button(*label).clicked() {
+                                let cpos = (menu_pos_copy - canvas_min - pan_copy).to_pos2();
+                                let text = template.to_string();
+                                let kind = BlueprintState::detect_kind(&text);
+                                self.blueprint.add_node(kind, cpos, text);
+                                close_menu = true;
+                            }
+                        }
+                        if self.blueprint.selected.is_some() {
+                            ui.separator();
+                            if ui.button("删除选中节点").clicked() {
+                                if let Some(id) = self.blueprint.selected {
+                                    self.blueprint.remove_node(id);
+                                }
+                                close_menu = true;
+                            }
+                        }
+                    });
+                });
+            // 点击菜单外部关闭
+            let menu_rect = response.response.rect;
+            if (primary_pressed || secondary_pressed) && !menu_rect.contains(mouse_pos) {
+                close_menu = true;
+            }
+            if close_menu {
+                self.blueprint.context_menu_pos = None;
+            }
+        }
+
+        // ---- 底部文本编辑栏 ----
+        ui.separator();
+        let selected_id = self.blueprint.selected;
+        if let Some(id) = selected_id {
+            ui.label("编辑选中节点文本：");
+            if let Some(node) = self.blueprint.nodes.iter_mut().find(|n| n.id == id) {
+                ui.add(
+                    egui::TextEdit::multiline(&mut node.text)
+                        .desired_width(f32::MAX)
+                        .desired_rows(3)
+                        .code_editor(),
+                );
+                node.kind = BlueprintState::detect_kind(&node.text);
+            }
+        } else {
+            ui.label(
+                egui::RichText::new("（选择一个节点以编辑文本）")
+                    .color(egui::Color32::from_rgb(120, 120, 140)),
+            );
+        }
     }
 
     /// 鼠标悬停在 `=>`/`<=` 标记上时显示配对信息 tooltip。
@@ -2979,6 +3804,17 @@ impl eframe::App for EditorApp {
                     }
                 }
                 ui.separator();
+                // 蓝图模式切换按钮（在工具栏右上方，便于在文本模式与可视化节点模式间切换）
+                if self.blueprint_mode {
+                    if ui.button("退出蓝图模式").clicked() {
+                        self.toggle_blueprint_mode();
+                    }
+                } else {
+                    if ui.button("蓝图模式").clicked() {
+                        self.toggle_blueprint_mode();
+                    }
+                }
+                ui.separator();
                 ui.label(format!("文件：{}", self.file_name_input));
             });
         });
@@ -3110,12 +3946,14 @@ impl eframe::App for EditorApp {
                 });
         }
 
-        // ---- 中央面板：编辑器或欢迎页 -----------------------------------
+        // ---- 中央面板：编辑器 / 蓝图 / 翻译 / 欢迎页 ---------------------
         egui::CentralPanel::default().show(ctx, |ui| {
             if self.show_welcome {
                 self.show_welcome_panel(ui);
             } else if self.translation_mode {
                 self.show_translation_view(ui);
+            } else if self.blueprint_mode {
+                self.show_blueprint(ui);
             } else {
                 self.show_editor(ui);
             }
@@ -4663,6 +5501,46 @@ fn parse_sprite_line(line: &str) -> Option<ParsedSpriteLine> {
         y,
         scale,
     })
+}
+
+// ---------------------------------------------------------------------------
+// 命令行解析（Ctrl+点击 @bg/@music 跳转预览用）
+// ---------------------------------------------------------------------------
+
+/// `parse_command_line` 的解析结果。
+struct ParsedCommandLine {
+    kind: String,   // "bg" / "music" 等
+    target: String, // 资源名
+}
+
+/// 解析剧本中的 `@cmd target ...` 命令行，提取命令类型与目标资源名。
+///
+/// 支持：`@bg 背景名`、`@music 音乐名`。
+/// 非 `@` 开头的行返回 `None`。
+fn parse_command_line(line: &str) -> Option<ParsedCommandLine> {
+    let trimmed = line.trim_start();
+    if !trimmed.starts_with('@') {
+        return None;
+    }
+    let rest = trimmed[1..].trim_start();
+    // 读取命令名（到空格为止）。
+    let cmd_end = rest.find(char::is_whitespace).unwrap_or(rest.len());
+    let kind = rest[..cmd_end].to_string();
+    let args = rest[cmd_end..].trim_start();
+    // 取第一个参数作为目标资源名（可能是 ident 或 string）。
+    let target = if args.starts_with('"') {
+        // 字符串参数：取引号内内容。
+        let close = args[1..].find('"')?;
+        args[1..1 + close].to_string()
+    } else {
+        // ident 参数：到空格为止。
+        let end = args.find(char::is_whitespace).unwrap_or(args.len());
+        args[..end].to_string()
+    };
+    if target.is_empty() {
+        return None;
+    }
+    Some(ParsedCommandLine { kind, target })
 }
 
 // ---------------------------------------------------------------------------
