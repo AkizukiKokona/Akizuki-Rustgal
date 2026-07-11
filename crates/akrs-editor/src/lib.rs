@@ -307,6 +307,30 @@ impl BlueprintState {
         id
     }
 
+    /// 计算下一个新节点的合适放置位置（最后一个节点下方，或默认起点）。
+    /// 用于从预览面板"添加为节点"等无需指定位置的添加操作。
+    fn next_placement_pos(&self) -> egui::Pos2 {
+        if let Some(last) = self.nodes.last() {
+            let size = Self::node_size(&last.text);
+            egui::pos2(last.pos.x, last.pos.y + size.y + 24.0)
+        } else {
+            egui::pos2(80.0, 80.0)
+        }
+    }
+
+    /// 用新文本替换选中节点的文本（并重新推断类型）。
+    /// 用于蓝图模式下"替换选中节点"操作。若无选中节点则返回 false。
+    fn replace_selected_text(&mut self, text: String) -> bool {
+        if let Some(id) = self.selected {
+            if let Some(node) = self.nodes.iter_mut().find(|n| n.id == id) {
+                node.kind = Self::detect_kind(&text);
+                node.text = text;
+                return true;
+            }
+        }
+        false
+    }
+
     /// 删除指定节点及其所有连线。
     fn remove_node(&mut self, id: usize) {
         self.nodes.retain(|n| n.id != id);
@@ -3033,21 +3057,49 @@ impl EditorApp {
                 ctx.output_mut(|o| o.copied_text = syntax.clone());
                 self.status = "语法已复制到剪贴板".to_string();
             }
-            if ui.button("追加到脚本").clicked() {
-                self.editor_content.push_str(&format!("{}\n", syntax));
-                self.status = "语法已追加到脚本末尾".to_string();
+            // 蓝图模式下按钮变为"添加为节点"，把生成的语法作为节点加到画布。
+            let append_label = if self.blueprint_mode { "添加为节点" } else { "追加到脚本" };
+            if ui.button(append_label).clicked() {
+                if self.blueprint_mode {
+                    let kind = BlueprintState::detect_kind(&syntax);
+                    let pos = self.blueprint.next_placement_pos();
+                    self.blueprint.add_node(kind, pos, syntax.clone());
+                    self.status = "已添加为蓝图节点".to_string();
+                } else {
+                    self.editor_content.push_str(&format!("{}\n", syntax));
+                    self.status = "语法已追加到脚本末尾".to_string();
+                }
             }
-            if ui.button("隐藏此立绘").clicked() {
-                let hide_syntax = format!("- {}\n", name);
-                self.editor_content.push_str(&hide_syntax);
-                self.status = "隐藏立绘语法已追加到脚本末尾".to_string();
+            // 隐藏立绘：蓝图模式下同样添加为节点
+            let hide_label = if self.blueprint_mode { "添加下场节点" } else { "隐藏此立绘" };
+            if ui.button(hide_label).clicked() {
+                let hide_syntax = format!("- {}", name);
+                if self.blueprint_mode {
+                    let kind = BlueprintState::detect_kind(&hide_syntax);
+                    let pos = self.blueprint.next_placement_pos();
+                    self.blueprint.add_node(kind, pos, hide_syntax);
+                    self.status = "已添加下场节点".to_string();
+                } else {
+                    self.editor_content.push_str(&format!("{}\n", hide_syntax));
+                    self.status = "隐藏立绘语法已追加到脚本末尾".to_string();
+                }
             }
             if ui.button("放大预览").clicked() {
                 self.show_enlarged_preview = true;
             }
-            if ui.button("替换插入").clicked() {
-                self.find_replace_syntax = syntax.clone();
-                self.show_find_replace_dialog = true;
+            // 替换插入：蓝图模式下改为"替换选中节点"
+            let replace_label = if self.blueprint_mode { "替换选中节点" } else { "替换插入" };
+            if ui.button(replace_label).clicked() {
+                if self.blueprint_mode {
+                    if self.blueprint.replace_selected_text(syntax.clone()) {
+                        self.status = "已替换选中节点文本".to_string();
+                    } else {
+                        self.status = "请先选中一个节点再替换".to_string();
+                    }
+                } else {
+                    self.find_replace_syntax = syntax.clone();
+                    self.show_find_replace_dialog = true;
+                }
             }
         });
     }
@@ -3230,16 +3282,37 @@ impl EditorApp {
                 ctx.output_mut(|o| o.copied_text = syntax.clone());
                 self.status = "语法已复制到剪贴板".to_string();
             }
-            if ui.button("追加到脚本").clicked() {
-                self.editor_content.push_str(&format!("{}\n", syntax));
-                self.status = "语法已追加到脚本末尾".to_string();
+            let append_label = if self.blueprint_mode { "添加为节点" } else { "追加到脚本" };
+            if ui.button(append_label).clicked() {
+                if self.blueprint_mode {
+                    if self.bg_preview.selected.is_empty() {
+                        self.status = "请先选择背景".to_string();
+                    } else {
+                        let kind = BlueprintState::detect_kind(&syntax);
+                        let pos = self.blueprint.next_placement_pos();
+                        self.blueprint.add_node(kind, pos, syntax.clone());
+                        self.status = "已添加为蓝图节点".to_string();
+                    }
+                } else {
+                    self.editor_content.push_str(&format!("{}\n", syntax));
+                    self.status = "语法已追加到脚本末尾".to_string();
+                }
             }
             if ui.button("放大预览").clicked() {
                 self.show_enlarged_preview = true;
             }
-            if ui.button("替换插入").clicked() {
-                self.find_replace_syntax = syntax.clone();
-                self.show_find_replace_dialog = true;
+            let replace_label = if self.blueprint_mode { "替换选中节点" } else { "替换插入" };
+            if ui.button(replace_label).clicked() {
+                if self.blueprint_mode {
+                    if self.blueprint.replace_selected_text(syntax.clone()) {
+                        self.status = "已替换选中节点文本".to_string();
+                    } else {
+                        self.status = "请先选中一个节点再替换".to_string();
+                    }
+                } else {
+                    self.find_replace_syntax = syntax.clone();
+                    self.show_find_replace_dialog = true;
+                }
             }
         });
     }
@@ -3326,32 +3399,66 @@ impl EditorApp {
         );
 
         ui.add_space(8.0);
+        let play_label = if self.blueprint_mode { "添加播放节点" } else { "追加播放语法" };
+        let play_replace_label = if self.blueprint_mode { "替换选中节点" } else { "替换插入播放语法" };
         ui.horizontal(|ui| {
             if ui.button("复制播放语法").clicked() {
                 ctx.output_mut(|o| o.copied_text = play_syntax.clone());
                 self.status = "播放语法已复制到剪贴板".to_string();
             }
-            if ui.button("追加播放语法").clicked() {
-                self.editor_content.push_str(&format!("{}\n", play_syntax));
-                self.status = "播放语法已追加到脚本末尾".to_string();
+            if ui.button(play_label).clicked() {
+                if self.blueprint_mode {
+                    let kind = BlueprintState::detect_kind(&play_syntax);
+                    let pos = self.blueprint.next_placement_pos();
+                    self.blueprint.add_node(kind, pos, play_syntax.clone());
+                    self.status = "已添加为蓝图节点".to_string();
+                } else {
+                    self.editor_content.push_str(&format!("{}\n", play_syntax));
+                    self.status = "播放语法已追加到脚本末尾".to_string();
+                }
             }
-            if ui.button("替换插入播放语法").clicked() {
-                self.find_replace_syntax = play_syntax.clone();
-                self.show_find_replace_dialog = true;
+            if ui.button(play_replace_label).clicked() {
+                if self.blueprint_mode {
+                    if self.blueprint.replace_selected_text(play_syntax.clone()) {
+                        self.status = "已替换选中节点文本".to_string();
+                    } else {
+                        self.status = "请先选中一个节点再替换".to_string();
+                    }
+                } else {
+                    self.find_replace_syntax = play_syntax.clone();
+                    self.show_find_replace_dialog = true;
+                }
             }
         });
+        let stop_label = if self.blueprint_mode { "添加关闭节点" } else { "追加关闭语法" };
+        let stop_replace_label = if self.blueprint_mode { "替换选中节点" } else { "替换插入关闭语法" };
         ui.horizontal(|ui| {
             if ui.button("复制关闭语法").clicked() {
                 ctx.output_mut(|o| o.copied_text = stop_syntax.to_string());
                 self.status = "关闭语法已复制到剪贴板".to_string();
             }
-            if ui.button("追加关闭语法").clicked() {
-                self.editor_content.push_str(&format!("{}\n", stop_syntax));
-                self.status = "关闭语法已追加到脚本末尾".to_string();
+            if ui.button(stop_label).clicked() {
+                if self.blueprint_mode {
+                    let kind = BlueprintState::detect_kind(stop_syntax);
+                    let pos = self.blueprint.next_placement_pos();
+                    self.blueprint.add_node(kind, pos, stop_syntax.to_string());
+                    self.status = "已添加为蓝图节点".to_string();
+                } else {
+                    self.editor_content.push_str(&format!("{}\n", stop_syntax));
+                    self.status = "关闭语法已追加到脚本末尾".to_string();
+                }
             }
-            if ui.button("替换插入关闭语法").clicked() {
-                self.find_replace_syntax = stop_syntax.to_string();
-                self.show_find_replace_dialog = true;
+            if ui.button(stop_replace_label).clicked() {
+                if self.blueprint_mode {
+                    if self.blueprint.replace_selected_text(stop_syntax.to_string()) {
+                        self.status = "已替换选中节点文本".to_string();
+                    } else {
+                        self.status = "请先选中一个节点再替换".to_string();
+                    }
+                } else {
+                    self.find_replace_syntax = stop_syntax.to_string();
+                    self.show_find_replace_dialog = true;
+                }
             }
         });
     }
@@ -3727,31 +3834,36 @@ impl eframe::App for EditorApp {
                     self.save_file();
                 }
                 ui.separator();
-                // 快速插入语法按钮（鼠标悬停显示提示）
-                ui.label("插入:");
-                let insert_buttons = [
-                    ("+", "+ 角色", "立绘上场（0.5秒淡入）(Ctrl+1)"),
-                    ("-", "- 角色", "立绘下场（0.5秒淡出）(Ctrl+2)"),
-                    ("~", "+ 角色 (新pose) swap", "差分更换立绘（仅换pose，无过渡，位置/大小不变）"),
-                    ("#", "# 章节", "章节标题 (Ctrl+3)"),
-                    ("@", "@bg 背景", "背景指令 (Ctrl+4)"),
-                    ("?", "? 选项", "选择分支"),
-                    ("$", "$变量", "变量操作"),
-                    ("E", "ending \"true_end\" epilogue \"scripts/epilogue.akrs\" button \"尾声之后\"", "隐藏结局声明（彩蛋：定义尾声剧本与按钮文本）"),
-                    ("U", "unlock \"true_end\"", "解锁隐藏结局标记（执行后主页显示尾声按钮）"),
-                ];
-                for (icon, syntax, tooltip) in &insert_buttons {
-                    let btn = ui.add(
-                        egui::Button::new(egui::RichText::new(*icon).monospace().strong())
-                            .small()
-                    );
-                    let clicked = btn.clicked();
-                    btn.on_hover_text(*tooltip);
-                    if clicked {
-                        self.editor_content.push_str(&format!("{}\n", syntax));
-                        self.status = format!("已插入：{}", syntax);
+                // 快速插入语法按钮（收进下拉菜单，节省工具栏空间）
+                // 蓝图模式下点击直接添加节点到画布；文本模式下追加到脚本末尾。
+                let insert_label = if self.blueprint_mode { "插入节点 ▾" } else { "插入语法 ▾" };
+                ui.menu_button(insert_label, |ui| {
+                    let insert_buttons = [
+                        ("立绘上场  (+)", "+ 角色", "立绘上场（0.5秒淡入）(Ctrl+1)"),
+                        ("立绘下场  (-)", "- 角色", "立绘下场（0.5秒淡出）(Ctrl+2)"),
+                        ("差分更换  (~)", "+ 角色 (新pose) swap", "差分更换立绘（仅换pose，无过渡，位置/大小不变）"),
+                        ("章节  (#)", "# 章节", "章节标题 (Ctrl+3)"),
+                        ("背景  (@)", "@bg 背景", "背景指令 (Ctrl+4)"),
+                        ("选择分支  (?)", "? 选项", "选择分支"),
+                        ("变量  ($)", "$变量", "变量操作"),
+                        ("结局声明  (E)", "ending \"true_end\" epilogue \"scripts/epilogue.akrs\" button \"尾声之后\"", "隐藏结局声明（彩蛋：定义尾声剧本与按钮文本）"),
+                        ("解锁结局  (U)", "unlock \"true_end\"", "解锁隐藏结局标记（执行后主页显示尾声按钮）"),
+                    ];
+                    for (label, syntax, tooltip) in &insert_buttons {
+                        if ui.button(*label).on_hover_text(*tooltip).clicked() {
+                            if self.blueprint_mode {
+                                let kind = BlueprintState::detect_kind(syntax);
+                                let pos = self.blueprint.next_placement_pos();
+                                self.blueprint.add_node(kind, pos, syntax.to_string());
+                                self.status = format!("已添加节点：{}", syntax);
+                            } else {
+                                self.editor_content.push_str(&format!("{}\n", syntax));
+                                self.status = format!("已插入：{}", syntax);
+                            }
+                            ui.close_menu();
+                        }
                     }
-                }
+                });
                 ui.separator();
                 if ui.button("运行 (Ctrl+R)").clicked() {
                     self.run_script();
