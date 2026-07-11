@@ -64,6 +64,10 @@ pub struct ProjectConfig {
     /// 各字段带 `#[serde(default)]`，旧项目文件缺失时回退内置配色。
     #[serde(default)]
     pub theme: ThemeColors,
+    /// 项目警告：用编辑器打开本项目时弹出的作者提示文字（彩蛋/版权声明等）。
+    /// 留空则不弹出。玩家可在弹窗里选「不再显示」（仅本地生效，存于编辑器数据目录）。
+    #[serde(default)]
+    pub warning: String,
 }
 
 /// 游戏主题配色：RGBA 通道均为 0–255。
@@ -143,6 +147,7 @@ impl Default for ProjectConfig {
             title_background: String::new(),
             title_music: String::new(),
             theme: ThemeColors::default(),
+            warning: String::new(),
         }
     }
 }
@@ -272,4 +277,105 @@ fn dirs_data_dir() -> Option<PathBuf> {
     // 使用 dirs crate 做跨平台数据目录解析，替代手写的 40 行环境变量逻辑。
     // 修复了旧实现的 bug：Linux 下 ~/.local/share 不存在时回退到家目录根（污染）。
     dirs::data_dir().or_else(dirs::data_local_dir)
+}
+
+/// 本地「不再显示」的项目警告忽略列表。
+///
+/// 存储于编辑器数据目录下的 `dismissed_warnings.json`，内容为已被玩家
+/// 点击「不再显示」的项目规范化路径集合。仅本地生效，不随项目分发。
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct DismissedWarnings {
+    pub paths: Vec<String>,
+}
+
+impl DismissedWarnings {
+    /// 从编辑器数据目录加载忽略列表。
+    pub fn load() -> Self {
+        if let Some(path) = dismissed_warnings_path() {
+            if let Ok(content) = std::fs::read_to_string(&path) {
+                return serde_json::from_str(&content).unwrap_or_default();
+            }
+        }
+        Self::default()
+    }
+
+    /// 保存忽略列表到编辑器数据目录。
+    pub fn save(&self) {
+        if let Some(path) = dismissed_warnings_path() {
+            if let Some(parent) = path.parent() {
+                let _ = std::fs::create_dir_all(parent);
+            }
+            if let Ok(content) = serde_json::to_string_pretty(self) {
+                let _ = std::fs::write(&path, content);
+            }
+        }
+    }
+
+    /// 判断指定项目目录是否已被本地忽略。
+    /// 用规范化路径比较，避免相对路径/软链接差异。
+    pub fn is_dismissed(&self, project_dir: &Path) -> bool {
+        let key = match canonical_key(project_dir) {
+            Some(k) => k,
+            None => return false,
+        };
+        self.paths.iter().any(|p| *p == key)
+    }
+
+    /// 将项目目录加入本地忽略列表并持久化。
+    pub fn dismiss(&mut self, project_dir: &Path) {
+        if let Some(key) = canonical_key(project_dir) {
+            if !self.paths.iter().any(|p| *p == key) {
+                self.paths.push(key);
+                self.save();
+            }
+        }
+    }
+}
+
+fn dismissed_warnings_path() -> Option<PathBuf> {
+    dirs_data_dir().map(|d| d.join("akrs-editor").join("dismissed_warnings.json"))
+}
+
+/// 取项目目录的规范化路径字符串作为忽略列表 key。
+/// 规范化失败时回退到传入路径的 lossy 字符串。
+fn canonical_key(project_dir: &Path) -> Option<String> {
+    match std::fs::canonicalize(project_dir) {
+        Ok(p) => Some(p.to_string_lossy().into_owned()),
+        Err(_) => Some(project_dir.to_string_lossy().into_owned()),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn warning_field_deserializes_when_present() {
+        let json = r#"{
+            "title": "T",
+            "subtitle": "S",
+            "warning": "版权声明"
+        }"#;
+        let cfg: ProjectConfig = serde_json::from_str(json).unwrap();
+        assert_eq!(cfg.warning, "版权声明");
+        // 缺省字段走默认值
+        assert_eq!(cfg.main_script, "main.akrs");
+    }
+
+    #[test]
+    fn warning_field_defaults_empty_when_absent() {
+        // 旧项目文件不含 warning 字段时，应回退为空字符串而非报错。
+        let json = r#"{
+            "title": "T",
+            "subtitle": "S"
+        }"#;
+        let cfg: ProjectConfig = serde_json::from_str(json).unwrap();
+        assert_eq!(cfg.warning, "");
+    }
+
+    #[test]
+    fn dismissed_warnings_is_not_initially_dismissed() {
+        let dw = DismissedWarnings::default();
+        assert!(!dw.is_dismissed(Path::new("/nonexistent/project")));
+    }
 }

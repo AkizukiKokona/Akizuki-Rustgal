@@ -17,17 +17,16 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::io::Read;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use iced::advanced::text::highlighter::Format as HighlightFormat;
-use iced::advanced::text::Highlighter as _;
 use iced::keyboard::{self, Key, Modifiers};
 use iced::widget::{
     button, column, container, horizontal_space, image, opaque, pick_list, row, scrollable,
-    slider, stack, text, text_editor, text_input, Column, Container, Row, Space,
+    slider, stack, text, text_editor, text_input, Column, Space,
 };
 use iced::{
-    Alignment, Background, Border, Color, Element, Font, Length, Padding, Pixels, Shadow,
+    Alignment, Background, Border, Color, Element, Font, Length, Padding, Shadow,
     Subscription, Task, Theme,
 };
 
@@ -35,7 +34,8 @@ use iced::{
 use iced_aw::widget::{Card, TabLabel, Tabs};
 
 use akrs_core::{
-    compile, format_location, CompileError, ErrSeverity, Position, ProjectConfig, RecentProjects,
+    compile, format_location, CompileError, DismissedWarnings, ErrSeverity, ProjectConfig,
+    RecentProjects,
 };
 use akrs_runtime::{Engine, EnginePhase};
 
@@ -385,10 +385,8 @@ pub struct EditorApp {
     status: String,
     /// 格式化后的编译诊断信息（错误 / 警告 / 提示）。
     diagnostics: Vec<String>,
-    /// 上一帧的时间（秒），用于计算引擎的增量时间。
-    last_time: f64,
-    /// 是否已应用暗色主题。
-    theme_applied: bool,
+    /// 上一次 tick 的时刻，用于计算引擎的增量时间 dt。
+    last_time: Option<Instant>,
     /// 是否显示首次启动欢迎面板。
     show_welcome: bool,
     /// 是否显示「关于」对话框。
@@ -423,6 +421,8 @@ pub struct EditorApp {
     project_dir: Option<PathBuf>,
     /// 是否显示「请先保存再预览」提示弹窗。
     show_save_reminder: bool,
+    /// 是否显示项目警告弹窗（project.json 的 warning 字段）。
+    show_project_warning: bool,
     /// 最近打开的项目列表。
     recent_projects: RecentProjects,
     /// 是否显示项目设置对话框。
@@ -634,8 +634,7 @@ impl Default for EditorApp {
             engine: None,
             status: "就绪".to_string(),
             diagnostics: Vec::new(),
-            last_time: 0.0,
-            theme_applied: false,
+            last_time: None,
             show_welcome: true,
             show_about: false,
             preview_tab: PreviewTab::Script,
@@ -652,6 +651,7 @@ impl Default for EditorApp {
             project_loaded: false,
             project_dir: None,
             show_save_reminder: false,
+            show_project_warning: false,
             recent_projects,
             show_project_settings: false,
             title_warning: None,
@@ -684,11 +684,6 @@ impl EditorApp {
         s.push_str(&format!("{}\n", syntax));
         self.editor_content = text_editor::Content::with_text(&s);
         self.status = "语法已追加到脚本末尾".to_string();
-    }
-
-    /// 替换剪贴板内容为生成的语法：本期同 `smart_insert_syntax`，仅追加。
-    fn replace_clipboard_with_syntax(&mut self, syntax: &str) {
-        self.smart_insert_syntax(syntax);
     }
 
     // -- 辅助方法：查找并替换 -----------------------------------------------
@@ -883,6 +878,11 @@ impl EditorApp {
         self.work_dir = project_dir.to_path_buf();
         self.refresh_file_list();
 
+        // 项目警告弹窗：project.json 的 warning 字段非空且未被本地忽略时弹出。
+        // canonical_key 由 DismissedWarnings 内部用规范化路径计算。
+        self.show_project_warning = !self.project_config.warning.is_empty()
+            && !DismissedWarnings::load().is_dismissed(project_dir);
+
         // 添加到最近项目列表
         let project_name = project_dir
             .file_name()
@@ -941,42 +941,6 @@ impl EditorApp {
             entries,
             filter: String::new(),
         });
-    }
-
-    /// 尝试设置标题，如果标题过长则显示警告对话框。
-    fn try_set_title(&mut self, new_title: String) {
-        let temp_config = ProjectConfig {
-            title: new_title.clone(),
-            subtitle: self.project_config.subtitle.clone(),
-            ..self.project_config.clone()
-        };
-        if temp_config.is_title_too_long() {
-            self.title_warning = Some(TitleWarningState {
-                new_title,
-                new_subtitle: self.project_config.subtitle.clone(),
-            });
-        } else {
-            self.project_config.title = new_title;
-            self.save_project_config();
-        }
-    }
-
-    /// 尝试设置副标题，如果副标题过长则显示警告对话框。
-    fn try_set_subtitle(&mut self, new_subtitle: String) {
-        let temp_config = ProjectConfig {
-            title: self.project_config.title.clone(),
-            subtitle: new_subtitle.clone(),
-            ..self.project_config.clone()
-        };
-        if temp_config.is_subtitle_too_long() {
-            self.title_warning = Some(TitleWarningState {
-                new_title: self.project_config.title.clone(),
-                new_subtitle,
-            });
-        } else {
-            self.project_config.subtitle = new_subtitle;
-            self.save_project_config();
-        }
     }
 
     /// 确认标题过长警告，强制应用。
@@ -1855,8 +1819,6 @@ enum Message {
     Edit(text_editor::Action),
     /// 订阅轮询：推进子进程状态与引擎更新。
     PollTick,
-    /// 订阅轮询携带的增量时间（秒）。
-    PollTickDt(f32),
 
     // 文件操作
     NewFile,
@@ -1883,6 +1845,10 @@ enum Message {
     // 关于弹窗
     ShowAbout,
     CloseAbout,
+
+    // 语法快速插入：ending 声明与 unlock 标记
+    InsertEndingSyntax,
+    InsertUnlockSyntax,
 
     // 文件选择对话框
     FilePickerFilter(String),
@@ -1931,6 +1897,12 @@ enum Message {
     /// 关闭「请先保存再预览」提示弹窗。
     CloseSaveReminder,
 
+    // 项目警告弹窗（project.json 的 warning 字段）
+    /// 确定：仅本次关闭项目警告弹窗。
+    CloseProjectWarning,
+    /// 不再显示：永久忽略本项目警告（存于编辑器数据目录）。
+    DismissProjectWarning,
+
     // 资源预览
     ScanSprites,
     ScanBgs,
@@ -1962,6 +1934,8 @@ enum Message {
     // 查找替换增强
     FindReplaceReplacement(String),
     FindNext,
+    /// 触发「替换插入」：携带预生成的语法，打开查找替换弹窗以收集要被替换的查找内容。
+    StartReplaceInsert(String),
 
     // 放大预览
     ShowEnlargedPreview,
@@ -1990,11 +1964,16 @@ impl EditorApp {
                 self.editor_content.perform(action);
             }
             Message::PollTick => {
-                // 默认 100ms 增量；具体 dt 由 PollTickDt 处理。这里只做子进程轮询。
+                // 子进程轮询
                 self.poll_game_process();
                 self.poll_build();
-            }
-            Message::PollTickDt(dt) => {
+                // 预览引擎动画推进：用 last_time 计算实际 dt
+                let now = Instant::now();
+                let dt = match self.last_time {
+                    Some(prev) => now.duration_since(prev).as_secs_f32().min(0.5),
+                    None => 0.1,
+                };
+                self.last_time = Some(now);
                 if let Some(engine) = self.engine.as_mut() {
                     let _ = engine.update(dt);
                 }
@@ -2021,6 +2000,16 @@ impl EditorApp {
             }
             Message::StartGamePreview => self.start_game_preview(),
             Message::ShowAbout => self.show_about = true,
+            Message::InsertEndingSyntax => {
+                // 插入 ending 声明骨架：ending "id" epilogue "path.akrs" [button "文本"]
+                self.smart_insert_syntax(
+                    "ending \"my_ending\" epilogue \"scripts/epilogue.akrs\" button \"尾声之后\"",
+                );
+            }
+            Message::InsertUnlockSyntax => {
+                // 插入 unlock 标记：unlock "id"
+                self.smart_insert_syntax("unlock \"my_ending\"");
+            }
             Message::CloseAbout => self.show_about = false,
             Message::FilePickerFilter(s) => {
                 if let Some(picker) = self.file_picker.as_mut() {
@@ -2108,17 +2097,40 @@ impl EditorApp {
             }
             Message::ToggleFindReplace => {
                 self.show_find_replace_dialog = !self.show_find_replace_dialog;
+                // 关闭弹窗时清空替换插入缓存，避免下次打开仍处于替换插入模式
+                if !self.show_find_replace_dialog {
+                    self.find_replace_syntax.clear();
+                }
             }
             Message::FindReplaceTarget(s) => self.find_replace_target = s,
             Message::DoFindReplace => {
                 let target = self.find_replace_target.clone();
-                let replacement = self.find_replace_replacement.clone();
+                // 替换插入模式：find_replace_syntax 非空时，用缓存的语法替换脚本中
+                // 匹配 target 的内容；否则走普通查找替换（用 find_replace_replacement）。
+                let is_replace_insert = !self.find_replace_syntax.is_empty();
+                let replacement = if is_replace_insert {
+                    self.find_replace_syntax.clone()
+                } else {
+                    self.find_replace_replacement.clone()
+                };
                 if self.find_and_replace(&target, &replacement) {
                     let n = self.find_count(&target);
                     self.status = format!("已替换「{}」→「{}」（剩余 {} 处）", target, replacement, n);
                 } else {
                     self.status = format!("未找到「{}」", target);
                 }
+                if is_replace_insert {
+                    // 替换插入是一次性操作：完成后清空缓存并关闭弹窗
+                    self.find_replace_syntax.clear();
+                    self.show_find_replace_dialog = false;
+                }
+            }
+            Message::StartReplaceInsert(syntax) => {
+                // 缓存生成的语法，清空查找/替换输入，打开弹窗让用户输入要被替换的内容
+                self.find_replace_syntax = syntax;
+                self.find_replace_target = String::new();
+                self.find_replace_replacement = String::new();
+                self.show_find_replace_dialog = true;
             }
             Message::ShowProjectSettings => self.show_project_settings = true,
             Message::CloseProjectSettings => self.show_project_settings = false,
@@ -2156,6 +2168,14 @@ impl EditorApp {
             Message::ToggleBuildDialog => self.build.show = !self.build.show,
             Message::CloseCargoGuide => self.show_cargo_guide = false,
             Message::CloseSaveReminder => self.show_save_reminder = false,
+            Message::CloseProjectWarning => self.show_project_warning = false,
+            Message::DismissProjectWarning => {
+                // 永久忽略本项目警告：写入编辑器数据目录 dismissed_warnings.json。
+                if let Some(dir) = self.project_dir.clone() {
+                    DismissedWarnings::load().dismiss(&dir);
+                }
+                self.show_project_warning = false;
+            }
             Message::ScanSprites => self.scan_sprites(),
             Message::ScanBgs => self.scan_bgs(),
             Message::ScanMusic => self.scan_music(),
@@ -2305,6 +2325,9 @@ impl EditorApp {
         if self.show_save_reminder {
             layers.push(self.view_save_reminder_modal());
         }
+        if self.show_project_warning {
+            layers.push(self.view_project_warning_modal());
+        }
         if self.title_warning.is_some() {
             layers.push(self.view_title_warning_modal());
         }
@@ -2343,12 +2366,21 @@ impl EditorApp {
                 })
         };
 
-        let actions = row([
-            btn("打开项目", Message::OpenDirPicker).into(),
-            btn("新建剧本", Message::NewFile).into(),
-            btn("打开已有剧本", Message::OpenFilePicker).into(),
-            btn("打开示例剧本", Message::LoadSample).into(),
-        ])
+        let actions = row![
+            btn("打开项目", Message::OpenDirPicker),
+            btn("新建剧本", Message::NewFile),
+            btn("打开已有剧本", Message::OpenFilePicker),
+            btn("打开示例剧本", Message::LoadSample),
+            button(text("跳过").size(15.0))
+                .on_press(Message::CloseWelcome)
+                .padding([10, 18])
+                .style(move |_theme: &Theme, _status: button::Status| button::Style {
+                    background: Some(Background::Color(Color::from_rgb(0.12, 0.14, 0.18))),
+                    text_color: Color::from_rgb(0.6, 0.65, 0.72),
+                    border: Border::default().rounded(6.0),
+                    ..Default::default()
+                }),
+        ]
         .spacing(12)
         .padding(20);
 
@@ -2488,6 +2520,8 @@ impl EditorApp {
             b("打包", Message::ToggleBuildDialog),
             b("翻译", Message::ToggleTranslationMode),
             b("rpy导入", Message::ToggleRpyImport),
+            b("插入ending", Message::InsertEndingSyntax),
+            b("插入unlock", Message::InsertUnlockSyntax),
             b("快捷键", Message::ToggleShortcuts),
             b("关于", Message::ShowAbout),
         ]
@@ -3011,16 +3045,25 @@ impl EditorApp {
             )
         };
         col = col.push(
-            text(syntax)
+            text(syntax.clone())
                 .font(Font::MONOSPACE)
                 .size(12.0)
                 .color(COLOR_DIRECTION),
         );
 
+        // 「替换插入」按钮：未选择立绘时禁用，避免把占位文本作为语法缓存
+        let mut replace_btn = button(text("替换插入").size(12.0)).padding([5, 10]);
+        if !self.sprite_preview.selected.is_empty() {
+            replace_btn = replace_btn.on_press(Message::StartReplaceInsert(syntax));
+        }
         col = col.push(
-            button(text("插入语法").size(12.0))
-                .on_press(Message::GenerateSpriteSyntax)
-                .padding([5, 10]),
+            row![
+                button(text("插入语法").size(12.0))
+                    .on_press(Message::GenerateSpriteSyntax)
+                    .padding([5, 10]),
+                replace_btn,
+            ]
+            .spacing(6),
         );
 
         col.into()
@@ -3098,16 +3141,25 @@ impl EditorApp {
             format!("@bg {} with {}", self.bg_preview.selected, trans)
         };
         col = col.push(
-            text(syntax)
+            text(syntax.clone())
                 .font(Font::MONOSPACE)
                 .size(12.0)
                 .color(COLOR_COMMAND),
         );
 
+        // 「替换插入」按钮：未选择背景时禁用，避免把占位文本作为语法缓存
+        let mut replace_btn = button(text("替换插入").size(12.0)).padding([5, 10]);
+        if !self.bg_preview.selected.is_empty() {
+            replace_btn = replace_btn.on_press(Message::StartReplaceInsert(syntax));
+        }
         col = col.push(
-            button(text("插入语法").size(12.0))
-                .on_press(Message::GenerateBgSyntax)
-                .padding([5, 10]),
+            row![
+                button(text("插入语法").size(12.0))
+                    .on_press(Message::GenerateBgSyntax)
+                    .padding([5, 10]),
+                replace_btn,
+            ]
+            .spacing(6),
         );
 
         col.into()
@@ -3153,16 +3205,25 @@ impl EditorApp {
             format!("@music {}", self.music_preview.selected)
         };
         col = col.push(
-            text(syntax)
+            text(syntax.clone())
                 .font(Font::MONOSPACE)
                 .size(12.0)
                 .color(COLOR_COMMAND),
         );
 
+        // 「替换插入」按钮：未选择音乐时禁用，避免把占位文本作为语法缓存
+        let mut replace_btn = button(text("替换插入").size(12.0)).padding([5, 10]);
+        if !self.music_preview.selected.is_empty() {
+            replace_btn = replace_btn.on_press(Message::StartReplaceInsert(syntax));
+        }
         col = col.push(
-            button(text("插入语法").size(12.0))
-                .on_press(Message::GenerateMusicSyntax)
-                .padding([5, 10]),
+            row![
+                button(text("插入语法").size(12.0))
+                    .on_press(Message::GenerateMusicSyntax)
+                    .padding([5, 10]),
+                replace_btn,
+            ]
+            .spacing(6),
         );
 
         col.into()
@@ -3184,6 +3245,16 @@ impl EditorApp {
         let pairs = compute_flow_pairs(&marks);
         let lines: Vec<&str> = content.split('\n').collect();
         let indent_w: f32 = 16.0;
+
+        // 光标配对高亮：光标所在行的 =>/<= 及其配对行高亮
+        let cursor_line = self.editor_content.cursor_position().0;
+        let active_mark = mark_at_cursor(&marks, cursor_line);
+        let pair_mark = active_mark.and_then(|mi| pairs[mi]);
+        let highlight_lines: Vec<usize> = match (active_mark, pair_mark) {
+            (Some(a), Some(b)) => vec![marks[a].line, marks[b].line],
+            (Some(a), None) => vec![marks[a].line],
+            _ => vec![],
+        };
 
         let mut mark_iter = 0usize;
         let mut depth: i32 = 0;
@@ -3244,16 +3315,28 @@ impl EditorApp {
             if let Some(t) = text_opt {
                 let indent_level = indent_level.max(0) as usize;
                 let indent_pixels = (indent_level as f32) * indent_w;
-                col = col.push(
-                    row![
-                        Space::new(Length::Fixed(indent_pixels), 0),
-                        text(t)
-                            .font(Font::MONOSPACE)
-                            .size(12.0)
-                            .color(color),
-                    ]
-                    .align_y(Alignment::Center),
-                );
+                let is_highlighted = highlight_lines.contains(&line_no);
+                let line_row = row![
+                    Space::new(Length::Fixed(indent_pixels), 0),
+                    text(t)
+                        .font(Font::MONOSPACE)
+                        .size(12.0)
+                        .color(if is_highlighted { COLOR_PAIR_HIGHLIGHT } else { color }),
+                ]
+                .align_y(Alignment::Center);
+                col = if is_highlighted {
+                    col.push(
+                        container(line_row)
+                            .style(|_t| container::Style {
+                                background: Some(Background::Color(Color::from_rgba(1.0, 0.86, 0.0, 0.15))),
+                                border: Border::default().rounded(3.0).color(COLOR_PAIR_HIGHLIGHT),
+                                ..Default::default()
+                            })
+                            .padding([2, 4]),
+                    )
+                } else {
+                    col.push(line_row)
+                };
             }
         }
 
@@ -3489,19 +3572,54 @@ impl EditorApp {
             format!("命中 {} 处", count)
         };
 
-        let body = column![
-            text("查找替换").size(14.0).color(COLOR_FLOW),
-            text("查找内容").size(11.0).color(Color::from_rgb(0.6, 0.62, 0.68)),
+        // 替换插入模式：find_replace_syntax 非空时，弹窗以「替换插入」为标题，
+        // 提示用户输入要被替换的查找内容（替换值固定为缓存的语法）。
+        let is_replace_insert = !self.find_replace_syntax.is_empty();
+        let title_str = if is_replace_insert { "替换插入" } else { "查找替换" };
+        let hint = if is_replace_insert {
+            let target_disp = if self.find_replace_target.is_empty() {
+                "查找内容".to_string()
+            } else {
+                self.find_replace_target.clone()
+            };
+            format!("将把脚本中匹配【{}】的部分替换为生成的语法", target_disp)
+        } else {
+            String::new()
+        };
+
+        let mut body = Column::new().spacing(6).width(Length::Fill);
+        body = body.push(text(title_str).size(14.0).color(COLOR_FLOW));
+        if is_replace_insert {
+            body = body.push(
+                text(hint)
+                    .size(11.0)
+                    .color(Color::from_rgb(0.9, 0.75, 0.3)),
+            );
+        }
+        body = body.push(
+            text("查找内容")
+                .size(11.0)
+                .color(Color::from_rgb(0.6, 0.62, 0.68)),
+        );
+        body = body.push(
             text_input("查找内容", &self.find_replace_target)
                 .on_input(Message::FindReplaceTarget)
                 .on_submit(Message::FindNext)
                 .padding(6),
-            text("替换为").size(11.0).color(Color::from_rgb(0.6, 0.62, 0.68)),
+        );
+        body = body.push(
+            text("替换为")
+                .size(11.0)
+                .color(Color::from_rgb(0.6, 0.62, 0.68)),
+        );
+        body = body.push(
             text_input("替换内容", &self.find_replace_replacement)
                 .on_input(Message::FindReplaceReplacement)
                 .on_submit(Message::DoFindReplace)
                 .padding(6),
-            text(count_text).size(11.0).color(COLOR_CHOICE),
+        );
+        body = body.push(text(count_text).size(11.0).color(COLOR_CHOICE));
+        body = body.push(
             row![
                 button(text("查找下一个").size(12.0))
                     .on_press(Message::FindNext)
@@ -3514,11 +3632,9 @@ impl EditorApp {
                     .on_press(Message::ToggleFindReplace)
                     .padding([5, 12]),
             ],
-        ]
-        .spacing(6)
-        .width(Length::Fill);
+        );
 
-        self.modal_card("查找替换", Message::ToggleFindReplace, body.into())
+        self.modal_card(title_str, Message::ToggleFindReplace, body.into())
     }
 
     fn view_project_settings_modal(&self) -> Element<'_, Message> {
@@ -3689,6 +3805,36 @@ impl EditorApp {
         .width(Length::Fill);
 
         self.modal_card("无法预览", Message::CloseSaveReminder, body.into())
+    }
+
+    fn view_project_warning_modal(&self) -> Element<'_, Message> {
+        // 内容包入 scrollable 防止过长警告文字被截断。
+        let warning_text = scrollable(
+            text(self.project_config.warning.clone())
+                .size(13.0)
+                .color(Color::from_rgb(0.85, 0.82, 0.7)),
+        )
+        .width(Length::Fill)
+        .height(240);
+
+        let body = column![
+            text("作者留下了以下提示：").size(12.0).color(COLOR_FLOW),
+            warning_text,
+            Space::new(Length::Fill, 8),
+            row![
+                button(text("不再显示").size(12.0))
+                    .on_press(Message::DismissProjectWarning)
+                    .padding([5, 12]),
+                horizontal_space(),
+                button(text("确定").size(12.0))
+                    .on_press(Message::CloseProjectWarning)
+                    .padding([5, 12]),
+            ],
+        ]
+        .spacing(6)
+        .width(Length::Fill);
+
+        self.modal_card("项目警告", Message::CloseProjectWarning, body.into())
     }
 
     fn view_title_warning_modal(&self) -> Element<'_, Message> {
@@ -3862,8 +4008,12 @@ pub fn run_editor() -> Result<(), Box<dyn std::error::Error>> {
     );
 
     // 注册 CJK 字体：用 cosmic-text 字形回退渲染中文。
+    // 注册后将其设为默认字体，确保 cosmic-text 优先选用该 CJK 字体，
+    // 而不是回退到不含中文字形的字体（避免中文显示为方框）。
     let app = match install_cjk_fonts() {
-        Some(bytes) => app.font(bytes),
+        Some(bytes) => app
+            .font(bytes)
+            .default_font(Font::with_name("Source Han Sans SC")),
         None => app,
     };
 
@@ -3913,11 +4063,35 @@ fn handle_key_press(key: Key, modifiers: Modifiers) -> Option<Message> {
 fn install_cjk_fonts() -> Option<Vec<u8>> {
     let mut font_data: Option<Vec<u8>> = None;
 
-    // 1. 运行时外部字体文件（最高优先级）
-    let runtime_font_path = "assets/fonts/SourceHanSansSC-Regular-2.otf";
-    if let Ok(bytes) = std::fs::read(runtime_font_path) {
-        eprintln!("[editor] 中文字体已加载（运行时 OTF）");
-        font_data = Some(bytes);
+    // 1. 运行时外部字体文件（最高优先级）：多路径尝试，避免依赖 CWD。
+    //    候选顺序：CWD 相对路径 -> 可执行文件同级 -> CWD 上级
+    //    （编辑器可能在 target/debug 或 target/release 下运行，上级为项目根）。
+    let rel_path = "assets/fonts/SourceHanSansSC-Regular-2.otf";
+    let mut runtime_candidates: Vec<PathBuf> = vec![PathBuf::from(rel_path)];
+    if let Ok(exe) = std::env::current_exe() {
+        if let Some(exe_dir) = exe.parent() {
+            runtime_candidates.push(exe_dir.join(rel_path));
+        }
+    }
+    if let Ok(cwd) = std::env::current_dir() {
+        if let Some(parent) = cwd.parent() {
+            runtime_candidates.push(parent.join(rel_path));
+        }
+    }
+    for path in &runtime_candidates {
+        match std::fs::read(path) {
+            Ok(bytes) => {
+                eprintln!(
+                    "[editor] 中文字体已加载（运行时 OTF）: {}",
+                    path.display()
+                );
+                font_data = Some(bytes);
+                break;
+            }
+            Err(_) => {
+                eprintln!("[editor] 运行时字体未找到: {}", path.display());
+            }
+        }
     }
 
     // 2. 系统字体回退（按平台分别列出候选路径）
@@ -4163,16 +4337,6 @@ fn phase_label(phase: EnginePhase) -> &'static str {
     }
 }
 
-/// 角色位置的可读标签。
-fn position_label(p: &Position) -> String {
-    match p {
-        Position::Left => "左侧".to_string(),
-        Position::Center => "中央".to_string(),
-        Position::Right => "右侧".to_string(),
-        Position::Custom(x) => format!("自定义({:.2})", x),
-    }
-}
-
 /// 根据行首非空白 token 选择基础颜色（语法高亮的纯逻辑部分）。
 fn line_base_color(trimmed: &str) -> Color {
     // 以 `-` 开头的双字符标记 `->` 必须先于单字符 `-` 方向标记检查。
@@ -4296,11 +4460,10 @@ fn compute_flow_pairs(marks: &[FlowMark]) -> Vec<Option<usize>> {
     pairs
 }
 
-/// 返回字符索引 `char_idx` 所在的 FlowMark 索引。
-///
-/// 光标位置为字符间隙；`char_idx` 落在 `[char_start, char_end]`（含端点）即视为停在该标记上。
-fn mark_at_cursor(marks: &[FlowMark], char_idx: usize) -> Option<usize> {
-    marks.iter().position(|m| char_idx >= m.char_start && char_idx <= m.char_end)
+/// 查找光标所在的 FlowMark 索引。
+/// `cursor_line` 为光标所在行号（从 0 开始），由 `text_editor::Content::cursor_position().0` 提供。
+fn mark_at_cursor(marks: &[FlowMark], cursor_line: usize) -> Option<usize> {
+    marks.iter().position(|m| m.line == cursor_line)
 }
 
 #[cfg(test)]
@@ -4390,15 +4553,12 @@ mod tests {
     fn flow_mark_at_cursor() {
         let src = "=> Sub\n<=\n";
         let marks = scan_flow_marks(src);
-        // 光标在 "=>" 上（0..=2）
+        // 光标在第 0 行（=> Sub）
         assert_eq!(mark_at_cursor(&marks, 0), Some(0));
-        assert_eq!(mark_at_cursor(&marks, 1), Some(0));
-        assert_eq!(mark_at_cursor(&marks, 2), Some(0));
-        // 光标在 " Sub" 中（3..6）不在标记上
-        assert_eq!(mark_at_cursor(&marks, 3), None);
-        // "=>" 占 0..2，'\n'=7，"<=" 在 8..10
-        assert_eq!(mark_at_cursor(&marks, 8), Some(1));
-        assert_eq!(mark_at_cursor(&marks, 9), Some(1));
+        // 光标在第 1 行（<=）
+        assert_eq!(mark_at_cursor(&marks, 1), Some(1));
+        // 光标在第 2 行（空行，无标记）
+        assert_eq!(mark_at_cursor(&marks, 2), None);
     }
 
     #[test]
@@ -4415,13 +4575,6 @@ mod tests {
         assert_eq!(line_base_color("// comment"), COLOR_COMMENT);
         assert_eq!(line_base_color("ending \"id\""), COLOR_FLOW);
         assert_eq!(line_base_color("plain text"), COLOR_DEFAULT);
-    }
-
-    #[test]
-    fn phase_and_position_labels() {
-        assert_eq!(phase_label(EnginePhase::ChoicePending), "等待选择");
-        assert_eq!(position_label(&Position::Left), "左侧");
-        assert_eq!(position_label(&Position::Custom(0.25)), "自定义(0.25)");
     }
 
     #[test]

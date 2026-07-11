@@ -2620,6 +2620,24 @@ fn draw_scene(engine: &Engine, assets: &mut AssetManager, sw: f32, sh: f32, show
     }
 }
 
+/// 绘制圆角矩形（用三角形扇形拼接四角）。
+///
+/// wgpu_backend 的 `draw_rectangle_rounded` 已用「中心矩形 + 上下边矩形 +
+/// 左右边矩形 + 四角 90° 三角扇形」实现圆角（macroquad 已被 wgpu 替换，
+/// 不再需要手工拼顶点）；此处转发以保持与 main 分支 `draw_rounded_rect`
+/// 同名 API，供 `draw_chapter_toast` 等 UI 复用。
+fn draw_rounded_rect(x: f32, y: f32, w: f32, h: f32, radius: f32, color: Color) {
+    draw_rectangle_rounded(x, y, w, h, radius, color);
+}
+
+/// 绘制圆角矩形边框（线宽向内）。
+///
+/// 转发到 wgpu_backend 的 `draw_rectangle_lines_rounded`（四条梯形直边 +
+/// 四段圆角环），与 main 分支 `draw_rounded_rect_lines` 同名。
+fn draw_rounded_rect_lines(x: f32, y: f32, w: f32, h: f32, radius: f32, thickness: f32, color: Color) {
+    draw_rectangle_lines_rounded(x, y, w, h, radius, thickness, color);
+}
+
 /// 绘制章节切换的顶部通知（白底 30% 透明，章节名 + 标题两行居中）。
 ///
 /// 由 `ChapterAnimation` 在 ToastIn/Hold/Out 阶段调用。通知从屏幕顶部滑入，
@@ -2672,9 +2690,9 @@ fn draw_chapter_toast(anim: &ChapterAnimation, sw: f32, sh: f32, font: &Option<F
 
     // 白底（约 30% 透明 → alpha 0.7）。任务4：改用圆角面板 + 圆角细边框。
     let toast_radius = 10.0 * scale;
-    draw_rectangle_rounded(toast_x, draw_y, toast_w, toast_h, toast_radius, Color::new(1.0, 1.0, 1.0, 0.7));
+    draw_rounded_rect(toast_x, draw_y, toast_w, toast_h, toast_radius, Color::new(1.0, 1.0, 1.0, 0.7));
     // 细边框增强层次感。
-    draw_rectangle_lines_rounded(toast_x, draw_y, toast_w, toast_h, toast_radius, 2.0 * scale, Color::new(0.0, 0.0, 0.0, 0.15));
+    draw_rounded_rect_lines(toast_x, draw_y, toast_w, toast_h, toast_radius, 2.0 * scale, Color::new(0.0, 0.0, 0.0, 0.15));
 
     let text_color = Color::new(0.10, 0.10, 0.14, 1.0);
 

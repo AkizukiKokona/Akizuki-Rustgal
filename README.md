@@ -6,7 +6,7 @@
 
 [![License](https://img.shields.io/badge/license-MIT-blue.svg)](#许可证)
 [![Rust](https://img.shields.io/badge/rust-1.92+-orange.svg)](https://www.rust-lang.org)
-[![Version](https://img.shields.io/badge/version-1.0.63-success.svg)](#)
+[![Version](https://img.shields.io/badge/version-1.0.73-success.svg)](#)
 [![Platform](https://img.shields.io/badge/platform-Windows%20%7C%20Linux%20%7C%20macOS-lightgrey.svg)](#下载与安装)
 [![PRs Not Recommended](https://img.shields.io/badge/PRs-not%20recommended-yellow.svg)](#贡献)
 
@@ -115,6 +115,9 @@ Akizuki\*Rustgal 是一个从零开始、**100% 纯 Rust** 实现的视觉小说
 - **剧本错误冗余降级** — 剧本编译/加载失败时游戏不崩溃，自动降级为「仅标题页」模式：玩家仍可进入标题页、正常修改设置，但点击「开始游戏 / 读档 / 继续游戏」时会弹出剧本错误警告对话框（支持四国语言：简中 / 英文 / 日文 / 繁中）。自动恢复在此模式下失效。错误详情同时输出到控制台。引擎的设置、存档管理等非剧本功能不受影响，保证剧本问题不波及引擎其他部分。
 - **隐藏结局（彩蛋尾声）** — 剧本可声明隐藏结局作为彩蛋：`ending "id" epilogue "path.akrs" [button "文本"]` 声明尾声剧本与主页按钮文本（省略 `button` 时用翻译键 `title.epilogue`，默认「尾声之后」/「After the Ending」/「エピローグの後に」/「尾聲之後」，四语言齐全）；剧本中 `unlock "id"` 标记达成条件后解锁（持久化到 `saves/endings.json`，跨周目保留）。达成结局后自动淡入淡出返回主页（无需用户确认），主页出现「尾声之后」按钮，点击即加载对应尾声剧本播放，播放结束后再次淡入淡出回主页。支持多个隐藏结局，每个结局独立声明按钮文本与尾声路径。编辑器工具栏提供 `ending`/`unlock` 语法快速插入按钮与高亮。
 - **快读按钮禁用态** — 无快存时 HUD「快读」按钮变为灰色低透明态且点击无操作（不再误触回标题），避免玩家在无快存情况下点快读导致意外退出游戏。
+- **项目警告提示** — 项目可在 `project.json` 的 `warning` 字段（编辑器「项目设置」内可编辑）留一段作者提示文字（彩蛋/版权声明等）。用编辑器打开本项目时自动弹出小窗显示该文字，玩家可点「确定」仅本次关闭，或点「不再显示」永久忽略（仅本地生效，存于编辑器数据目录 `dismissed_warnings.json`，按项目规范化路径记录，不随项目分发）。本仓库 demo 即带一条版权声明作为示例。
+- **弹窗防截断** — 编辑器中内容较多的弹出窗口（项目设置 / 快捷键帮助 / Cargo 安装引导 / 项目警告）内容统一包入竖向滚动区，窗口高度受限不超过主窗口，内容超出时在窗内滚动而非被截断；项目设置窗口改为可缩放。彻底解决小窗口下表单底部按钮被顶出可视区的问题。
+- **预览精确运行当前剧本** — 编辑器点「预览游戏」时把当前编辑的文件路径以 `--script` 参数显式传给游戏，确保预览运行的就是用户当前编辑的剧本，而非 `project.json` 的 `main_script` 或内置 demo 回退（修复了「保存后预览却打开内置 demo」的问题）。游戏入口 `akrs-game` 新增 `--script`/`-s` 参数，剧本加载优先级为 `--script` 显式参数 > `project.json` main_script > `scripts/demo.akrs` 回退。未保存到磁盘的新建文件点预览时弹「请先保存再预览」提示；保存时若文件名与 main_script 不一致，状态栏追加非阻断提示。
 
 ## 快速开始
 

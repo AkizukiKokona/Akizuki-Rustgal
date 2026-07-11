@@ -24,7 +24,7 @@ pub use parser::{Parser, ParseError};
 pub use token::{Token, TokenKind, LocSpan, LineCol, Span};
 pub use value::{Value, Type};
 pub use vm::{Vm, VmEvent, VmState, VmError, ChoiceInfo};
-pub use project::{ProjectConfig, ProjectError, RecentProjects, RecentProject, ThemeColors};
+pub use project::{DismissedWarnings, ProjectConfig, ProjectError, RecentProjects, RecentProject, ThemeColors};
 
 /// Full compile pipeline: source text → checked program.
 /// Returns the program and any errors (errors may include warnings).
