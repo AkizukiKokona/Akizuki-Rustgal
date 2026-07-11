@@ -242,7 +242,7 @@ thread_local! {
 }
 
 const SHADER: &str = r#"
-struct Uniforms { size: vec4<f32>; };
+struct Uniforms { size: vec4<f32>, };
 @group(0) @binding(0) var<uniform> u: Uniforms;
 @group(0) @binding(1) var tex: texture_2d<f32>;
 @group(0) @binding(2) var samp: sampler;
@@ -544,14 +544,10 @@ impl Backend {
         let frame = match surface.get_current_texture() {
             Ok(f) => f,
             // 显存不足：无法恢复，直接放弃本帧。
-            Err(wgpu::SurfaceError::OutOfMemory) => {
-                log::error!("[DEBUG-TEMP] render_frame: get_current_texture OutOfMemory");
-                return;
-            }
+            Err(wgpu::SurfaceError::OutOfMemory) => return,
             // Lost/Outdated/Timeout：surface 与窗口尺寸不匹配或被系统回收，
             // 标记 dirty 让 run() 下一帧强制 reconfigure，否则会永久白屏。
-            Err(e) => {
-                log::warn!("[DEBUG-TEMP] render_frame: get_current_texture 失败 {:?}，置 surface_dirty", e);
+            Err(_) => {
                 self.surface_dirty = true;
                 return;
             }
@@ -637,55 +633,81 @@ fn create_texture_inner(
 /// 把渲染状态存入 thread_local，返回（surface, 物理宽, 物理高）。
 /// `surface` 借用 `window`，调用方须保证 window 存活期 ≥ surface。
 pub fn init_graphics(window: &Window) -> (wgpu::Surface<'_>, wgpu::TextureFormat) {
-    // Windows：优先 DX12（最稳定，无 overlay 层干扰），排除 GL（WGL present 在
-    // 某些驱动下只渲染部分区域导致白屏+底部黑边）和 Vulkan（RTSS/Steam/Epic
-    // overlay 层可能导致 surface 呈现异常）。
-    // 其他平台：用 all() 让 wgpu 自行选择（macOS→Metal，Linux→Vulkan）。
+    // 后端选择策略（Windows）：
+    //   DX12 优先（最稳定，无 overlay 层干扰）→ Vulkan fallback → GL 保底。
+    //   wgpu 22 不支持 DX11，Windows 上只有 DX12/Vulkan/GL 三选。
+    //   GL 后端为"降级支持"，WGL present 在某些驱动下有白屏/黑边问题，
+    //   仅在前两者均不可用时（极旧硬件）作为最后兜底。
+    //   因 wgpu 的 backend 优先级是 Vulkan > DX12 > GL，要实现 DX12 优先
+    //   必须先用 DX12-only instance 尝试，失败再逐步放宽到 all()（重建 surface）。
+    // 其他平台（macOS→Metal，Linux→Vulkan）用 all() 让 wgpu 自行选择。
     #[cfg(target_os = "windows")]
-    let backends = wgpu::Backends::DX12;
+    let backend_stages: &[wgpu::Backends] = &[
+        wgpu::Backends::DX12,
+        wgpu::Backends::DX12 | wgpu::Backends::VULKAN,
+        wgpu::Backends::all(),
+    ];
     #[cfg(not(target_os = "windows"))]
-    let backends = wgpu::Backends::all();
-    log::info!("[DEBUG-TEMP] init_graphics: 创建 wgpu Instance (backends={:?})", backends);
-    let instance = wgpu::Instance::new(wgpu::InstanceDescriptor {
-        backends,
-        ..Default::default()
-    });
-    let surface = instance
-        .create_surface(window)
-        .unwrap_or_else(|e| {
-            panic!(
-                "wgpu surface 创建失败：{}\n\
-                 这通常表示显卡驱动有问题或不支持硬件加速。\n\
-                 请更新显卡驱动到最新版本后重试。",
-                e
-            )
-        });
-    log::info!("[DEBUG-TEMP] init_graphics: surface 创建成功");
+    let backend_stages: &[wgpu::Backends] = &[wgpu::Backends::all()];
 
-    log::info!("[DEBUG-TEMP] init_graphics: 请求 adapter (HighPerformance, compatible_surface=Some)");
-    let adapter = pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {
-        power_preference: wgpu::PowerPreference::HighPerformance,
-        compatible_surface: Some(&surface),
-        force_fallback_adapter: false,
-    }))
-    .unwrap_or_else(|| {
-        log::warn!("[DEBUG-TEMP] init_graphics: 首次 request_adapter 失败，尝试 fallback (LowPower, no surface, force_fallback)");
-        // 尝试不依赖 surface 再找一次（某些环境下 surface 兼容性筛选过严）。
-        let fallback = pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {
-            power_preference: wgpu::PowerPreference::LowPower,
-            compatible_surface: None,
-            force_fallback_adapter: true,
+    let mut last_err: Option<String> = None;
+    let mut adapter: Option<wgpu::Adapter> = None;
+    let mut surface: Option<wgpu::Surface<'_>> = None;
+    let mut format: Option<wgpu::TextureFormat> = None;
+
+    for &backends in backend_stages {
+        let instance = wgpu::Instance::new(wgpu::InstanceDescriptor {
+            backends,
+            ..Default::default()
+        });
+        let s = match instance.create_surface(window) {
+            Ok(s) => s,
+            Err(e) => {
+                last_err = Some(format!("surface 创建失败（backends={:?}）：{}", backends, e));
+                continue;
+            }
+        };
+        let force_fallback = backends == wgpu::Backends::all();
+        let a = pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {
+            power_preference: if force_fallback {
+                wgpu::PowerPreference::LowPower
+            } else {
+                wgpu::PowerPreference::HighPerformance
+            },
+            compatible_surface: Some(&s),
+            force_fallback_adapter: force_fallback,
         }));
-        fallback.unwrap_or_else(|| {
-            panic!(
-                "找不到可用的 wgpu 图形适配器。\n\
-                 可能原因：\n\
-                 1. 显卡驱动过旧或不支持 DX12/Vulkan；\n\
-                 2. 系统无硬件加速 GPU；\n\
-                 请更新显卡驱动后重试。"
-            )
-        })
-    });
+        if let Some(a) = a {
+            let caps = s.get_capabilities(&a);
+            let fmt = caps
+                .formats
+                .iter()
+                .copied()
+                .find(|&f| f == wgpu::TextureFormat::Bgra8Unorm)
+                .unwrap_or_else(|| {
+                    caps.formats.first().copied().unwrap_or(wgpu::TextureFormat::Bgra8Unorm)
+                });
+            adapter = Some(a);
+            surface = Some(s);
+            format = Some(fmt);
+            break;
+        }
+        last_err = Some(format!("request_adapter 失败（backends={:?}）", backends));
+    }
+
+    let Some(adapter) = adapter else {
+        panic!(
+            "找不到可用的 wgpu 图形适配器。\n\
+             可能原因：\n\
+             1. 显卡驱动过旧或不支持 DX12/Vulkan；\n\
+             2. 系统无硬件加速 GPU；\n\
+             最后错误：{}\n\
+             请更新显卡驱动后重试。",
+            last_err.unwrap_or_default()
+        )
+    };
+    let mut surface = surface.expect("surface must exist when adapter exists");
+    let format = format.expect("format must exist when adapter exists");
 
     let (device, queue) = pollster::block_on(adapter.request_device(
         &wgpu::DeviceDescriptor {
@@ -705,19 +727,8 @@ pub fn init_graphics(window: &Window) -> (wgpu::Surface<'_>, wgpu::TextureFormat
             adapter.get_info()
         )
     });
-    log::info!("[DEBUG-TEMP] init_graphics: device/queue 获取成功");
-
-    let caps = surface.get_capabilities(&adapter);
-    let format = caps
-        .formats
-        .iter()
-        .copied()
-        .find(|&f| f == wgpu::TextureFormat::Bgra8Unorm)
-        .unwrap_or_else(|| caps.formats.first().copied().unwrap_or(wgpu::TextureFormat::Bgra8Unorm));
-    log::info!("[DEBUG-TEMP] init_graphics: surface caps formats={:?} selected={:?}", caps.formats, format);
 
     let size = window.inner_size();
-    log::info!("[DEBUG-TEMP] init_graphics: 配置 surface {}x{} (物理像素)", size.width, size.height);
     let config = wgpu::SurfaceConfiguration {
         usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
         format,
@@ -729,7 +740,6 @@ pub fn init_graphics(window: &Window) -> (wgpu::Surface<'_>, wgpu::TextureFormat
         view_formats: vec![],
     };
     surface.configure(&device, &config);
-    log::info!("[DEBUG-TEMP] init_graphics: surface.configure 完成");
 
     let scale = window.scale_factor() as f32;
     let logical = (
@@ -800,11 +810,6 @@ pub fn take_surface_dirty() -> bool {
             false
         }
     })
-}
-
-// [DEBUG-TEMP] 返回当前帧顶点数（诊断用：0 表示本帧无绘制指令 → 白屏根因之一）
-pub fn vertex_count() -> usize {
-    BACKEND.with(|b| b.borrow().as_ref().map_or(0, |be| be.vertices.len()))
 }
 
 // ─── 事件处理（pump_events 回调） ─────────────────────────────────────────────
