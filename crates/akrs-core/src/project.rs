@@ -258,41 +258,7 @@ fn recent_projects_path() -> PathBuf {
 }
 
 fn dirs_data_dir() -> Option<PathBuf> {
-    // 跨平台数据目录解析（不依赖外部 crate）：
-    // - Windows: %APPDATA% 或 %USERPROFILE%\AppData\Roaming
-    // - macOS:   ~/Library/Application Support
-    // - Linux:   $XDG_DATA_HOME 或 ~/.local/share
-    #[cfg(target_os = "windows")]
-    {
-        if let Ok(appdata) = std::env::var("APPDATA") {
-            return Some(PathBuf::from(appdata));
-        }
-        if let Ok(home) = std::env::var("USERPROFILE") {
-            return Some(PathBuf::from(home).join("AppData").join("Roaming"));
-        }
-        return None;
-    }
-    #[cfg(target_os = "macos")]
-    {
-        if let Ok(home) = std::env::var("HOME") {
-            return Some(PathBuf::from(home).join("Library").join("Application Support"));
-        }
-        return None;
-    }
-    #[cfg(not(any(target_os = "windows", target_os = "macos")))]
-    {
-        if let Ok(xdg) = std::env::var("XDG_DATA_HOME") {
-            if !xdg.is_empty() {
-                return Some(PathBuf::from(xdg));
-            }
-        }
-        if let Ok(home) = std::env::var("HOME") {
-            let path = PathBuf::from(&home).join(".local").join("share");
-            if path.exists() {
-                return Some(path);
-            }
-            return Some(PathBuf::from(home));
-        }
-        None
-    }
+    // 使用 dirs crate 做跨平台数据目录解析，替代手写的 40 行环境变量逻辑。
+    // 修复了旧实现的 bug：Linux 下 ~/.local/share 不存在时回退到家目录根（污染）。
+    dirs::data_dir().or_else(dirs::data_local_dir)
 }

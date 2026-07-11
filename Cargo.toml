@@ -37,10 +37,6 @@ syn = { version = "2", features = ["full", "extra-traits"] }
 quote = "1"
 proc-macro2 = { version = "1", features = ["span-locations"] }
 proc-macro-error2 = "2"
-# macroquad: 旧渲染后端，任务3 迁移到 wgpu 后将移除。当前保留以渐进迁移：
-# `default-features = false` 关闭 audio feature（quad-snd → quad-alsa-sys），
-# 避免与 kira→cpal→alsa-sys 在 `links = "alsa"` 上冲突。
-macroquad = { version = "0.3", default-features = false }
 # kira: 音频引擎（cpal backend + symphonia 解码 mp3/ogg/vorbis/flac/wav，纯 Rust）。
 kira = "0.12"
 # cosmic-text: 文本 shaping/layout/raster（harfrust + swash，纯 Rust）。
@@ -54,7 +50,7 @@ wgpu = { version = "22", default-features = false, features = ["wgsl", "metal", 
 # winit: 窗口与事件系统。`rwh_06` 与 wgpu 22 的 surface 创建兼容。
 winit = { version = "0.29", features = ["rwh_06"] }
 # image: PNG 解码（同步加载纹理，替换 macroquad 的 async load_texture）。
-image = { version = "0.24", default-features = false, features = ["png"] }
+image = { version = "0.25", default-features = false, features = ["png"] }
 # pollster: 同步阻塞 wgpu 异步初始化（request_adapter/request_device）。
 # pollster 最新版为 0.4（无 1.x），API `block_on` 跨版本兼容。
 pollster = "0.4"
@@ -65,9 +61,6 @@ bytemuck = { version = "1", features = ["derive"] }
 # winit 0.29，与 akrs-render 共享同一锁文件条目，无冲突。默认 features 包含
 # wgpu 渲染器；关闭 tiny-skia（软件渲染兜底，本项目不需要）与 debug 叠层。
 iced = "0.13"
-
-[patch.crates-io]
-macroquad = { path = "patches/macroquad" }
 
 [profile.release]
 opt-level = 3
