@@ -1,10 +1,5 @@
 # AfterDemo 观星夜后
 
-// 隐藏结局声明（彩蛋）：达成结局后解锁尾声剧本「scripts/epilogue.akrs」。
-// 可选 button "..." 子句自定义主页按钮文本；省略时使用翻译键 title.epilogue
-// （默认「尾声之后」/「After the Ending」/「エピローグの後に」/「尾聲之後」）。
-ending "true_end" epilogue "scripts/epilogue.akrs"
-
 "那一晚，我们并肩仰望漫天星辰。"
 
 -> 夏日祭的尾声
@@ -15,7 +10,7 @@ ending "true_end" epilogue "scripts/epilogue.akrs"
 @bg bg1 with fade
 
 // 立绘：心夏（身体1）居中
-+ kokonabody1 at 0.45,0.56 size 1.10
++ 心夏 (kokonabody1) at 0.45,0.56 size 1.10
 
 心夏: "引航者，今天晚上玩得开心吗？"
 
@@ -66,7 +61,7 @@ ending "true_end" epilogue "scripts/epilogue.akrs"
 "过了大约一刻钟，心夏从浴室里出来了。"
 
 // 立绘：心夏（身体2）居中
-+ kokonabody2 at 0.55,0.80 size 2.35
++ 心夏 (kokonabody2) at 0.55,0.80 size 2.35
 
 心夏: "引航者，我回来了哦。"
 
@@ -115,7 +110,7 @@ ending "true_end" epilogue "scripts/epilogue.akrs"
 - 心夏
 
 // 立绘：心夏（身体3）居中
-+ kokonabody3 at 0.55,0.60 size 1.00
++ 心夏 (kokonabody3) at 0.55,0.60 size 1.00
 
 心夏: "还不错嘛，和之前的感觉差不多，多谢引航者啦。"
 
@@ -147,9 +142,5 @@ ending "true_end" epilogue "scripts/epilogue.akrs"
 引航者: "知道啦。我走了，拜拜，晚安。"
 
 心夏: "嗯！引航者明天见，晚安～"
-
-// 解锁隐藏结局：玩家到达此结局后，主页将出现「尾声之后」按钮，
-// 点击即可进入隐藏的尾声剧本（淡入淡出，无需确认）。
-unlock "true_end"
 
 ~~

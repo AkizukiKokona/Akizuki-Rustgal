@@ -307,6 +307,16 @@ impl TransitionManager {
         chars_exit: &[String],
         new_music: Option<Option<String>>,
     ) {
+        let before: Vec<String> = scene.characters.iter()
+            .map(|c| format!("{}({:?})", c.name, c.pose)).collect();
+        eprintln!(
+            "[akrs-debug] transition.apply_changes START | scene before=[{}] | enter={:?} exit={:?} bg={:?}",
+            before.join(", "),
+            chars_enter.iter().map(|(n, p, _, _)| format!("{}({:?})", n, p)).collect::<Vec<_>>(),
+            chars_exit,
+            new_bg
+        );
+
         if let Some(bg) = new_bg {
             match bg {
                 Some(name) => scene.set_background(name),
@@ -328,6 +338,13 @@ impl TransitionManager {
         if let Some(music) = new_music {
             scene.music = music;
         }
+
+        let after: Vec<String> = scene.characters.iter()
+            .map(|c| format!("{}({:?})", c.name, c.pose)).collect();
+        eprintln!(
+            "[akrs-debug] transition.apply_changes END | scene after=[{}]",
+            after.join(", ")
+        );
     }
 }
 

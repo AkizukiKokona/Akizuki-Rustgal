@@ -417,6 +417,12 @@ pub struct EditorApp {
     project_config: ProjectConfig,
     /// 是否已经加载了项目配置。
     project_loaded: bool,
+    /// 项目根目录（open_project 时记录，预览子进程的 CWD 用此而非 work_dir）。
+    /// work_dir 会被 open_file_path 覆盖为「打开文件的父目录」，但预览子进程
+    /// 必须以项目根为 CWD，否则 saves/*.json、project.json、assets/ 读取错误。
+    project_dir: Option<PathBuf>,
+    /// 是否显示「请先保存再预览」提示弹窗。
+    show_save_reminder: bool,
     /// 最近打开的项目列表。
     recent_projects: RecentProjects,
     /// 是否显示项目设置对话框。
@@ -644,6 +650,8 @@ impl Default for EditorApp {
             file_picker: None,
             project_config: ProjectConfig::default(),
             project_loaded: false,
+            project_dir: None,
+            show_save_reminder: false,
             recent_projects,
             show_project_settings: false,
             title_warning: None,
@@ -848,6 +856,14 @@ impl EditorApp {
                 self.current_file = Some(path);
                 self.file_name_input = name.clone();
                 self.status = format!("已保存 {}", name);
+                // main_script 一致性检查：若保存的文件名与 project.json 的
+                // main_script 不一致，状态栏追加提示（非阻断）。
+                if self.project_loaded && name != self.project_config.main_script {
+                    self.status.push_str(&format!(
+                        " ｜ 提示：当前文件不是 project.json 的 main_script（{}），直接启动游戏将运行 {}；编辑器预览不受影响",
+                        self.project_config.main_script, self.project_config.main_script
+                    ));
+                }
                 self.refresh_file_list();
             }
             Err(e) => {
@@ -863,6 +879,7 @@ impl EditorApp {
         // 加载项目配置
         self.project_config = ProjectConfig::load(project_dir);
         self.project_loaded = true;
+        self.project_dir = Some(project_dir.to_path_buf());
         self.work_dir = project_dir.to_path_buf();
         self.refresh_file_list();
 
@@ -1211,24 +1228,43 @@ impl EditorApp {
             return;
         }
 
-        // 先保存当前文件
-        if self.current_file.is_some() {
-            self.save_file();
+        // 未存档的新建文件无法预览：没有文件路径可传给游戏。
+        if self.current_file.is_none() {
+            self.show_save_reminder = true;
+            return;
         }
+
+        // 先保存当前文件，确保预览运行的是最新内容。
+        self.save_file();
+
+        // 把当前编辑的文件路径作为 --script 参数传给游戏，
+        // 确保运行的就是用户当前编辑的文件（而非 project.json 的 main_script 或 demo 回退）。
+        let script_path = match &self.current_file {
+            Some(p) => p.clone(),
+            None => return,
+        };
+
+        // 预览子进程的 CWD 必须是项目根目录，而非 work_dir。
+        // open_file_path 会把 work_dir 覆盖为「打开文件的父目录」，
+        // 若以 work_dir 为 CWD，游戏会从错误子目录读取 saves/*.json、assets/ 等。
+        let preview_cwd = self.project_dir.clone().unwrap_or_else(|| self.work_dir.clone());
 
         match Command::new("cargo")
             .arg("run")
             .arg("--release")
             .arg("-p")
             .arg("akrs-game")
-            .current_dir(&self.work_dir)
+            .arg("--")
+            .arg("--script")
+            .arg(&script_path)
+            .current_dir(&preview_cwd)
             .stdout(Stdio::inherit())
             .stderr(Stdio::inherit())
             .spawn()
         {
             Ok(child) => {
                 self.game_process = Some(child);
-                self.status = "游戏预览已启动（独立窗口）".to_string();
+                self.status = format!("游戏预览已启动（{}，CWD={}）", script_path.display(), preview_cwd.display());
             }
             Err(e) => {
                 self.status = format!("启动预览失败: {}", e);
@@ -1892,6 +1928,8 @@ enum Message {
     StartBuild,
     ToggleBuildDialog,
     CloseCargoGuide,
+    /// 关闭「请先保存再预览」提示弹窗。
+    CloseSaveReminder,
 
     // 资源预览
     ScanSprites,
@@ -2117,6 +2155,7 @@ impl EditorApp {
             Message::StartBuild => self.start_build(),
             Message::ToggleBuildDialog => self.build.show = !self.build.show,
             Message::CloseCargoGuide => self.show_cargo_guide = false,
+            Message::CloseSaveReminder => self.show_save_reminder = false,
             Message::ScanSprites => self.scan_sprites(),
             Message::ScanBgs => self.scan_bgs(),
             Message::ScanMusic => self.scan_music(),
@@ -2262,6 +2301,9 @@ impl EditorApp {
         }
         if self.show_cargo_guide {
             layers.push(self.view_cargo_guide_modal());
+        }
+        if self.show_save_reminder {
+            layers.push(self.view_save_reminder_modal());
         }
         if self.title_warning.is_some() {
             layers.push(self.view_title_warning_modal());
@@ -3627,6 +3669,26 @@ impl EditorApp {
         .width(Length::Fill);
 
         self.modal_card("提示", Message::CloseCargoGuide, body.into())
+    }
+
+    fn view_save_reminder_modal(&self) -> Element<'_, Message> {
+        let body = column![
+            text("当前文件尚未保存到磁盘，无法预览。").size(14.0).color(COLOR_FLOW),
+            text("请先按 Ctrl+S 保存文件（或用左栏文件名输入框命名后保存），再点击预览。")
+                .size(12.0)
+                .color(Color::from_rgb(0.75, 0.78, 0.84)),
+            Space::new(Length::Fill, 8),
+            row![
+                horizontal_space(),
+                button(text("知道了").size(12.0))
+                    .on_press(Message::CloseSaveReminder)
+                    .padding([5, 12]),
+            ],
+        ]
+        .spacing(4)
+        .width(Length::Fill);
+
+        self.modal_card("无法预览", Message::CloseSaveReminder, body.into())
     }
 
     fn view_title_warning_modal(&self) -> Element<'_, Message> {
