@@ -11,6 +11,11 @@ akrs-runtime = { workspace = true }
 # 且 `iced::window::icon::from_file_data` 解码窗口图标也依赖该 feature。
 # `smol` 提供 iced 的异步运行时后端，`iced::time::every` 轮询子进程需要它。
 iced = { workspace = true, features = ["image", "smol", "advanced"] }
+# iced_aw：iced 官方附加组件库。iced_aw 0.10 对应 iced 0.13（其 Cargo.toml 声明
+# `iced = "^0.13.0"`，与编辑器框架版本一致）。`default-features = false` 后按需启用：
+# - `card`：弹窗卡片（替代手写的 opaque+container 卡片）
+# - `tabs`：右栏预览面板的标签页（替代手写的按钮式 tab bar）
+iced_aw = { version = "0.10", default-features = false, features = ["card", "tabs"] }
 # 用于在编辑器中解码 PNG 立绘以供预览（不启动游戏进程）。
 image = { version = "0.24", default-features = false, features = ["png"] }
 

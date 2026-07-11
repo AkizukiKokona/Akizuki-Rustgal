@@ -10,8 +10,8 @@
 
 ## 待办（用户已确认全部执行，按推荐方案）
 
-- [ ] **音频**：重写 audio.rs 封装层。维持 kira 0.12，补：(1) StreamingSoundData 流式播放长 BGM 省内存；(2) BGM/SE/Voice 三条 Track 让 settings.rs 的 bgm_volume/sfx_volume/voice_volume 真正生效；(3) kira Tween 实现 BGM 交叉淡入 crossfade。无依赖冲突。
-- [ ] **文本**：text.rs 改用 cosmic-text Buffer/Layout API。把 draw_text_ex 从逐字符 advance 改为 Buffer→layout→遍历 glyphs。免费获得 harfrust shaping/bidi/kerning/字符级回退，删手写 wrap_text_cn/draw_text_wrapped。无依赖冲突。
+- [x] **音频**：重写 audio.rs 封装层（86d356b）。SoundKind 三轨路由 + BGM 流式 + crossfade，settings 三轨音量生效。
+- [x] **文本**：text.rs 改用 cosmic-text Buffer/Layout（86d356b）。shaping/bidi/kerning/字符级回退，签名全兼容。
 - [ ] **游戏内 UI**：渐进嵌入 iced 0.13 作运行时 UI。先迁控件型 UI（设置/存档/标题/目录选择器），保留对话框/立绘/打字机自绘。iced 0.13 共享 wgpu 22 无冲突，但 retained/immediate 混合需分层渲染。
 - [ ] **编辑器 UI**：引入 iced_aw 扩展（menu/modal/sidebar/number_input/color_picker 替代部分手写弹窗）+ iced_glyphon 做构建日志终端。维持 iced 0.13。
 

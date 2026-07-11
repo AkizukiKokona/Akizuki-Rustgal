@@ -31,6 +31,9 @@ use iced::{
     Subscription, Task, Theme,
 };
 
+// iced_aw 附加组件：`Card` 统一弹窗卡片，`Tabs`/`TabLabel` 用于右栏预览标签页。
+use iced_aw::widget::{Card, TabLabel, Tabs};
+
 use akrs_core::{
     compile, format_location, CompileError, ErrSeverity, Position, ProjectConfig, RecentProjects,
 };
@@ -2675,50 +2678,44 @@ impl EditorApp {
     }
 
     fn view_right_panel(&self) -> Element<'_, Message> {
-        let tabs_row = row(
-            PreviewTab::ALL
-                .iter()
-                .map(|t| {
-                    let active = *t == self.preview_tab;
-                    button(text(t.label()).size(12.0))
-                        .on_press(Message::PreviewTabChanged(*t))
-                        .padding([4, 8])
-                        .style(move |_theme, _status| button::Style {
-                            background: Some(Background::Color(if active {
-                                Color::from_rgb(0.22, 0.26, 0.34)
-                            } else {
-                                Color::from_rgb(0.12, 0.13, 0.16)
-                            })),
-                            text_color: if active { COLOR_FLOW } else { Color::from_rgb(0.7, 0.72, 0.78) },
-                            border: Border::default().rounded(4.0),
-                            ..Default::default()
-                        })
-                        .into()
-                })
-                .collect::<Vec<_>>(),
-        )
-        .spacing(2);
+        // 用 iced_aw::Tabs 替代手写的按钮式 tab bar：Tabs 内置标签栏 + 内容区，
+        // 切换由 Message::PreviewTabChanged 驱动，活动标签由 set_active_tab 指定。
+        // 遍历 PreviewTab::ALL 注册全部标签，避免逐个手写重复的 push 块。
+        let mut tabs = Tabs::new(Message::PreviewTabChanged);
+        for t in PreviewTab::ALL {
+            tabs = tabs.push(
+                t,
+                TabLabel::Text(t.label().to_string()),
+                scrollable(self.view_for_tab(t))
+                    .width(Length::Fill)
+                    .height(Length::Fill),
+            );
+        }
+        let tabs = tabs
+            .set_active_tab(&self.preview_tab)
+            .width(Length::Fill)
+            .height(Length::Fill);
 
-        let body: Element<'_, Message> = match self.preview_tab {
-            PreviewTab::Script => self.view_script_preview(),
-            PreviewTab::Sprite => self.view_sprite_preview(),
-            PreviewTab::Background => self.view_bg_preview(),
-            PreviewTab::Music => self.view_music_preview(),
-            PreviewTab::Outline => self.view_outline(),
-        };
-
-        let content = column![tabs_row, scrollable(body).width(Length::Fill).height(Length::Fill)]
-            .spacing(4)
-            .padding(8);
-
-        container(content)
+        container(tabs)
             .width(320)
             .height(Length::Fill)
+            .padding(8)
             .style(|_t| container::Style {
                 background: Some(Background::Color(Color::from_rgb(0.08, 0.09, 0.12))),
                 ..Default::default()
             })
             .into()
+    }
+
+    /// 按 PreviewTag 取对应预览主体。供 iced_aw::Tabs 注册各标签内容。
+    fn view_for_tab(&self, tab: PreviewTab) -> Element<'_, Message> {
+        match tab {
+            PreviewTab::Script => self.view_script_preview(),
+            PreviewTab::Sprite => self.view_sprite_preview(),
+            PreviewTab::Background => self.view_bg_preview(),
+            PreviewTab::Music => self.view_music_preview(),
+            PreviewTab::Outline => self.view_outline(),
+        }
     }
 
     fn view_script_preview(&self) -> Element<'_, Message> {
@@ -3260,8 +3257,10 @@ impl EditorApp {
 
     // -- 弹窗 -------------------------------------------------------------
     //
-    // 每个弹窗由 `opaque(...)` 全屏遮罩 + 居中的 `container` 卡片组成，
-    // 模拟 modal 行为：opaque 拦截下层事件。
+    // 弹窗机制：`iced_aw` 并未提供独立的 `modal` 组件（其历史上的 modal 已弃用，
+    // 官方建议改用 iced 的 `stack` + `opaque` 组合——本编辑器即采用此模式）。
+    // 这里用 `iced_aw::Card` 统一卡片外观（标题头 + 关闭按钮 + 主体），再用
+    // `opaque` 全屏遮罩居中显示，模拟 modal 行为：opaque 拦截下层事件。
 
     fn modal_card<'a>(
         &'a self,
@@ -3269,26 +3268,34 @@ impl EditorApp {
         close_msg: Message,
         body: Element<'a, Message>,
     ) -> Element<'a, Message> {
-        let header = row![
-            text(title).size(15.0).color(COLOR_FLOW),
-            horizontal_space(),
-            button(text("✕").size(13.0))
-                .on_press(close_msg)
-                .padding([2, 8]),
-        ];
-
-        let card = container(column![header, body].spacing(12))
-            .padding(16)
-            .max_width(560)
-            .style(|_t| container::Style {
-                background: Some(Background::Color(Color::from_rgb(0.12, 0.14, 0.18))),
-                border: Border::default().rounded(8.0).color(Color::from_rgb(0.25, 0.28, 0.35)),
-                shadow: Shadow {
-                    color: Color::from_rgba8(0, 0, 0, 0.5),
-                    ..Default::default()
-                },
-                ..Default::default()
+        // Card 自带标题头与 on_close 关闭按钮，替代手写的 row![标题, ✕] 头部。
+        // Card 的 Style 不含阴影字段，保留原有阴影以维持视觉深度。
+        let card = Card::new(text(title).size(15.0).color(COLOR_FLOW), body)
+            .padding(Padding::from(16))
+            .max_width(560.0)
+            .on_close(close_msg)
+            .style(|_theme, _status| iced_aw::style::card::Style {
+                background: Background::Color(Color::from_rgb(0.12, 0.14, 0.18)),
+                border_radius: 8.0,
+                border_width: 1.0,
+                border_color: Color::from_rgb(0.25, 0.28, 0.35),
+                head_background: Background::Color(Color::TRANSPARENT),
+                head_text_color: COLOR_FLOW,
+                body_background: Background::Color(Color::TRANSPARENT),
+                body_text_color: Color::WHITE,
+                foot_background: Background::Color(Color::TRANSPARENT),
+                foot_text_color: Color::WHITE,
+                close_color: Color::from_rgb(0.7, 0.72, 0.78),
             });
+
+        // Card::Style 无阴影字段，外层 container 补回原阴影。
+        let card = container(card).style(|_t| container::Style {
+            shadow: Shadow {
+                color: Color::from_rgba8(0, 0, 0, 0.5),
+                ..Default::default()
+            },
+            ..Default::default()
+        });
 
         opaque(
             container(card)
