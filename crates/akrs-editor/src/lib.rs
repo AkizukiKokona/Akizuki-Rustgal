@@ -1515,6 +1515,37 @@ impl EditorApp {
 
                 // 悬停 tooltip：鼠标在 => / <= 上时显示配对信息。
                 self.show_flow_hover_tooltip(ui.ctx(), &output, &marks, &pairs);
+
+                // Ctrl+点击剧本中的 `+ 角色 ... at x,y size N` 行时，
+                // 右侧立绘预览跳转到该参数。
+                if output.response.clicked()
+                    && ui.input(|i| i.modifiers.ctrl)
+                {
+                    if let Some(ci) = cursor_ccursor {
+                        // 从字符位置找到所在行。
+                        let line_start = self.editor_content[..ci.min(self.editor_content.len())]
+                            .rfind('\n')
+                            .map(|p| p + 1)
+                            .unwrap_or(0);
+                        let line_end = self.editor_content[ci.min(self.editor_content.len())..]
+                            .find('\n')
+                            .map(|p| ci + p)
+                            .unwrap_or(self.editor_content.len());
+                        let line = &self.editor_content[line_start..line_end];
+                        if let Some(preview) = parse_sprite_line(line) {
+                            self.status = format!(
+                                "已跳转到立绘预览：{} ({})",
+                                preview.character_name, preview.selected
+                            );
+                            self.sprite_preview.character_name = preview.character_name;
+                            self.sprite_preview.selected = preview.selected;
+                            self.sprite_preview.x_percent = preview.x;
+                            self.sprite_preview.y_percent = preview.y;
+                            self.sprite_preview.scale = preview.scale;
+                            self.sprite_preview.load_error = None;
+                        }
+                    }
+                }
             });
     }
 
@@ -2119,19 +2150,16 @@ impl EditorApp {
                 let y_frac = self.sprite_preview.y_percent;
                 // x：立绘中心点对齐到预览区 x_frac。
                 let x = rect.left() + preview_w * x_frac - draw_w / 2.0;
-                // y：1.0 时底部贴齐（留 50/1080 比例边距，与游戏一致）；
-                //    否则立绘中心点对齐到预览区 y_frac。
-                let bottom_margin = preview_h * (50.0 / 1080.0);
-                let y = if (y_frac - 1.0).abs() < 0.001 {
-                    rect.bottom() - draw_h - bottom_margin
-                } else {
-                    rect.top() + preview_h * y_frac - draw_h / 2.0
-                };
+                // y：立绘中心点对齐到预览区 y_frac（统一公式，无 1.0 特殊判断，
+                // 避免拖动到 1.0 时从底部跳到顶部的突变）。
+                let y = rect.top() + preview_h * y_frac - draw_h / 2.0;
                 let dest_rect = egui::Rect::from_min_size(
                     egui::pos2(x, y),
                     egui::Vec2::new(draw_w, draw_h),
                 );
-                painter.image(
+                // 用预览区域作为裁剪矩形，超出部分不绘制。
+                let clipped = painter.with_clip_rect(rect);
+                clipped.image(
                     handle.id(),
                     dest_rect,
                     egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)),
@@ -4525,6 +4553,116 @@ fn compute_flow_pairs(marks: &[FlowMark]) -> Vec<Option<usize>> {
 /// 光标位置为字符间隙；`char_idx` 落在 `[char_start, char_end]`（含端点）即视为停在该标记上。
 fn mark_at_cursor(marks: &[FlowMark], char_idx: usize) -> Option<usize> {
     marks.iter().position(|m| char_idx >= m.char_start && char_idx <= m.char_end)
+}
+
+// ---------------------------------------------------------------------------
+// 立绘指令行解析（Ctrl+点击跳转预览用）
+// ---------------------------------------------------------------------------
+
+/// `parse_sprite_line` 的解析结果。
+struct ParsedSpriteLine {
+    character_name: String,
+    selected: String,
+    x: f32,
+    y: f32,
+    scale: f32,
+}
+
+/// 解析剧本中的 `+ 角色 ...` 立绘指令行，提取预览参数。
+///
+/// 支持的语法（与 parser.rs 的 `parse_direction` 一致）：
+/// - `+ 角色`
+/// - `+ 角色 (pose)`
+/// - `+ 角色 at 0.45,0.56`
+/// - `+ 角色 at 0.45,0.56 size 1.10`
+/// - `+ 角色 居中`（中文位置词）
+/// - `+ 角色 (pose) swap`（差分更换）
+///
+/// 无 `at`/位置词时 x 默认 0.5，y 默认 1.0；无 `size` 时 scale 默认 1.0。
+/// 有 pose 时 `selected` = pose，否则 `selected` = 角色名。
+///
+/// 非 `+` 开头的行返回 `None`。
+fn parse_sprite_line(line: &str) -> Option<ParsedSpriteLine> {
+    let trimmed = line.trim_start();
+    if !trimmed.starts_with('+') {
+        return None;
+    }
+    // 跳过 `+` 和后续空白。
+    let rest = trimmed[1..].trim_start();
+    if rest.is_empty() {
+        return None;
+    }
+
+    // 读取角色名：到空格 / `(` / 行尾为止。
+    let name_end = rest
+        .find(|c: char| c.is_whitespace() || c == '(')
+        .unwrap_or(rest.len());
+    let character_name = rest[..name_end].to_string();
+    if character_name.is_empty() {
+        return None;
+    }
+    let mut remaining = rest[name_end..].trim_start();
+
+    // 可选 pose：`(pose)`。
+    let mut pose: Option<String> = None;
+    if remaining.starts_with('(') {
+        let close = remaining.find(')')?;
+        let p = remaining[1..close].trim();
+        if !p.is_empty() {
+            pose = Some(p.to_string());
+        }
+        remaining = remaining[close + 1..].trim_start();
+    }
+
+    // 扫描剩余 token，提取 at / size / 位置词。
+    let mut x = 0.5_f32;
+    let mut y = 1.0_f32;
+    let mut scale = 1.0_f32;
+
+    let mut tokens = remaining.split_whitespace();
+    while let Some(tok) = tokens.next() {
+        match tok {
+            "at" => {
+                // `at x` 或 `at x,y`（百分比位置）。
+                let val = tokens.next()?;
+                let (xv, yv) = if let Some(comma) = val.find(',') {
+                    let xv: f32 = val[..comma].trim().parse().ok()?;
+                    let yv: f32 = val[comma + 1..].trim().parse().ok()?;
+                    (xv, Some(yv))
+                } else {
+                    let xv: f32 = val.parse().ok()?;
+                    (xv, None)
+                };
+                x = xv;
+                if let Some(yv) = yv {
+                    y = yv;
+                }
+            }
+            "size" => {
+                let val = tokens.next()?;
+                let s: f32 = val.parse().ok()?;
+                if s > 0.0 {
+                    scale = s;
+                }
+            }
+            // 位置词（与 Position::from_name + x_fraction 一致）。
+            "left" | "居左" | "左" => x = 0.25,
+            "center" | "centre" | "居中" | "中" => x = 0.5,
+            "right" | "居右" | "右" => x = 0.75,
+            // 其他词（enters/exits/swap/with transition/from 等）跳过。
+            _ => {}
+        }
+    }
+
+    let selected = pose.unwrap_or_else(|| character_name.clone());
+
+    Some(ParsedSpriteLine {
+        character_name,
+        selected,
+        x,
+        y,
+        scale,
+    })
 }
 
 // ---------------------------------------------------------------------------

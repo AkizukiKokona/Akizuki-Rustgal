@@ -2743,15 +2743,18 @@ fn draw_chapter_toast(anim: &ChapterAnimation, sw: f32, sh: f32, font: &Option<F
 
     let text_color = Color::new(0.10, 0.10, 0.14, 1.0);
 
-    // 第一行：章节名（居中）。
+    // 第一行：章节标识符（居中，常规字重）。
     let name_y = draw_y + pad_y + name_size; // baseline 在字号处
     let name_x = toast_x + (toast_w - name_w) / 2.0;
     draw_text_f(name, name_x, name_y, name_size, text_color, font);
 
-    // 第二行：章节标题（居中）。
+    // 第二行：章节标题（居中，加粗——macroquad 无粗体字重参数，
+    // 用 1px 偏移重绘模拟加粗，与 crash 标题做法一致）。
     if let Some(t) = title {
         let title_y = name_y + gap + title_size;
         let title_x = toast_x + (toast_w - title_w) / 2.0;
+        draw_text_f(t, title_x + 1.0, title_y, title_size, text_color, font);
+        draw_text_f(t, title_x, title_y + 1.0, title_size, text_color, font);
         draw_text_f(t, title_x, title_y, title_size, text_color, font);
     }
 }
