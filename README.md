@@ -5,10 +5,10 @@
 **纯 Rust 打造的视觉小说引擎 — 编译时检查、自定义 DSL、跨平台运行**
 
 [![License](https://img.shields.io/badge/license-MIT-blue.svg)](#许可证)
-[![Rust](https://img.shields.io/badge/rust-1.96+-orange.svg)](https://www.rust-lang.org)
-[![Version](https://img.shields.io/badge/version-1.0.71-success.svg)](#)
+[![Rust](https://img.shields.io/badge/rust-1.92+-orange.svg)](https://www.rust-lang.org)
+[![Version](https://img.shields.io/badge/version-1.0.72-success.svg)](#)
 [![Platform](https://img.shields.io/badge/platform-Windows%20%7C%20Linux%20%7C%20macOS-lightgrey.svg)](#下载与安装)
-[![PRs Welcome](https://img.shields.io/badge/PRs-welcome-brightgreen.svg)](#贡献)
+[![PRs Allowed](https://img.shields.io/badge/PRs-allowed-yellow.svg)](#贡献)
 
 </div>
 
@@ -151,7 +151,7 @@ cargo run --release -p akrs-game
 cargo run --release -p akrs-editor
 ```
 
-> **Rust 版本要求**：1.96.1+（使用 Rust 2024 Edition）
+> **Rust 版本要求**：1.92.0+（使用 Rust 2024 Edition）
 >
 > **Linux 额外依赖**：`libxcb-render-util0-dev libxcb-shape0-dev libxcb-xfixes0-dev libxcb-xkb-dev libasound2-dev`
 >
@@ -343,7 +343,9 @@ strip = true         # 去除调试符号
 
 ## 贡献
 
-欢迎提交 Issue 和 Pull Request！
+欢迎通过 Issue 反馈 bug 与功能建议。
+
+关于 Pull Request：您**可以**提交 PR，不过有一点想先说明——本项目坚持 **100% 纯 Rust** 实现，从词法分析到渲染、编辑器，每一行代码都是 Rust，不依赖任何脚本运行时。因此只有同样以纯 Rust 完成的贡献才能被合入；若您的改动需要借助非 Rust 组件（Python / Lua / TJS 等）或通过 FFI 调用非 Rust 库，通常无法采纳，这种情况欢迎改为提交 Issue 描述需求。
 
 1. Fork 本仓库
 2. 创建功能分支（`git checkout -b feature/amazing-feature`）
