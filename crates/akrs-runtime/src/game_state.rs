@@ -290,6 +290,11 @@ impl SceneState {
         position: Position,
         transform: SpriteTransform,
     ) {
+        // 调试日志：定位「立绘叠加」问题。demo 的 `at x,y size N` 语法走此方法。
+        let before: Vec<String> = self.characters.iter()
+            .map(|c| format!("{}({:?})", c.name, c.pose)).collect();
+        let log_name = name.clone();
+        let log_pose = pose.clone();
         self.characters.retain(|c| c.name != name);
         let scale = transform.scale.unwrap_or(1.0);
         self.characters.push(CharacterState {
@@ -302,6 +307,12 @@ impl SceneState {
             custom_x: transform.x,
             custom_y: transform.y,
         });
+        let after: Vec<String> = self.characters.iter()
+            .map(|c| format!("{}({:?})", c.name, c.pose)).collect();
+        eprintln!(
+            "[akrs-debug] character_enter_at_with: name={:?} pose={:?} pos={:?} | before=[{}] after=[{}]",
+            log_name, log_pose, position, before.join(", "), after.join(", ")
+        );
     }
 
     /// Remove a character from stage and recalculate remaining positions.

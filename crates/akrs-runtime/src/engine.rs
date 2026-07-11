@@ -1054,6 +1054,10 @@ impl Engine {
                     self.scene.background = snap.background;
                     self.scene.characters = snap.characters;
                     self.scene.music = snap.music.clone();
+                    eprintln!(
+                        "[akrs-debug] load(slot): 恢复场景快照，characters=[{}]",
+                        self.scene.characters.iter().map(|c| format!("{}({:?})", c.name, c.pose)).collect::<Vec<_>>().join(", ")
+                    );
                     if let Some(name) = &self.scene.music {
                         if !name.is_empty() {
                             events.push(EngineEvent::MusicChanged { name: name.clone() });
@@ -1065,6 +1069,10 @@ impl Engine {
                         self.scene.background = rebuilt.background.clone();
                         self.scene.characters = rebuilt.characters.clone();
                         self.scene.music = rebuilt.music.clone();
+                        eprintln!(
+                            "[akrs-debug] load(slot): 重建场景，characters=[{}]",
+                            self.scene.characters.iter().map(|c| format!("{}({:?})", c.name, c.pose)).collect::<Vec<_>>().join(", ")
+                        );
                         if let Some(name) = &self.scene.music {
                             if !name.is_empty() {
                                 events.push(EngineEvent::MusicChanged { name: name.clone() });
@@ -1288,6 +1296,10 @@ impl Engine {
                     self.scene.background = snap.background;
                     self.scene.characters = snap.characters;
                     self.scene.music = snap.music.clone();
+                    eprintln!(
+                        "[akrs-debug] load(autosave/continue/quicksave): 恢复场景快照，characters=[{}]",
+                        self.scene.characters.iter().map(|c| format!("{}({:?})", c.name, c.pose)).collect::<Vec<_>>().join(", ")
+                    );
                     if let Some(name) = &self.scene.music {
                         if !name.is_empty() {
                             events.push(EngineEvent::MusicChanged { name: name.clone() });
@@ -1386,6 +1398,10 @@ impl Engine {
                     self.scene.background = snap.background;
                     self.scene.characters = snap.characters;
                     self.scene.music = snap.music.clone();
+                    eprintln!(
+                        "[akrs-debug] load(autosave/continue/quicksave): 恢复场景快照，characters=[{}]",
+                        self.scene.characters.iter().map(|c| format!("{}({:?})", c.name, c.pose)).collect::<Vec<_>>().join(", ")
+                    );
                     if let Some(name) = &self.scene.music {
                         if !name.is_empty() {
                             events.push(EngineEvent::MusicChanged { name: name.clone() });
@@ -1475,6 +1491,10 @@ impl Engine {
                     self.scene.background = snap.background;
                     self.scene.characters = snap.characters;
                     self.scene.music = snap.music.clone();
+                    eprintln!(
+                        "[akrs-debug] load(autosave/continue/quicksave): 恢复场景快照，characters=[{}]",
+                        self.scene.characters.iter().map(|c| format!("{}({:?})", c.name, c.pose)).collect::<Vec<_>>().join(", ")
+                    );
                     if let Some(name) = &self.scene.music {
                         if !name.is_empty() {
                             events.push(EngineEvent::MusicChanged { name: name.clone() });

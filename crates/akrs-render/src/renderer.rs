@@ -1096,6 +1096,11 @@ pub async fn run(mut engine: Engine, project_config: &ProjectConfig) {
     // 已应用的全屏设置值。只有点击"应用"按钮时才会更新此值。
     // 启动时用 engine.settings().fullscreen 初始化（应用上次保存的偏好）。
     let mut applied_fullscreen: bool = engine.settings().fullscreen;
+    // 全屏切换重试机制（针对 Linux/Mutter 等 WM 上 set_fullscreen 不可靠的问题）。
+    // 当发起全屏切换后，连续 N 帧重复调用 set_fullscreen，确保 WM 真正处理。
+    // 从全屏切窗口时，窗口尺寸恢复延迟到重试结束后再执行，避免同帧冲突。
+    let mut fullscreen_retry: u32 = 0;
+    let mut pending_window_restore: bool = false;
     // 待应用的分辨率变更标志。仅在用户点击"应用"按钮时置 true，
     // 主循环消费后置 false。主循环读取 engine.settings().resolution 并夹取到
     // 屏幕能容纳的范围内，再调整窗口尺寸并居中。
@@ -1182,22 +1187,43 @@ pub async fn run(mut engine: Engine, project_config: &ProjectConfig) {
         // 全屏状态同步：使用 applied_fullscreen（已应用的值）而非正在编辑的值。
         // 这样设置菜单中切换全屏开关不会立即生效，只有点击"应用"后才生效。
         // 从全屏恢复为窗口时，恢复为屏幕面积的 ~70% 大小并居中。
+        //
+        // Linux（尤其 Ubuntu 22.04 / Mutter / XWayland）上 miniquad 的
+        // set_fullscreen(false) 不可靠，WM 可能静默忽略。因此采用重试机制：
+        // 连续多帧重复调用 set_fullscreen，且窗口尺寸恢复延迟到重试结束后，
+        // 避免 set_window_size 撞在 WM 仍锁 fullscreen 几何的窗口上被忽略。
         {
             let want_fullscreen = applied_fullscreen;
             if want_fullscreen != last_fullscreen_applied {
-                set_fullscreen(want_fullscreen);
-                // 如果从全屏恢复为窗口模式，重新计算窗口大小并居中
-                if !want_fullscreen && last_fullscreen_applied {
-                    let (screen_w, screen_h) = get_screen_size();
-                    let (win_w, win_h) = calculate_window_size(screen_w, screen_h, dpi);
-                    request_new_screen_size(win_w as f32, win_h as f32);
-                    // 物理像素尺寸 = 逻辑 × DPI，用于平台层居中调用
-                    crate::platform::center_window_on_screen(
-                        (win_w as f32 * dpi) as i32,
-                        (win_h as f32 * dpi) as i32,
-                    );
+                // 首次检测到差异：发起切换，启动重试计数。
+                if fullscreen_retry == 0 {
+                    set_fullscreen(want_fullscreen);
+                    // 从全屏切窗口：标记待恢复尺寸，但不立即执行（等重试结束）。
+                    if !want_fullscreen && last_fullscreen_applied {
+                        pending_window_restore = true;
+                    }
+                    fullscreen_retry = 30; // 约 0.5 秒（60fps），连续 30 帧重试
                 }
-                last_fullscreen_applied = want_fullscreen;
+            }
+
+            // 重试期间每帧重复调用 set_fullscreen，应对 WM 不响应。
+            if fullscreen_retry > 0 {
+                set_fullscreen(applied_fullscreen);
+                fullscreen_retry -= 1;
+                // 重试结束：确认切换成功，执行延迟的窗口尺寸恢复。
+                if fullscreen_retry == 0 {
+                    last_fullscreen_applied = applied_fullscreen;
+                    if pending_window_restore {
+                        pending_window_restore = false;
+                        let (screen_w, screen_h) = get_screen_size();
+                        let (win_w, win_h) = calculate_window_size(screen_w, screen_h, dpi);
+                        request_new_screen_size(win_w as f32, win_h as f32);
+                        crate::platform::center_window_on_screen(
+                            (win_w as f32 * dpi) as i32,
+                            (win_h as f32 * dpi) as i32,
+                        );
+                    }
+                }
             }
         }
 
@@ -2592,6 +2618,16 @@ async fn draw_single_background(bg: &BackgroundState, assets: &mut AssetManager,
 }
 
 async fn draw_characters(scene: &SceneState, assets: &mut AssetManager, sw: f32, sh: f32, font: &Option<Font>, scale: f32) {
+    // 调试日志：当场上同时有 2 个或以上角色时打印，定位「立绘叠加」问题。
+    // 无论角色是通过 enter_at_with / enter_with / 存档恢复哪种路径进入的，
+    // 只要 scene.characters 里有多个条目就会在此暴露。
+    if scene.characters.len() >= 2 {
+        eprintln!(
+            "[akrs-debug] draw_characters: 场上有 {} 个角色：[{}]",
+            scene.characters.len(),
+            scene.characters.iter().map(|c| format!("{}({:?})", c.name, c.pose)).collect::<Vec<_>>().join(", ")
+        );
+    }
     for char_state in &scene.characters {
         // 优先使用精确百分比位置（custom_x/custom_y）；否则回退到 position 字段。
         let x_frac = char_state.custom_x.unwrap_or_else(|| char_state.position.x_fraction());
