@@ -18,7 +18,7 @@ use std::io::Read;
 use eframe::egui;
 use egui::{ColorImage, TextureHandle};
 
-use akrs_core::{compile, format_location, CompileError, DismissedWarnings, ErrSeverity, Position, ProjectConfig, RecentProjects};
+use akrs_core::{compile, format_location, CompileError, dirs_data_dir, DismissedWarnings, ErrSeverity, Position, ProjectConfig, RecentProjects};
 use akrs_runtime::{Engine, EnginePhase};
 
 // ---------------------------------------------------------------------------
@@ -450,43 +450,33 @@ impl BlueprintState {
     }
 
     /// 从脚本文本生成蓝图节点（自动布局 + 顺序连线）。
+    /// 生成后调用 auto_layout 整理布局，避免节点堆叠。
     fn from_script(&mut self, text: &str) {
         self.nodes.clear();
         self.links.clear();
         self.next_id = 0;
         self.selected = None;
 
-        let col_width = 240.0;
-        let row_height = 110.0;
-        let mut col = 0usize;
-        let mut row = 0usize;
-
+        // 先生成所有节点（位置暂为默认），同时建立顺序连线。
+        let mut prev_id: Option<usize> = None;
+        let mut prev_kind: Option<NodeKind> = None;
         for line in text.lines() {
             if line.trim().is_empty() {
                 continue;
             }
             let kind = Self::detect_kind(line);
-            // 章节节点另起一列。
-            if kind == NodeKind::Section && !self.nodes.is_empty() {
-                col += 1;
-                row = 0;
-            }
-            let pos = egui::pos2(
-                col as f32 * col_width + 20.0,
-                row as f32 * row_height + 20.0,
-            );
-            let id = self.add_node(kind, pos, line.to_string());
+            let id = self.add_node(kind, egui::Pos2::ZERO, line.to_string());
             // 与上一个节点顺序连线（跨章节不连）。
-            if row > 0 {
-                if let Some(prev) = self.nodes.iter().rev().nth(1) {
-                    self.links.push(BlueprintLink {
-                        from: prev.id,
-                        to: id,
-                    });
+            if let Some(prev) = prev_id {
+                if prev_kind != Some(NodeKind::Section) {
+                    self.links.push(BlueprintLink { from: prev, to: id });
                 }
             }
-            row += 1;
+            prev_id = Some(id);
+            prev_kind = Some(kind);
         }
+        // 生成完毕后统一整理布局。
+        self.auto_layout();
     }
 
     /// 从蓝图节点生成脚本文本。
@@ -552,23 +542,33 @@ impl BlueprintState {
     }
 
     /// 自动整理布局：按章节分组，组内垂直排列，章节间水平排列。
+    /// 同一章节内节点超过 max_rows 个时自动换列，避免单列过长。
     fn auto_layout(&mut self) {
         if self.nodes.is_empty() {
             return;
         }
-        let col_width = 240.0;
-        let row_height = 110.0;
+        let col_width = 260.0;
+        let max_rows = 8usize; // 每列最多 8 个节点，超过则换列
         let mut col = 0usize;
         let mut row = 0usize;
+        // 记录每列的最大节点高度，用于计算下一个节点的 y 坐标，避免固定行高导致重叠。
+        let mut y_cursor = 20.0f32;
         for node in &mut self.nodes {
+            // 章节节点另起一列。
             if node.kind == NodeKind::Section && row > 0 {
                 col += 1;
                 row = 0;
+                y_cursor = 20.0;
             }
-            node.pos = egui::pos2(
-                col as f32 * col_width + 20.0,
-                row as f32 * row_height + 20.0,
-            );
+            // 同一列内超过 max_rows 个节点也换列。
+            if row >= max_rows {
+                col += 1;
+                row = 0;
+                y_cursor = 20.0;
+            }
+            let size = Self::node_size(&node.text);
+            node.pos = egui::pos2(col as f32 * col_width + 20.0, y_cursor);
+            y_cursor += size.y + 16.0; // 节点高度 + 间距
             row += 1;
         }
     }
@@ -615,22 +615,79 @@ impl BlueprintState {
     }
 }
 
-/// 蓝图右键菜单中可选的节点模板。
-const NODE_TEMPLATES: &[(&str, &str)] = &[
-    ("章节", "# NewSection 章节标题"),
-    ("对话", "角色: \"对话内容\""),
-    ("旁白", "\"旁白内容\""),
-    ("背景", "@bg background"),
-    ("音乐", "@music music"),
-    ("立绘上场", "+ 角色 at 0.5,1.0 size 1.0"),
-    ("立绘下场", "- 角色"),
-    ("选择", "? 提示\n| 选项A\n| 选项B\n?"),
-    ("跳转", "-> TargetSection"),
-    ("访问", "=> TargetSection"),
-    ("返回", "<="),
-    ("等待", "~~ 1.0"),
-    ("结局", "end"),
+/// 蓝图右键菜单中可选的节点模板（带分类，便于分组显示）。
+const NODE_TEMPLATES: &[(&str, &str, &str)] = &[
+    // (分类, 标签, 模板)
+    ("结构", "章节", "# NewSection 章节标题"),
+    ("内容", "对话", "角色: \"对话内容\""),
+    ("内容", "旁白", "\"旁白内容\""),
+    ("演出", "背景", "@bg background"),
+    ("演出", "音乐", "@music music"),
+    ("演出", "立绘上场", "+ 角色 at 0.5,1.0 size 1.0"),
+    ("演出", "立绘下场", "- 角色"),
+    ("内容", "选择", "? 提示\n| 选项A\n| 选项B\n?"),
+    ("流程", "跳转", "-> TargetSection"),
+    ("流程", "访问", "=> TargetSection"),
+    ("流程", "返回", "<="),
+    ("流程", "等待", "~~ 1.0"),
+    ("流程", "结局", "end"),
 ];
+
+/// 记录哪些剧本文件已经在蓝图模式下做过首次自动布局整理。
+/// 持久化到编辑器数据目录，避免每次进入蓝图模式都重新打乱用户手动调整过的布局。
+/// 用纯文本文件存储（每行一个规范化路径），不依赖 serde。
+#[derive(Default, Clone)]
+struct BlueprintLayoutDone {
+    /// 已整理过布局的文件规范化路径列表。
+    files: Vec<String>,
+}
+
+impl BlueprintLayoutDone {
+    fn load() -> Self {
+        if let Some(path) = dirs_data_dir().map(|d| d.join("akrs-editor").join("blueprint_layout_done.txt")) {
+            if let Ok(content) = std::fs::read_to_string(&path) {
+                let files: Vec<String> = content
+                    .lines()
+                    .map(|l| l.trim().to_string())
+                    .filter(|l| !l.is_empty())
+                    .collect();
+                return Self { files };
+            }
+        }
+        Self::default()
+    }
+
+    fn save(&self) {
+        if let Some(path) = dirs_data_dir().map(|d| d.join("akrs-editor").join("blueprint_layout_done.txt")) {
+            if let Some(parent) = path.parent() {
+                let _ = std::fs::create_dir_all(parent);
+            }
+            let content = self.files.join("\n");
+            let _ = std::fs::write(&path, content);
+        }
+    }
+
+    /// 判断指定文件路径是否已整理过布局。
+    fn is_done(&self, file_path: &std::path::Path) -> bool {
+        let key = match std::fs::canonicalize(file_path) {
+            Ok(p) => p.to_string_lossy().into_owned(),
+            Err(_) => file_path.to_string_lossy().into_owned(),
+        };
+        self.files.iter().any(|f| *f == key)
+    }
+
+    /// 标记文件已整理过布局并持久化。
+    fn mark_done(&mut self, file_path: &std::path::Path) {
+        let key = match std::fs::canonicalize(file_path) {
+            Ok(p) => p.to_string_lossy().into_owned(),
+            Err(_) => file_path.to_string_lossy().into_owned(),
+        };
+        if !self.files.iter().any(|f| *f == key) {
+            self.files.push(key);
+            self.save();
+        }
+    }
+}
 
 // ---------------------------------------------------------------------------
 // 编辑器应用状态
@@ -731,6 +788,8 @@ pub struct EditorApp {
     blueprint_mode: bool,
     /// 蓝图编辑器状态。
     blueprint: BlueprintState,
+    /// 已在蓝图模式下做过首次自动布局整理的文件列表（持久化）。
+    blueprint_layout_done: BlueprintLayoutDone,
 }
 
 /// 可翻译行的类型。
@@ -948,6 +1007,7 @@ impl Default for EditorApp {
             dismissed_warnings,
             blueprint_mode: false,
             blueprint: BlueprintState::default(),
+            blueprint_layout_done: BlueprintLayoutDone::load(),
         };
         app.refresh_file_list();
         app
@@ -2011,6 +2071,8 @@ impl EditorApp {
     /// 切换蓝图模式与文本模式。
     ///
     /// 切换到蓝图时从当前脚本导入节点；切换回文本时将蓝图导出为脚本。
+    /// 首次用蓝图模式打开某剧本文件时自动整理布局（持久化记录，之后不再自动整理，
+    /// 避免打乱用户手动调整过的布局）。
     fn toggle_blueprint_mode(&mut self) {
         if self.blueprint_mode {
             let script = self.blueprint.to_script();
@@ -2023,8 +2085,21 @@ impl EditorApp {
             if !self.editor_content.trim().is_empty() {
                 self.blueprint.from_script(&self.editor_content);
             }
+            // 首次进入该文件的蓝图模式时自动整理布局。
+            if let Some(file_path) = &self.current_file {
+                if !self.blueprint_layout_done.is_done(file_path) {
+                    self.blueprint.auto_layout();
+                    self.blueprint_layout_done.mark_done(file_path);
+                    self.status = "已切换到蓝图模式（首次自动整理布局）".to_string();
+                } else {
+                    self.status = "已切换到蓝图模式".to_string();
+                }
+            } else {
+                // 未保存的新文件也整理一次（但不持久化标记）。
+                self.blueprint.auto_layout();
+                self.status = "已切换到蓝图模式".to_string();
+            }
             self.blueprint_mode = true;
-            self.status = "已切换到蓝图模式".to_string();
         }
     }
 
@@ -2367,10 +2442,31 @@ impl EditorApp {
                 .fixed_pos(menu_pos)
                 .show(ui.ctx(), |ui| {
                     egui::Frame::popup(ui.style()).show(ui, |ui| {
-                        ui.set_min_width(130.0);
-                        ui.label("添加节点：");
-                        for (label, template) in NODE_TEMPLATES {
-                            if ui.button(*label).clicked() {
+                        ui.set_min_width(180.0);
+                        ui.label(
+                            egui::RichText::new("蓝图操作").strong(),
+                        );
+                        ui.separator();
+                        // 按分类分组显示节点模板
+                        let mut current_category = "";
+                        for (category, label, template) in NODE_TEMPLATES {
+                            if *category != current_category {
+                                if !current_category.is_empty() {
+                                    ui.separator();
+                                }
+                                current_category = *category;
+                                ui.label(
+                                    egui::RichText::new(format!("  {}", category))
+                                        .small()
+                                        .color(egui::Color32::from_rgb(150, 160, 180)),
+                                );
+                            }
+                            // 用 add 加 Button 让按钮占满菜单宽度
+                            let btn = ui.add(
+                                egui::Button::new(*label)
+                                    .min_size(egui::Vec2::new(160.0, 0.0)),
+                            );
+                            if btn.clicked() {
                                 let cpos = (menu_pos_copy - canvas_min - pan_copy).to_pos2();
                                 let text = template.to_string();
                                 let kind = BlueprintState::detect_kind(&text);
@@ -2378,9 +2474,32 @@ impl EditorApp {
                                 close_menu = true;
                             }
                         }
+                        ui.separator();
+                        // 布局操作
+                        ui.label(
+                            egui::RichText::new("  布局")
+                                .small()
+                                .color(egui::Color32::from_rgb(150, 160, 180)),
+                        );
+                        if ui.add(egui::Button::new("整理布局").min_size(egui::Vec2::new(160.0, 0.0))).clicked() {
+                            self.blueprint.auto_layout();
+                            self.status = "已整理布局".to_string();
+                            close_menu = true;
+                        }
+                        if ui.add(egui::Button::new("从脚本导入").min_size(egui::Vec2::new(160.0, 0.0))).clicked() {
+                            self.blueprint.from_script(&self.editor_content);
+                            self.status = "已从脚本导入蓝图".to_string();
+                            close_menu = true;
+                        }
+                        // 节点操作（仅当选中节点时显示）
                         if self.blueprint.selected.is_some() {
                             ui.separator();
-                            if ui.button("删除选中节点").clicked() {
+                            ui.label(
+                                egui::RichText::new("  选中节点")
+                                    .small()
+                                    .color(egui::Color32::from_rgb(150, 160, 180)),
+                            );
+                            if ui.add(egui::Button::new("删除选中节点").min_size(egui::Vec2::new(160.0, 0.0))).clicked() {
                                 if let Some(id) = self.blueprint.selected {
                                     self.blueprint.remove_node(id);
                                 }
