@@ -1446,6 +1446,8 @@ pub async fn run(mut engine: Engine, project_config: &ProjectConfig) {
                     // epilogue 模式下：从尾声剧本返回标题，从 main_source 重建主引擎，
                     //   不保存继续存档（尾声不应成为主游戏的继续点），清除 epilogue 标记。
                     // 普通模式下：保存"继续游戏"存档后重建引擎。
+                    // 重建前先把本会话新增的已读历史落盘（Engine::new 会重新加载）。
+                    engine.save_read_history();
                     if epilogue_active {
                         epilogue_active = false;
                         let source = main_source.clone();
@@ -1520,6 +1522,8 @@ pub async fn run(mut engine: Engine, project_config: &ProjectConfig) {
                     // epilogue 模式下：尾声剧本结束，从主剧本源码重建主引擎，
                     //   不删除继续存档（尾声不应影响主游戏进度），清除 epilogue 标记。
                     // 普通模式下：重置引擎，删除继续存档，不显示继续游戏按钮。
+                    // 重建前先把本会话新增的已读历史落盘（Engine::new 会重新加载）。
+                    engine.save_read_history();
                     if epilogue_active {
                         epilogue_active = false;
                         let source = main_source.clone();
@@ -1560,6 +1564,8 @@ pub async fn run(mut engine: Engine, project_config: &ProjectConfig) {
                     // 进入隐藏结局的尾声剧本。
                     // 从 engine.unlocked_endings_with_decl() 取对应声明，
                     // 读取 epilogue .akrs 文件，创建新引擎并开始播放。
+                    // 重建前先把本会话新增的已读历史落盘（Engine::new 会重新加载）。
+                    engine.save_read_history();
                     let endings = engine.unlocked_endings_with_decl();
                     if let Some(decl) = endings.get(idx) {
                         let epilogue_path = &decl.epilogue;

@@ -250,7 +250,7 @@ impl Engine {
         let vm = compile_and_create_vm(source)?;
         let saves = SaveManager::new("saves", 100);
 
-        Ok(Self {
+        let mut engine = Self {
             vm,
             source: source.to_string(),
             scene: SceneState::new(),
@@ -277,7 +277,15 @@ impl Engine {
             unlocked_endings: HashSet::new(),
             script_error: None,
             crash_info: None,
-        })
+        };
+        // 全局持久化状态（已读历史、已解锁结局）在引擎构造时即从磁盘加载，
+        // 这样所有通过 Engine::new 重建引擎的路径（返回标题 / 故事结束 /
+        // 进入尾声 / 降级重建）都能自动继承这些状态，无需渲染层逐处补调用。
+        // 注意：settings 与 translations_dir 由调用方按需恢复（它们可能
+        // 被玩家在运行时修改，不应被磁盘旧值覆盖）。
+        engine.load_read_history();
+        engine.load_endings();
+        Ok(engine)
     }
 
     /// 创建一个"仅标题页"模式的引擎，用于剧本编译/加载失败时的冗余降级。
@@ -296,7 +304,7 @@ impl Engine {
             .expect("占位剧本必须可编译");
         let saves = SaveManager::new("saves", 100);
 
-        Self {
+        let mut engine = Self {
             vm,
             source: PLACEHOLDER_SCRIPT.to_string(),
             scene: SceneState::new(),
@@ -323,7 +331,11 @@ impl Engine {
             unlocked_endings: HashSet::new(),
             script_error: Some(error_msg),
             crash_info: None,
-        }
+        };
+        // 降级模式同样继承全局持久化状态（已读历史、已解锁结局）。
+        engine.load_read_history();
+        engine.load_endings();
+        engine
     }
 
     /// 查询剧本错误信息。
