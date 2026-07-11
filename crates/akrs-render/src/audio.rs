@@ -417,3 +417,30 @@ pub fn set_sound_volume(sound: Sound, volume: f32) {
         set_track_volume_inner(st, kind, volume);
     });
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn amp_to_db_identity() {
+        // 振幅 1.0 → 0 dB（无增益）。
+        assert_eq!(amp_to_db(1.0), Decibels(0.0));
+    }
+
+    #[test]
+    fn amp_to_db_silence() {
+        // 振幅 <= 0 → 静音（kira 的 SILENCE = -60 dB）。
+        assert_eq!(amp_to_db(0.0), Decibels::SILENCE);
+        assert_eq!(amp_to_db(-1.0), Decibels::SILENCE);
+        assert_eq!(Decibels::SILENCE, Decibels(-60.0));
+    }
+
+    #[test]
+    fn amp_to_db_half_amplitude() {
+        // 振幅 0.5 → 20*log10(0.5) ≈ -6.0206 dB。
+        let db = amp_to_db(0.5);
+        assert!((db.0 - 20.0 * 0.5f32.log10()).abs() < 1e-6);
+        assert!((db.0 - (-6.0206)).abs() < 1e-3);
+    }
+}

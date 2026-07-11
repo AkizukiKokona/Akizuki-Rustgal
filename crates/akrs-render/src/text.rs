@@ -448,3 +448,122 @@ pub fn draw_text_ex(text: &str, x: f32, y: f32, params: TextParams) {
         );
     }
 }
+
+/// 用 cosmic-text `Buffer` 对整段文本做**一次**布局，按 `max_width` 自动换行，
+/// 返回每个可视行对应的文本片段。
+///
+/// 供 `renderer::wrap_text_cn` 替代手写逐字符测宽逻辑：原来每追加一个字符就
+/// 调一次 `measure_text_f`（内部各触发一次 `Buffer::set_text` + layout），N 字
+/// 文本需 N 次 layout；本函数仅触发**一次** layout，由 cosmic-text 内部完成
+/// harfrust shaping、kerning、字符级字体回退与按词/字换行（`Wrap::WordOrGlyph`），
+/// 既大幅减少 layout 次数又提升测量精度。
+///
+/// - `max_width`：行宽上限（逻辑像素）；`<= 0.0` 时不换行，返回单行原文。
+/// - `font_size`：字号（逻辑像素），行高取 `font_size * 1.2`（与 cosmic-text
+///   常规比例一致）。
+/// - 字体：使用默认 `Attrs`（cosmic-text 自行匹配系统/已加载字体并做字符级回退）。
+///
+/// 每个可视行的文本通过其 `LayoutRun` 内 glyph 的 `start`/`end` 字节区间取
+/// `run.text` 的最外覆盖范围得到（含词间空格，去掉换行处空白）。
+pub(crate) fn layout_wrapped_lines(text: &str, max_width: f32, font_size: f32) -> Vec<String> {
+    if text.is_empty() {
+        return Vec::new();
+    }
+    if max_width <= 0.0 || font_size <= 0.0 {
+        return vec![text.to_string()];
+    }
+    with_state(|st| {
+        let metrics = Metrics::new(font_size, font_size * 1.2);
+        let mut buffer = Buffer::new_empty(metrics);
+        buffer.set_size(&mut st.font_system, Some(max_width), None);
+        buffer.set_text(&mut st.font_system, text, &Attrs::new(), Shaping::Advanced, None);
+
+        let mut lines: Vec<String> = Vec::new();
+        for run in buffer.layout_runs() {
+            // 每个 run 对应一个可视行；glyph 的 start/end 是其在 run.text（段落原文）
+            // 中的字节范围。取该行所有 glyph 覆盖的最外区间，得到可视行文本：
+            // 含词间空格，不含被换行消费的空白。
+            let mut min_start = usize::MAX;
+            let mut max_end = 0usize;
+            let mut any = false;
+            for g in run.glyphs {
+                if g.start < min_start {
+                    min_start = g.start;
+                }
+                if g.end > max_end {
+                    max_end = g.end;
+                }
+                any = true;
+            }
+            let line_text = if any {
+                run.text.get(min_start..max_end).unwrap_or("").trim_end()
+            } else {
+                ""
+            };
+            if !line_text.is_empty() {
+                lines.push(line_text.to_string());
+            }
+        }
+        // 极端情形（无 glyph，如纯空白或无可用字体）：回退为原文单行，保证不丢文本。
+        if lines.is_empty() {
+            lines.push(text.to_string());
+        }
+        lines
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn layout_wrapped_lines_empty() {
+        // 空文本：返回空 Vec。
+        assert!(layout_wrapped_lines("", 100.0, 16.0).is_empty());
+    }
+
+    #[test]
+    fn layout_wrapped_lines_no_wrap_when_wide_enough() {
+        // 行宽足够大：单行，原样返回。
+        let lines = layout_wrapped_lines("hello world", 100000.0, 16.0);
+        assert_eq!(lines, vec!["hello world".to_string()]);
+    }
+
+    #[test]
+    fn layout_wrapped_lines_zero_or_negative_width() {
+        // max_width <= 0：不换行，返回单行原文。
+        assert_eq!(layout_wrapped_lines("abc", 0.0, 16.0), vec!["abc".to_string()]);
+        assert_eq!(layout_wrapped_lines("abc", -10.0, 16.0), vec!["abc".to_string()]);
+    }
+
+    #[test]
+    fn layout_wrapped_lines_zero_or_negative_font_size() {
+        // font_size <= 0：不换行，返回单行原文。
+        assert_eq!(layout_wrapped_lines("abc", 100.0, 0.0), vec!["abc".to_string()]);
+        assert_eq!(layout_wrapped_lines("abc", 100.0, -5.0), vec!["abc".to_string()]);
+    }
+
+    #[test]
+    fn font_default_is_zero() {
+        // 与 macroquad 语义一致：默认字体为 Font(0)。
+        assert_eq!(Font::default(), Font(0));
+        assert_ne!(Font(0), Font(1));
+    }
+
+    #[test]
+    fn text_params_default() {
+        let p = TextParams::default();
+        assert_eq!(p.font, Font(0));
+        assert_eq!(p.font_size, 20);
+        assert_eq!(p.font_scale, 1.0);
+        assert_eq!(p.color, WHITE);
+    }
+
+    #[test]
+    fn text_dimensions_default_zero() {
+        let d = TextDimensions::default();
+        assert_eq!(d.width, 0.0);
+        assert_eq!(d.height, 0.0);
+        assert_eq!(d.offset_y, 0.0);
+    }
+}

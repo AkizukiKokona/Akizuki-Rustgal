@@ -1264,3 +1264,50 @@ pub mod prelude {
     };
     // 旧 macroquad 的 TextParams 默认 font 是 Font(0)；WHITE 已上面导出。
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn color_new_and_fields() {
+        let c = Color::new(0.1, 0.2, 0.3, 0.4);
+        assert_eq!(c.r, 0.1);
+        assert_eq!(c.g, 0.2);
+        assert_eq!(c.b, 0.3);
+        assert_eq!(c.a, 0.4);
+    }
+
+    #[test]
+    fn color_constants() {
+        assert_eq!(WHITE, Color::new(1.0, 1.0, 1.0, 1.0));
+        assert_eq!(BLACK, Color::new(0.0, 0.0, 0.0, 1.0));
+        assert_eq!(RED, Color::new(1.0, 0.0, 0.0, 1.0));
+        assert_eq!(GREEN, Color::new(0.0, 1.0, 0.0, 1.0));
+        assert_eq!(BLUE, Color::new(0.0, 0.0, 1.0, 1.0));
+        assert_eq!(TRANSPARENT, Color::new(0.0, 0.0, 0.0, 0.0));
+    }
+
+    #[test]
+    fn vec2_new_and_default() {
+        let v = Vec2::new(3.5, -2.0);
+        assert_eq!(v.x, 3.5);
+        assert_eq!(v.y, -2.0);
+        assert_eq!(Vec2::default(), Vec2::new(0.0, 0.0));
+        assert_ne!(Vec2::new(1.0, 2.0), Vec2::new(1.0, 3.0));
+    }
+
+    #[test]
+    fn rect_construct_and_default() {
+        let r = Rect { x: 1.0, y: 2.0, w: 3.0, h: 4.0 };
+        assert_eq!((r.x, r.y, r.w, r.h), (1.0, 2.0, 3.0, 4.0));
+        assert_eq!(Rect::default(), Rect { x: 0.0, y: 0.0, w: 0.0, h: 0.0 });
+    }
+
+    #[test]
+    fn filter_mode_default_is_linear() {
+        // sampler 固定 Linear，默认值应为 Linear。
+        assert_eq!(FilterMode::default(), FilterMode::Linear);
+        assert_ne!(FilterMode::Linear, FilterMode::Nearest);
+    }
+}

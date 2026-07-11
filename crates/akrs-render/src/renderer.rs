@@ -16,11 +16,11 @@ use crate::audio::{
 use crate::wgpu_backend::prelude::*;
 use std::path::PathBuf;
 
-/// 运行时主题配色（macroquad `Color` 形式）。
+/// 运行时主题配色（`Color` 形式）。
 ///
 /// 由 `run()` 从 `ProjectConfig.theme` 构造后写入 thread_local 全局，
 /// 供各绘制函数读取，避免给每个 `draw_*` 函数都加主题参数。
-/// macroquad 主循环单线程，thread_local 访问安全且零争用。
+/// 渲染主循环单线程，thread_local 访问安全且零争用。
 #[derive(Clone, Copy)]
 struct GameTheme {
     /// 主题色1：模态对话框/面板背景。
@@ -100,7 +100,7 @@ fn set_theme(t: GameTheme) {
     GAME_THEME.with(|c| c.set(t));
 }
 
-/// 把 `[u8;4]` RGBA 转为 macroquad `Color`。
+/// 把 `[u8;4]` RGBA 转为 `Color`。
 fn color_from_u8(v: [u8; 4]) -> Color {
     Color::new(v[0] as f32 / 255.0, v[1] as f32 / 255.0, v[2] as f32 / 255.0, v[3] as f32 / 255.0)
 }
@@ -471,7 +471,7 @@ const BASE_HEIGHT: f32 = 1080.0;
 /// UI 缩放因子：基于窗口的**逻辑**像素尺寸相对于 1920×1080 设计基准的
 /// 最小轴比例。
 ///
-/// 为什么用逻辑像素而不是物理像素：macroquad 启用 `high_dpi` 后，绘制坐标
+/// 为什么用逻辑像素而不是物理像素：wgpu 后端启用 `high_dpi` 后，绘制坐标
 /// 系是**逻辑像素**（`screen_width()`/`screen_height()` 返回逻辑值），而
 /// 帧缓冲区是物理像素。同一个逻辑字号在高 DPI 屏幕上会以更多物理像素
 /// 渲染，物理上已经更大、更清晰——因此缩放因子只需适配逻辑画布大小即可。
@@ -3345,7 +3345,7 @@ fn draw_crash_screen(
     draw_text_f(":(", margin, y, emo_size, WHITE, font);
     y += 90.0 * scale;
 
-    // 粗体标题：通过 1px 偏移重绘两次模拟加粗（macroquad 无粗体字重参数）。
+    // 粗体标题：通过 1px 偏移重绘两次模拟加粗（当前字体系统无粗体字重参数）。
     let title = engine.t_ui("crash.title");
     let title_size = 48.0 * scale;
     let draw_bold = |text: &str, x: f32, ly: f32, size: f32| {
@@ -3492,7 +3492,7 @@ fn draw_dir_picker(
     let start_idx = (scroll.floor() as usize).min(total.saturating_sub(visible_count));
 
     // 绘制可见条目（裁剪到列表区域）。
-    // macroquad 无内置裁剪，这里靠只绘制可见行 + 坐标落在列表内来实现。
+    // wgpu 后端无内置裁剪，这里靠只绘制可见行 + 坐标落在列表内来实现。
     for i in 0..visible_count {
         let idx = start_idx + i;
         if idx >= total {
@@ -3688,7 +3688,7 @@ fn draw_slot_grid(
 ///
 /// 单元格布局：左侧缩略图（按场景快照重绘）+ 右侧文字栏（章节名/描述/备注）。
 /// 缩略图通过读取存档的 `SceneSnapshot`，按比例缩小重绘背景与立绘，无需
-/// macroquad 截图 API，跨平台稳定。备注以斜体灰色显示在底部，1 行省略。
+/// 截图 API，跨平台稳定。备注以斜体灰色显示在底部，1 行省略。
 ///
 /// Returns `Some(text)` containing the full save description when the mouse
 /// hovers over a populated cell, so the caller can render a tooltip with the
@@ -4035,7 +4035,7 @@ fn draw_slot_thumbnail(
 ///
 /// # 实现
 ///
-/// macroquad 0.3 的 `DrawTextureParams.source` 接受源纹理像素坐标的 `Rect`，
+/// `DrawTextureParams.source` 接受源纹理像素坐标的 `Rect`，
 /// 表示只绘制源纹理的这一部分。本函数计算目标矩形 `(dx, dy, dw, dh)` 与
 /// 裁剪矩形 `(clip_x, clip_y, clip_w, clip_h)` 的交集，把交集映射回源纹理
 /// 坐标，用 `source` 只绘制可见部分，`dest_size` 设为交集大小。
@@ -4068,7 +4068,7 @@ fn draw_texture_clipped(
     let v0 = (iy0 - dy) / dh;
     let u1 = (ix1 - dx) / dw;
     let v1 = (iy1 - dy) / dh;
-    // 源纹理像素坐标（macroquad 的 source 用像素坐标）。
+    // 源纹理像素坐标（source 用像素坐标）。
     let src_x = u0 * tex_w;
     let src_y = v0 * tex_h;
     let src_w = (u1 - u0) * tex_w;
@@ -4174,31 +4174,21 @@ pub(crate) fn fit_text(text: &str, font: &Option<Font>, font_size: f32, max_w: f
 }
 
 /// Wrap `text` into at most `max_lines` lines that each fit within `max_w` at
-/// the given font size.  Wrapping is done character-by-character (CJK text has
-/// no whitespace word boundaries), breaking whenever the next character would
-/// overflow the line width.  If the text needs more than `max_lines` lines,
-/// the final line is truncated and an ellipsis "…" is appended.
+/// the given font size.  Wrapping is delegated to `text::layout_wrapped_lines`,
+/// which performs a single cosmic-text `Buffer` layout with `width = max_w` so
+/// the shaper handles CJK per-character breaks, Latin word breaks, kerning and
+/// per-glyph font fallback in one pass.  If the text needs more than `max_lines`
+/// lines, the final line is truncated and an ellipsis "…" is appended.
 fn wrap_text_cn(text: &str, font: &Option<Font>, font_size: f32, max_w: f32, max_lines: usize) -> Vec<String> {
     if max_lines == 0 || max_w <= 0.0 {
         return Vec::new();
     }
 
-    // First pass: wrap into as many lines as needed.
-    let mut all_lines: Vec<String> = Vec::new();
-    let mut current = String::new();
-    for c in text.chars() {
-        let test = format!("{}{}", current, c);
-        let w = measure_text_f(&test, font, font_size as u16, 1.0).width;
-        if w > max_w && !current.is_empty() {
-            all_lines.push(std::mem::take(&mut current));
-            current.push(c);
-        } else {
-            current = test;
-        }
-    }
-    if !current.is_empty() {
-        all_lines.push(current);
-    }
+    // 用 cosmic-text Buffer 一次性完成整段布局与按词/字换行，替代原先逐字符
+    // 累加 + 每字一次 `measure_text_f`（每次内部各做一次 layout）的手写测宽。
+    // 详见 `text::layout_wrapped_lines`：单次 layout 即得到所有可视行，且享受
+    // harfrust shaping、kerning 与字符级字体回退，测量更精确。
+    let mut all_lines: Vec<String> = crate::text::layout_wrapped_lines(text, max_w, font_size);
 
     // Within budget: return as-is.
     if all_lines.len() <= max_lines {
@@ -4206,7 +4196,7 @@ fn wrap_text_cn(text: &str, font: &Option<Font>, font_size: f32, max_w: f32, max
     }
 
     // Over budget: keep only `max_lines` lines and ellipsize the last one.
-    let mut result: Vec<String> = all_lines.into_iter().take(max_lines).collect();
+    let mut result: Vec<String> = all_lines.drain(..max_lines).collect();
     let last = result.last_mut().expect("max_lines >= 1");
     // Keep trimming the last line until "last + …" fits within max_w.
     loop {
@@ -4873,7 +4863,7 @@ fn draw_about_tab(engine: &Engine, layout: &SettingsLayout, font: &Option<Font>,
     }
 
     // ── 第 1 行：Akizuki*Rustgal（粗体）──
-    // macroquad 仅加载单一字体，通过多次微小偏移绘制模拟加粗效果。
+    // 字体系统仅加载单一字重，通过多次微小偏移绘制模拟加粗效果。
     let name = engine.t_ui("about.name");
     let bold_color = Color::new(1.0, 0.95, 0.6, 1.0);
     let bold_off = 1.5 * scale;
@@ -5852,4 +5842,208 @@ fn name_to_color(name: &str) -> (f32, f32, f32) {
         g * 0.5 + 0.2,
         b * 0.5 + 0.2,
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use akrs_core::Transition;
+    use akrs_runtime::{SceneState, TransitionOverlay, TransitionPhase};
+
+    /// 仓库内置的 SourceHanSansSC OTF，用于需要实际测量字宽的换行测试。
+    /// 缺失时返回 None，调用方应相应放宽断言（不因测试环境无字体而失败）。
+    fn load_test_font() -> Option<Font> {
+        let path = concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../assets/fonts/SourceHanSansSC-Regular-2.otf"
+        );
+        let bytes = std::fs::read(path).ok()?;
+        load_ttf_font_from_bytes(&bytes).ok()
+    }
+
+    // ── wrap_text_cn ──────────────────────────────────────────────────────
+
+    #[test]
+    fn wrap_text_cn_empty_and_zero_budget() {
+        // 空文本：返回空。
+        assert!(wrap_text_cn("", &None, 16.0, 100.0, 3).is_empty());
+        // max_lines == 0：返回空。
+        assert!(wrap_text_cn("hi", &None, 16.0, 100.0, 0).is_empty());
+        // max_w <= 0：返回空。
+        assert!(wrap_text_cn("hi", &None, 16.0, 0.0, 3).is_empty());
+        assert!(wrap_text_cn("hi", &None, 16.0, -5.0, 3).is_empty());
+    }
+
+    #[test]
+    fn wrap_text_cn_short_fits_one_line() {
+        // 短文本 + 大 max_w：单行，原样返回。
+        let lines = wrap_text_cn("hello", &None, 16.0, 10000.0, 5);
+        assert_eq!(lines, vec!["hello".to_string()]);
+        let lines = wrap_text_cn("a", &None, 16.0, 10000.0, 5);
+        assert_eq!(lines, vec!["a".to_string()]);
+    }
+
+    #[test]
+    fn wrap_text_cn_wraps_long_text() {
+        // 需要 CJK 字体才能实际测量字宽并换行；仓库内置 SourceHanSansSC。
+        let font = load_test_font();
+        let long = "这是一段足够长的中文文本用于测试自动换行功能是否能在超出最大宽度时正确地拆分成多行显示";
+        let lines = wrap_text_cn(long, &font, 24.0, 120.0, 8);
+        if font.is_some() {
+            // 字体可用：长文本必须被拆成多行，且每行非空。
+            assert!(lines.len() > 1, "expected multiple lines, got {:?}", lines);
+            for l in &lines {
+                assert!(!l.is_empty());
+            }
+        } else {
+            // 无字体：退化为单行，但不应 panic 或丢失文本。
+            assert!(!lines.is_empty());
+        }
+    }
+
+    #[test]
+    fn wrap_text_cn_ellipsis_when_over_budget() {
+        let font = load_test_font();
+        let long = "这是一段足够长的中文文本用于测试省略号截断功能是否能在超出最大行数时正确地截断";
+        // 仅允许 1 行：超出预算时末行应追加 "…"。
+        let lines = wrap_text_cn(long, &font, 24.0, 120.0, 1);
+        assert_eq!(lines.len(), 1);
+        if font.is_some() {
+            // 字体可用时，能实际换行 + 截断，末行以 "…" 结尾。
+            assert!(lines[0].ends_with('…'), "line should end with ellipsis: {:?}", lines[0]);
+        }
+    }
+
+    // ── compute_slide_offset ──────────────────────────────────────────────
+
+    #[test]
+    fn compute_slide_offset_no_op_cases() {
+        // 无过渡：不偏移。
+        let scene = SceneState::new();
+        assert_eq!(compute_slide_offset(&scene, 1000.0, 800.0), (0.0, 0.0));
+
+        // 背景交叉淡入：不偏移（UI 不被遮挡）。
+        let mut scene = SceneState::new();
+        scene.transition = Some(TransitionOverlay {
+            kind: Transition::SlideLeft,
+            phase: TransitionPhase::Out,
+            progress: 0.5,
+            bg_crossfade: true,
+        });
+        assert_eq!(compute_slide_offset(&scene, 1000.0, 800.0), (0.0, 0.0));
+
+        // 非 Slide 过渡（如 Fade）：不偏移。
+        scene.transition = Some(TransitionOverlay {
+            kind: Transition::Fade,
+            phase: TransitionPhase::Out,
+            progress: 0.5,
+            bg_crossfade: false,
+        });
+        assert_eq!(compute_slide_offset(&scene, 1000.0, 800.0), (0.0, 0.0));
+    }
+
+    #[test]
+    fn compute_slide_offset_horizontal() {
+        let mut scene = SceneState::new();
+        // SlideLeft Out p=0.5：向左滑出 → x = -p*sw = -500。
+        scene.transition = Some(TransitionOverlay {
+            kind: Transition::SlideLeft,
+            phase: TransitionPhase::Out,
+            progress: 0.5,
+            bg_crossfade: false,
+        });
+        assert_eq!(compute_slide_offset(&scene, 1000.0, 800.0), (-500.0, 0.0));
+        // SlideLeft In p=0.5：从右滑入 → x = (1-p)*sw = 500。
+        scene.transition = Some(TransitionOverlay {
+            kind: Transition::SlideLeft,
+            phase: TransitionPhase::In,
+            progress: 0.5,
+            bg_crossfade: false,
+        });
+        assert_eq!(compute_slide_offset(&scene, 1000.0, 800.0), (500.0, 0.0));
+        // SlideRight Out p=0.5：向右滑出 → x = p*sw = 500。
+        scene.transition = Some(TransitionOverlay {
+            kind: Transition::SlideRight,
+            phase: TransitionPhase::Out,
+            progress: 0.5,
+            bg_crossfade: false,
+        });
+        assert_eq!(compute_slide_offset(&scene, 1000.0, 800.0), (500.0, 0.0));
+        // SlideRight In p=0.5：从左滑入 → x = -(1-p)*sw = -500。
+        scene.transition = Some(TransitionOverlay {
+            kind: Transition::SlideRight,
+            phase: TransitionPhase::In,
+            progress: 0.5,
+            bg_crossfade: false,
+        });
+        assert_eq!(compute_slide_offset(&scene, 1000.0, 800.0), (-500.0, 0.0));
+    }
+
+    #[test]
+    fn compute_slide_offset_vertical() {
+        let mut scene = SceneState::new();
+        // SlideUp Out p=0.25：向上滑出 → y = -p*sh = -200。
+        scene.transition = Some(TransitionOverlay {
+            kind: Transition::SlideUp,
+            phase: TransitionPhase::Out,
+            progress: 0.25,
+            bg_crossfade: false,
+        });
+        assert_eq!(compute_slide_offset(&scene, 1000.0, 800.0), (0.0, -200.0));
+        // SlideUp In p=0.25：从下滑入 → y = (1-p)*sh = 600。
+        scene.transition = Some(TransitionOverlay {
+            kind: Transition::SlideUp,
+            phase: TransitionPhase::In,
+            progress: 0.25,
+            bg_crossfade: false,
+        });
+        assert_eq!(compute_slide_offset(&scene, 1000.0, 800.0), (0.0, 600.0));
+        // SlideDown Out p=0.25：向下滑出 → y = p*sh = 200。
+        scene.transition = Some(TransitionOverlay {
+            kind: Transition::SlideDown,
+            phase: TransitionPhase::Out,
+            progress: 0.25,
+            bg_crossfade: false,
+        });
+        assert_eq!(compute_slide_offset(&scene, 1000.0, 800.0), (0.0, 200.0));
+        // SlideDown In p=0.25：从上滑入 → y = -(1-p)*sh = -600。
+        scene.transition = Some(TransitionOverlay {
+            kind: Transition::SlideDown,
+            phase: TransitionPhase::In,
+            progress: 0.25,
+            bg_crossfade: false,
+        });
+        assert_eq!(compute_slide_offset(&scene, 1000.0, 800.0), (0.0, -600.0));
+    }
+
+    // ── clip_resolution_to_screen ─────────────────────────────────────────
+
+    #[test]
+    fn clip_resolution_fits_within_screen() {
+        // 物理尺寸在屏幕 95% 以内：原样使用（仅按 dpi 换算逻辑像素）。
+        // desired=(1000,800) 逻辑像素，dpi=1.0 → 物理 1000x800，均 < 1824x1026。
+        assert_eq!(clip_resolution_to_screen((1000, 800), (1920, 1080), 1.0), (1000, 800));
+    }
+
+    #[test]
+    fn clip_resolution_scales_down_when_too_large() {
+        // 物理 2000x1000 > 95%(1824x1026)：宽超标 → scale_w=1824/2000=0.912；
+        // 高 1000 < 1026 → scale_h=1.0；s=min=0.912 → (2000*0.912, 1000*0.912)=(1824,912)。
+        let (w, h) = clip_resolution_to_screen((2000, 1000), (1920, 1080), 1.0);
+        assert!(w < 2000 && h < 1000, "must scale down: w={} h={}", w, h);
+        // 按宽比例缩放（0.9 浮点误差范围内）。
+        assert!((w as f32 - 1824.0).abs() <= 1.0, "w={} expected ≈1824", w);
+        assert!((h as f32 - 912.0).abs() <= 1.0, "h={} expected ≈912", h);
+    }
+
+    #[test]
+    fn clip_resolution_with_dpi() {
+        // dpi=2.0：物理 2000x1600 均 > 95%(1824x1026)；
+        // scale_w=1824/2000=0.912, scale_h=1026/1600=0.64125；s=min=0.64125。
+        // 逻辑结果 ≈ (641.25, 513.0) → (641, 513)。
+        let (w, h) = clip_resolution_to_screen((1000, 800), (1920, 1080), 2.0);
+        assert!(w < 1000 && h < 800, "must scale down with dpi: w={} h={}", w, h);
+        assert!((w as f32 - 641.0).abs() <= 1.0, "w={} expected ≈641", w);
+        assert!((h as f32 - 513.0).abs() <= 1.0, "h={} expected ≈513", h);
+    }
 }
