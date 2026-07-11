@@ -419,6 +419,8 @@ pub struct EditorApp {
     /// work_dir 会被 open_file_path 覆盖为「打开文件的父目录」，但预览子进程
     /// 必须以项目根为 CWD，否则 saves/*.json、project.json、assets/ 读取错误。
     project_dir: Option<PathBuf>,
+    /// Ctrl 键当前是否按下（用于 Ctrl+点击剧本跳转预览）。
+    ctrl_held: bool,
     /// 是否显示「请先保存再预览」提示弹窗。
     show_save_reminder: bool,
     /// 是否显示项目警告弹窗（project.json 的 warning 字段）。
@@ -650,6 +652,7 @@ impl Default for EditorApp {
             project_config: ProjectConfig::default(),
             project_loaded: false,
             project_dir: None,
+            ctrl_held: false,
             show_save_reminder: false,
             show_project_warning: false,
             recent_projects,
@@ -806,6 +809,14 @@ impl EditorApp {
                 if let Some(parent) = path.parent() {
                     self.work_dir = parent.to_path_buf();
                     self.refresh_file_list();
+                }
+                // 推断 project_dir：若尚未加载项目，从文件所在目录向上查找
+                // 含 project.json 或 assets/ 的祖先目录作为项目根。
+                // 这样打开单个剧本文件时资源预览也能正确读到 assets/。
+                if self.project_dir.is_none() {
+                    if let Some(root) = infer_project_root(path) {
+                        self.project_dir = Some(root);
+                    }
                 }
                 self.engine = None;
                 self.diagnostics.clear();
@@ -1482,7 +1493,11 @@ impl EditorApp {
 
     /// 扫描 `assets/characters/` 下的 PNG 立绘（不含扩展名）。
     fn scan_sprites(&mut self) {
-        let dir = self.work_dir.join("assets").join("characters");
+        // 优先用 project_dir（项目根），回退到 work_dir。
+        // 打开单个文件时 work_dir 会被覆盖为文件所在目录（如 scripts/），
+        // 此时 assets/ 在项目根而非 work_dir 下。
+        let base = self.project_dir.as_ref().unwrap_or(&self.work_dir);
+        let dir = base.join("assets").join("characters");
         if self.sprite_preview.scanned_dir.as_ref() == Some(&dir) {
             return;
         }
@@ -1507,7 +1522,8 @@ impl EditorApp {
 
     /// 扫描 `assets/bg/` 下的 PNG 背景（不含扩展名）。
     fn scan_bgs(&mut self) {
-        let dir = self.work_dir.join("assets").join("bg");
+        let base = self.project_dir.as_ref().unwrap_or(&self.work_dir);
+        let dir = base.join("assets").join("bg");
         if self.bg_preview.scanned_dir.as_ref() == Some(&dir) {
             return;
         }
@@ -1532,7 +1548,8 @@ impl EditorApp {
 
     /// 扫描 `assets/music/` 下的音乐文件（不含扩展名）。
     fn scan_music(&mut self) {
-        let dir = self.work_dir.join("assets").join("music");
+        let base = self.project_dir.as_ref().unwrap_or(&self.work_dir);
+        let dir = base.join("assets").join("music");
         if self.music_preview.scanned_dir.as_ref() == Some(&dir) {
             return;
         }
@@ -1563,7 +1580,8 @@ impl EditorApp {
         if name.is_empty() || self.sprite_preview.textures.contains_key(name) {
             return;
         }
-        let path = self.work_dir.join("assets").join("characters").join(format!("{}.png", name));
+        let base = self.project_dir.as_ref().unwrap_or(&self.work_dir);
+        let path = base.join("assets").join("characters").join(format!("{}.png", name));
         match load_png_handle(&path) {
             Ok(handle) => {
                 self.sprite_preview.textures.insert(name.to_string(), handle);
@@ -1580,7 +1598,8 @@ impl EditorApp {
         if name.is_empty() || self.bg_preview.textures.contains_key(name) {
             return;
         }
-        let path = self.work_dir.join("assets").join("bg").join(format!("{}.png", name));
+        let base = self.project_dir.as_ref().unwrap_or(&self.work_dir);
+        let path = base.join("assets").join("bg").join(format!("{}.png", name));
         match load_png_handle(&path) {
             Ok(handle) => {
                 self.bg_preview.textures.insert(name.to_string(), handle);
@@ -1588,6 +1607,120 @@ impl EditorApp {
             }
             Err(e) => {
                 self.bg_preview.load_error = Some(format!("{}: {}", name, e));
+            }
+        }
+    }
+
+    /// Ctrl+点击 / Ctrl+J：从光标所在行解析语句并跳转到对应预览标签页。
+    ///
+    /// 支持的行类型：
+    /// - `+ 角色 [(pose)] [at x,y] [size s]` → 立绘预览，选中匹配立绘并应用位置/大小
+    /// - `@bg 名字` → 背景预览，选中匹配背景
+    /// - `@music 名字` / `@sound 名字` → 音乐预览，选中匹配音乐
+    ///
+    /// 若立绘/背景/音乐列表为空，先触发扫描（用 project_dir）。
+    fn jump_to_preview_from_cursor(&mut self) {
+        let (line, _col) = self.editor_content.cursor_position();
+        let text = self.editor_content.text();
+        let Some(line_str) = text.lines().nth(line) else {
+            return;
+        };
+        let trimmed = line_str.trim();
+
+        // `+` 立绘入场语句
+        if let Some(rest) = trimmed.strip_prefix('+') {
+            let rest = rest.trim();
+            // 第一个 token 是角色/立绘名（可能后跟空格或 (pose)）
+            let name: String = rest
+                .chars()
+                .take_while(|c| !c.is_whitespace() && *c != '(')
+                .collect();
+            if name.is_empty() {
+                return;
+            }
+            // 确保立绘列表已扫描
+            self.scan_sprites();
+            let matched = self.sprite_preview.available.iter()
+                .find(|s| *s == &name || s.starts_with(&format!("{}.", name)))
+                .cloned();
+            if let Some(m) = matched {
+                self.sprite_preview.selected = m.clone();
+                self.load_sprite_texture(&m);
+                // 解析 at x,y 位置与 size s
+                if let Some(at_idx) = trimmed.find("at ") {
+                    let after_at = &trimmed[at_idx + 3..];
+                    let nums: Vec<f32> = after_at
+                        .split(|c: char| c == ',' || c.is_whitespace())
+                        .filter_map(|s| s.parse().ok())
+                        .collect();
+                    if nums.len() >= 1 { self.sprite_preview.x_percent = nums[0].clamp(0.0, 1.0); }
+                    if nums.len() >= 2 { self.sprite_preview.y_percent = nums[1].clamp(0.0, 1.0); }
+                }
+                if let Some(size_idx) = trimmed.find("size ") {
+                    let after_size = &trimmed[size_idx + 5..];
+                    if let Some(v) = after_size
+                        .split_whitespace()
+                        .next()
+                        .and_then(|s| s.parse::<f32>().ok())
+                    {
+                        self.sprite_preview.scale = v.clamp(0.1, 5.0);
+                    }
+                }
+                self.preview_tab = PreviewTab::Sprite;
+                self.status = format!("已跳转到立绘预览：{}", name);
+            } else {
+                self.status = format!("未在立绘目录中找到「{}」，请先扫描立绘目录", name);
+            }
+            return;
+        }
+
+        // `@` 舞台命令语句（@bg / @music / @sound）
+        if let Some(rest) = trimmed.strip_prefix('@') {
+            let rest = rest.trim();
+            let cmd: String = rest
+                .chars()
+                .take_while(|c| c.is_alphanumeric() || *c == '_')
+                .collect();
+            let args: String = rest[cmd.len()..].trim().to_string();
+            // 去掉可能的引号
+            let res_name = args.trim_matches(|c: char| c == '"' || c == '\'' || c == '\u{201C}' || c == '\u{201D}').to_string();
+            match cmd.as_str() {
+                "bg" => {
+                    if res_name.is_empty() {
+                        return;
+                    }
+                    self.scan_bgs();
+                    let matched = self.bg_preview.available.iter()
+                        .find(|s| *s == &res_name || s.starts_with(&format!("{}.", res_name)))
+                        .cloned();
+                    if let Some(m) = matched {
+                        self.bg_preview.selected = m.clone();
+                        self.load_bg_texture(&m);
+                        self.preview_tab = PreviewTab::Background;
+                        self.status = format!("已跳转到背景预览：{}", res_name);
+                    } else {
+                        self.status = format!("未在背景目录中找到「{}」", res_name);
+                    }
+                }
+                "music" | "sound" => {
+                    if res_name.is_empty() {
+                        return;
+                    }
+                    self.scan_music();
+                    let matched = self.music_preview.available.iter()
+                        .find(|s| *s == &res_name || s.starts_with(&format!("{}.", res_name)))
+                        .cloned();
+                    if let Some(m) = matched {
+                        self.music_preview.selected = m;
+                        self.preview_tab = PreviewTab::Music;
+                        self.status = format!("已跳转到音乐预览：{}", res_name);
+                    } else {
+                        self.status = format!("未在音乐目录中找到「{}」", res_name);
+                    }
+                }
+                _ => {
+                    self.status = format!("不支持跳转的命令：@{}", cmd);
+                }
             }
         }
     }
@@ -1819,6 +1952,8 @@ enum Message {
     Edit(text_editor::Action),
     /// 订阅轮询：推进子进程状态与引擎更新。
     PollTick,
+    /// 键盘修饰键状态变化（用于追踪 Ctrl 是否按下，实现 Ctrl+点击跳转）。
+    ModifiersChanged(bool),
 
     // 文件操作
     NewFile,
@@ -1845,6 +1980,9 @@ enum Message {
     // 关于弹窗
     ShowAbout,
     CloseAbout,
+
+    /// Ctrl+J：从光标所在行解析角色/立绘名，跳转到立绘预览。
+    JumpToPreviewFromCursor,
 
     // 语法快速插入：ending 声明与 unlock 标记
     InsertEndingSyntax,
@@ -1961,7 +2099,17 @@ impl EditorApp {
     fn update(&mut self, message: Message) -> Task<Message> {
         match message {
             Message::Edit(action) => {
-                self.editor_content.perform(action);
+                // Ctrl+点击检测：Ctrl 按下时，点击（产生 Move 动作）跳转到预览。
+                // text_editor::Action::Move 由鼠标点击触发（无拖拽时为单纯定位）。
+                // 仅在 Move 且 ctrl_held 时触发跳转，不执行默认光标移动以避免副作用。
+                if self.ctrl_held && matches!(action, text_editor::Action::Move(_)) {
+                    self.jump_to_preview_from_cursor();
+                } else {
+                    self.editor_content.perform(action);
+                }
+            }
+            Message::ModifiersChanged(ctrl) => {
+                self.ctrl_held = ctrl;
             }
             Message::PollTick => {
                 // 子进程轮询
@@ -2000,6 +2148,9 @@ impl EditorApp {
             }
             Message::StartGamePreview => self.start_game_preview(),
             Message::ShowAbout => self.show_about = true,
+            Message::JumpToPreviewFromCursor => {
+                self.jump_to_preview_from_cursor();
+            }
             Message::InsertEndingSyntax => {
                 // 插入 ending 声明骨架：ending "id" epilogue "path.akrs" [button "文本"]
                 self.smart_insert_syntax(
@@ -2285,10 +2436,14 @@ impl EditorApp {
     }
 
     fn subscription(&self) -> Subscription<Message> {
-        // 合并两个订阅：100ms 轮询 + 键盘快捷键
+        // 合并三个订阅：100ms 轮询 + 键盘快捷键 + 修饰键状态追踪
         let tick = iced::time::every(Duration::from_millis(100)).map(|_| Message::PollTick);
         let keys = keyboard::on_key_press(handle_key_press);
-        Subscription::batch([tick, keys])
+        // 追踪 Ctrl 按下/释放状态，用于实现 Ctrl+点击剧本行跳转预览。
+        // iced 的 text_editor 不暴露带修饰键的点击事件，故通过全局事件订阅
+        // 维护 ctrl_held 状态，在 Edit(Move) 到达时检查该状态。
+        let mods = iced::event::listen_with(track_modifiers);
+        Subscription::batch([tick, keys, mods])
     }
 
     fn view(&self) -> Element<'_, Message> {
@@ -2963,15 +3118,26 @@ impl EditorApp {
         }
 
         // 图片预览（从缓存或直接加载）
+        // 用 scrollable 包裹，高度受限 280px，图片保持原始宽高比（width=Fill 自适应）。
+        // 避免固定 height(200) 导致竖图被压扁或截断。
         if !self.sprite_preview.selected.is_empty() {
             if let Some(handle) = self.sprite_preview.textures.get(&self.sprite_preview.selected) {
                 col = col.push(
-                    container(image(handle).width(Length::Fill).height(200))
-                        .style(|_t| container::Style {
-                            background: Some(Background::Color(Color::from_rgb(0.05, 0.06, 0.08))),
-                            border: Border::default().rounded(4.0),
-                            ..Default::default()
-                        }),
+                    container(
+                        scrollable(
+                            container(
+                                image(handle).width(Length::Fill),
+                            )
+                            .width(Length::Fill)
+                            .center_x(Length::Fill),
+                        )
+                        .height(280),
+                    )
+                    .style(|_t| container::Style {
+                        background: Some(Background::Color(Color::from_rgb(0.05, 0.06, 0.08))),
+                        border: Border::default().rounded(4.0),
+                        ..Default::default()
+                    }),
                 );
             } else {
                 col = col.push(
@@ -3104,16 +3270,25 @@ impl EditorApp {
             );
         }
 
-        // 图片预览
+        // 图片预览（scrollable 包裹，保持宽高比）
         if !self.bg_preview.selected.is_empty() {
             if let Some(handle) = self.bg_preview.textures.get(&self.bg_preview.selected) {
                 col = col.push(
-                    container(image(handle).width(Length::Fill).height(160))
-                        .style(|_t| container::Style {
-                            background: Some(Background::Color(Color::from_rgb(0.05, 0.06, 0.08))),
-                            border: Border::default().rounded(4.0),
-                            ..Default::default()
-                        }),
+                    container(
+                        scrollable(
+                            container(
+                                image(handle).width(Length::Fill),
+                            )
+                            .width(Length::Fill)
+                            .center_x(Length::Fill),
+                        )
+                        .height(220),
+                    )
+                    .style(|_t| container::Style {
+                        background: Some(Background::Color(Color::from_rgb(0.05, 0.06, 0.08))),
+                        border: Border::default().rounded(4.0),
+                        ..Default::default()
+                    }),
                 );
             } else {
                 col = col.push(
@@ -3426,7 +3601,8 @@ impl EditorApp {
             container(card)
                 .width(Length::Fill)
                 .height(Length::Fill)
-                .center(Length::Fill)
+                .align_x(Alignment::Center)
+                .align_y(Alignment::Center)
                 .style(|_t| container::Style {
                     background: Some(Background::Color(Color::from_rgba8(0, 0, 0, 0.55))),
                     ..Default::default()
@@ -4010,10 +4186,12 @@ pub fn run_editor() -> Result<(), Box<dyn std::error::Error>> {
     // 注册 CJK 字体：用 cosmic-text 字形回退渲染中文。
     // 注册后将其设为默认字体，确保 cosmic-text 优先选用该 CJK 字体，
     // 而不是回退到不含中文字形的字体（避免中文显示为方框）。
+    // 注意：Font::with_name 的名字必须与 OTF 文件内部的 family name 完全一致，
+    // 该文件（SourceHanSansSC-Regular-2.otf）的 family name 为「思源黑体」。
     let app = match install_cjk_fonts() {
         Some(bytes) => app
             .font(bytes)
-            .default_font(Font::with_name("Source Han Sans SC")),
+            .default_font(Font::with_name("思源黑体")),
         None => app,
     };
 
@@ -4041,6 +4219,7 @@ fn handle_key_press(key: Key, modifiers: Modifiers) -> Option<Message> {
                 "f" | "F" => Some(Message::ToggleFindReplace),
                 "r" | "R" => Some(Message::StartGamePreview),
                 "h" | "H" => Some(Message::ToggleShortcuts),
+                "j" | "J" => Some(Message::JumpToPreviewFromCursor),
                 _ => None,
             },
             _ => None,
@@ -4053,6 +4232,22 @@ fn handle_key_press(key: Key, modifiers: Modifiers) -> Option<Message> {
         }
     } else {
         None
+    }
+}
+
+/// 全局事件过滤器：追踪 Ctrl 键按下/释放状态。
+/// 用于实现 Ctrl+点击剧本行跳转预览（iced text_editor 不暴露带修饰键的点击事件）。
+fn track_modifiers(
+    event: iced::Event,
+    _status: iced::event::Status,
+    _window: iced::window::Id,
+) -> Option<Message> {
+    match event {
+        iced::Event::Keyboard(keyboard::Event::KeyPressed { modifiers, .. })
+        | iced::Event::Keyboard(keyboard::Event::KeyReleased { modifiers, .. }) => {
+            Some(Message::ModifiersChanged(modifiers.control()))
+        }
+        _ => None,
     }
 }
 
@@ -4178,6 +4373,22 @@ fn load_png_handle(path: &Path) -> Result<iced::widget::image::Handle, String> {
         .to_rgba8();
     let (w, h) = img.dimensions();
     Ok(iced::widget::image::Handle::from_rgba(w, h, img.into_raw()))
+}
+
+/// 推断项目根目录：从给定文件路径向上逐级查找，直到找到含 `project.json`
+/// 或 `assets/` 子目录的祖先目录。找不到则返回 None。
+/// 用于打开单个剧本文件时自动定位资源根。
+fn infer_project_root(file_path: &Path) -> Option<PathBuf> {
+    let mut dir = file_path.parent()?;
+    loop {
+        if dir.join("project.json").is_file() || dir.join("assets").is_dir() {
+            return Some(dir.to_path_buf());
+        }
+        dir = match dir.parent() {
+            Some(p) => p,
+            None => return None,
+        };
+    }
 }
 
 /// 在系统文件管理器中打开路径。

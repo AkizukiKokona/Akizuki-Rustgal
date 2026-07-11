@@ -2701,11 +2701,15 @@ fn draw_chapter_toast(anim: &ChapterAnimation, sw: f32, sh: f32, font: &Option<F
     let name_x = toast_x + (toast_w - name_w) / 2.0;
     draw_text_f(name, name_x, name_y, name_size, text_color, font);
 
-    // 第二行：章节标题（居中）。
+    // 第二行：章节标题（居中，加粗）。
+    // 字体系统仅加载单一字重，通过多次微小偏移绘制模拟加粗效果。
     if let Some(t) = title {
         let title_y = name_y + gap + title_size;
         let title_x = toast_x + (toast_w - title_w) / 2.0;
-        draw_text_f(t, title_x, title_y, title_size, text_color, font);
+        let bold_off = 1.2 * scale;
+        for (dx, dy) in [(0.0, 0.0), (bold_off, 0.0), (-bold_off, 0.0), (0.0, bold_off), (0.0, -bold_off)] {
+            draw_text_f(t, title_x + dx, title_y + dy, title_size, text_color, font);
+        }
     }
 }
 
