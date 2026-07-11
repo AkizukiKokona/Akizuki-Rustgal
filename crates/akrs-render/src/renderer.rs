@@ -975,10 +975,138 @@ impl HudVisibility {
 ///     akrs_render::run(engine).await;
 /// }
 /// ```
+/// 启动时检测 GPU/驱动环境，若发现潜在兼容性问题则以黄色文字输出警告。
+///
+/// 检测项：
+/// - LLVMpipe / softpipe 等软件渲染器（已知会导致立绘叠加等画面异常）
+/// - VMware 虚拟 GPU（虚拟化 GPU 可能不完整支持 OpenGL 特性）
+/// - OpenGL 版本过低（低于 3.3）
+///
+/// 警告文本经 UI 翻译器查询，支持简中/英文/日文/繁中四国语言。
+/// 必须在首个 `next_frame().await` 之后调用（GL 上下文此时才完成初始化）。
+fn print_gpu_warning(engine: &Engine) {
+    use macroquad::miniquad::gl::{glGetString, GL_VENDOR, GL_VERSION};
+
+    // GL_RENDERER 常量（miniquad 未预定义，值 0x1F01）。
+    const GL_RENDERER: u32 = 0x1F01;
+
+    let renderer = unsafe {
+        let ptr = glGetString(GL_RENDERER);
+        if ptr.is_null() {
+            String::new()
+        } else {
+            std::ffi::CStr::from_ptr(ptr as *const _)
+                .to_str()
+                .unwrap_or("")
+                .to_string()
+        }
+    };
+
+    let vendor = unsafe {
+        let ptr = glGetString(GL_VENDOR);
+        if ptr.is_null() {
+            String::new()
+        } else {
+            std::ffi::CStr::from_ptr(ptr as *const _)
+                .to_str()
+                .unwrap_or("")
+                .to_string()
+        }
+    };
+
+    let version = unsafe {
+        let ptr = glGetString(GL_VERSION);
+        if ptr.is_null() {
+            String::new()
+        } else {
+            std::ffi::CStr::from_ptr(ptr as *const _)
+                .to_str()
+                .unwrap_or("")
+                .to_string()
+        }
+    };
+
+    let renderer_lower = renderer.to_lowercase();
+    let vendor_lower = vendor.to_lowercase();
+
+    // ANSI 黄色转义码（亮黄）。
+    const YELLOW: &str = "\x1b[33m";
+    const RESET: &str = "\x1b[0m";
+    let prefix = engine.t_ui("gpu.warning_prefix");
+
+    // 收集匹配的警告（可能多项）。
+    let mut warnings: Vec<String> = Vec::new();
+
+    // 1. LLVMpipe 软件渲染器（最可能导致立绘叠加的根因）。
+    if renderer_lower.contains("llvmpipe") {
+        warnings.push(engine.t_ui("gpu.llvmpipe").to_string());
+    }
+
+    // 2. 其他软件渲染器（softpipe、swrast 等）。
+    if renderer_lower.contains("softpipe")
+        || renderer_lower.contains("swrast")
+        || renderer_lower.contains("software")
+        || vendor_lower.contains("mesa") && renderer_lower.contains("llvm")
+    {
+        if !warnings.is_empty() {
+            // LLVMpipe 已覆盖，避免重复。
+        } else {
+            let msg = engine.t_ui("gpu.software_renderer")
+                .replace("{renderer}", &renderer);
+            warnings.push(msg);
+        }
+    }
+
+    // 3. VMware 虚拟 GPU。
+    if renderer_lower.contains("vmware")
+        || vendor_lower.contains("vmware")
+        || renderer_lower.contains("svga3d")
+    {
+        let msg = engine.t_ui("gpu.vmware")
+            .replace("{renderer}", &renderer);
+        warnings.push(msg);
+    }
+
+    // 4. OpenGL 版本过低（解析主版本号，低于 3 视为过低）。
+    //    版本字符串格式如 "3.3.0 NVIDIA 470.42" 或 "OpenGL ES 2.0"。
+    let parse_major = |s: &str| -> Option<u32> {
+        // 跳过 "OpenGL ES " 前缀。
+        let s = s.trim_start_matches("OpenGL ES").trim();
+        s.split('.').next().and_then(|p| p.parse::<u32>().ok())
+    };
+    if let Some(major) = parse_major(&version) {
+        if major < 3 {
+            let msg = engine.t_ui("gpu.old_opengl")
+                .replace("{version}", &version);
+            warnings.push(msg);
+        }
+    }
+
+    // 5. 渲染器字符串为空——无法识别。
+    if renderer.is_empty() && version.is_empty() {
+        warnings.push(engine.t_ui("gpu.unknown_renderer").to_string());
+    }
+
+    // 输出：每条警告一行，黄色文字。
+    for msg in &warnings {
+        eprintln!("{}{} {}{}", YELLOW, prefix, msg, RESET);
+    }
+
+    // 始终打印一行环境信息（非警告色），供调试参考。
+    if !renderer.is_empty() || !version.is_empty() {
+        eprintln!("[GPU] renderer=\"{}\" vendor=\"{}\" version=\"{}\"",
+            renderer, vendor, version);
+    }
+}
+
 pub async fn run(mut engine: Engine, project_config: &ProjectConfig) {
     // 启动时先用白色填充，避免"先黑一帧再渲染"的视觉瑕疵。
     clear_background(WHITE);
     next_frame().await;
+
+    // GPU/驱动环境检测：在首个 next_frame 之后调用（GL 上下文此时已初始化）。
+    // 仅在检测到潜在兼容性问题时输出黄色警告。
+    print_gpu_warning(&engine);
 
     // 应用项目配置的初始窗口大小和全屏状态。
     // 窗口标题受限于 miniquad 0.3 无运行时 API，暂无法动态修改，
@@ -2480,6 +2608,87 @@ async fn draw_scene(engine: &Engine, assets: &mut AssetManager, sw: f32, sh: f32
 ///
 /// 由 `ChapterAnimation` 在 ToastIn/Hold/Out 阶段调用。通知从屏幕顶部滑入，
 /// 停留 1s 后滑出。文本过长时自动缩小字号以适配最大宽度（屏幕宽度的 80%）。
+/// 绘制圆角矩形（用三角形扇形拼接四角）。
+///
+/// macroquad 0.3.16 未提供 `draw_rectangle_rounded`，这里用三角扇形手工
+/// 拼出圆角：中心矩形 + 上下两条边矩形 + 四角各 90° 扇形（细分若干三角形）。
+fn draw_rounded_rect(x: f32, y: f32, w: f32, h: f32, radius: f32, color: Color) {
+    let r = radius.min(w / 2.0).min(h / 2.0);
+    // 中心矩形（去掉左右圆角宽度）
+    draw_rectangle(x + r, y, w - 2.0 * r, h, color);
+    // 左右两条矩形（去掉上下圆角高度）
+    draw_rectangle(x, y + r, r, h - 2.0 * r, color);
+    draw_rectangle(x + w - r, y + r, r, h - 2.0 * r, color);
+    // 四角扇形（每角用 N 段三角形逼近 90° 圆弧）
+    let segments = 8;
+    let centers = [
+        (x + r, y + r),           // 左上
+        (x + w - r, y + r),       // 右上
+        (x + w - r, y + h - r),   // 右下
+        (x + r, y + h - r),       // 左下
+    ];
+    // 四角的起始角度（弧度）：左上 -π，右上 -π/2，右下 0，左下 π/2
+    let start_angles = [-std::f32::consts::PI, -std::f32::consts::FRAC_PI_2, 0.0, std::f32::consts::FRAC_PI_2];
+    for (i, &(cx, cy)) in centers.iter().enumerate() {
+        let a0 = start_angles[i];
+        for s in 0..segments {
+            let a1 = a0 + (s as f32) * std::f32::consts::FRAC_PI_2 / segments as f32;
+            let a2 = a0 + ((s + 1) as f32) * std::f32::consts::FRAC_PI_2 / segments as f32;
+            let p1 = (cx + a1.cos() * r, cy + a1.sin() * r);
+            let p2 = (cx + a2.cos() * r, cy + a2.sin() * r);
+            draw_triangle(
+                glam::vec2(cx, cy),
+                glam::vec2(p1.0, p1.1),
+                glam::vec2(p2.0, p2.1),
+                color,
+            );
+        }
+    }
+}
+
+/// 绘制圆角矩形边框（线宽向内）。
+fn draw_rounded_rect_lines(x: f32, y: f32, w: f32, h: f32, radius: f32, thickness: f32, color: Color) {
+    let r = radius.min(w / 2.0).min(h / 2.0);
+    let t = thickness;
+    // 外圆角矩形
+    draw_rounded_rect(x, y, w, h, r, color);
+    // 内圆角矩形（用背景色"挖洞"——但这里我们想要的是线框，所以改用
+    // 在外圆角矩形之上画一个稍小的透明矩形不可行（macroquad 无裁剪）。
+    // 改为：直接画 4 条边线 + 4 段圆弧线。
+    // 上下边（水平）
+    draw_rectangle(x + r, y, w - 2.0 * r, t, color);
+    draw_rectangle(x + r, y + h - t, w - 2.0 * r, t, color);
+    // 左右边（垂直）
+    draw_rectangle(x, y + r, t, h - 2.0 * r, color);
+    draw_rectangle(x + w - t, y + r, t, h - 2.0 * r, color);
+    // 四角圆弧线（用细三角形段）
+    let segments = 8;
+    let centers = [
+        (x + r, y + r),
+        (x + w - r, y + r),
+        (x + w - r, y + h - r),
+        (x + r, y + h - r),
+    ];
+    let start_angles = [-std::f32::consts::PI, -std::f32::consts::FRAC_PI_2, 0.0, std::f32::consts::FRAC_PI_2];
+    for (i, &(cx, cy)) in centers.iter().enumerate() {
+        let a0 = start_angles[i];
+        for s in 0..segments {
+            let a1 = a0 + (s as f32) * std::f32::consts::FRAC_PI_2 / segments as f32;
+            let a2 = a0 + ((s + 1) as f32) * std::f32::consts::FRAC_PI_2 / segments as f32;
+            // 外弧点
+            let o1 = (cx + a1.cos() * r, cy + a1.sin() * r);
+            let o2 = (cx + a2.cos() * r, cy + a2.sin() * r);
+            // 内弧点
+            let ir = r - t;
+            let i1 = (cx + a1.cos() * ir, cy + a1.sin() * ir);
+            let i2 = (cx + a2.cos() * ir, cy + a2.sin() * ir);
+            // 用两个三角形画这一段环
+            draw_triangle(glam::vec2(o1.0, o1.1), glam::vec2(o2.0, o2.1), glam::vec2(i2.0, i2.1), color);
+            draw_triangle(glam::vec2(o1.0, o1.1), glam::vec2(i2.0, i2.1), glam::vec2(i1.0, i1.1), color);
+        }
+    }
+}
+
 fn draw_chapter_toast(anim: &ChapterAnimation, sw: f32, sh: f32, font: &Option<Font>, scale: f32) {
     let name = &anim.name;
     let title = anim.title.as_deref();
@@ -2526,10 +2735,11 @@ fn draw_chapter_toast(anim: &ChapterAnimation, sw: f32, sh: f32, font: &Option<F
     let offset_y = anim.toast_offset(toast_h + top_margin);
     let draw_y = rest_y + offset_y;
 
-    // 白底（约 30% 透明 → alpha 0.7）。圆角效果用 glamera 不便，这里用矩形 + 细边框。
-    draw_rectangle(toast_x, draw_y, toast_w, toast_h, Color::new(1.0, 1.0, 1.0, 0.7));
+    // 白底（50% 透明 → alpha 0.5），圆角矩形。
+    let corner_r = 16.0 * scale;
+    draw_rounded_rect(toast_x, draw_y, toast_w, toast_h, corner_r, Color::new(1.0, 1.0, 1.0, 0.5));
     // 细边框增强层次感。
-    draw_rectangle_lines(toast_x, draw_y, toast_w, toast_h, 2.0 * scale, Color::new(0.0, 0.0, 0.0, 0.15));
+    draw_rounded_rect_lines(toast_x, draw_y, toast_w, toast_h, corner_r, 2.0 * scale, Color::new(0.0, 0.0, 0.0, 0.15));
 
     let text_color = Color::new(0.10, 0.10, 0.14, 1.0);
 
@@ -4276,6 +4486,8 @@ struct SettingsLayout {
     /// 配色标签页：5 行 × 12 色调色板预设小色块（共 60 个）。
     /// 索引 = row * 12 + palette_index。
     color_palette_rects: [Rect4; 60],
+    /// 配色标签页：标签字号（比通用标签小，避免与控件重叠）。
+    color_label_size: f32,
     /// 开发者标签页：红字警告文本的顶部 y（标题下方）。
     dev_warning_y: f32,
     /// 开发者标签页：显示终端调试输出开关。
@@ -4436,21 +4648,26 @@ fn compute_settings_layout(sw: f32, sh: f32, scale: f32) -> SettingsLayout {
     }
     // 配色行内几何：色块 / 十六进制框 / 调色板。
     // 主题色行（0,1,2）在色块后多一个「项目默认/自定义」按钮；已读/未读行（3,4）没有。
+    // 配色行标签较长（如日文「テーマカラー1（パネル背景）」），通用 control_x
+    // 不足以容纳，因此配色行使用独立的 color_control_x（更靠右），并缩小调色板
+    // 单元尺寸以在 1280 宽度下不溢出。
+    let color_label_size = 28.0 * scale;
+    let color_control_x = panel_x + 500.0 * scale;
     let swatch_size = 44.0 * scale;
-    let hex_box_w = 168.0 * scale;
+    let hex_box_w = 150.0 * scale;
     let hex_box_h = 40.0 * scale;
     let def_btn_w = 132.0 * scale;
-    let palette_cell = 30.0 * scale;
-    let palette_gap = 5.0 * scale;
+    let palette_cell = 26.0 * scale;
+    let palette_gap = 4.0 * scale;
     let mut color_swatch_rects = [Rect4::default(); 5];
     let mut color_hex_rects = [Rect4::default(); 5];
     let mut color_default_btn_rects = [Rect4::default(); 3];
     let mut color_palette_rects = [Rect4::default(); 60];
     for i in 0..5 {
         let mid = color_row_mids[i];
-        // 色块（所有行均位于 control_x）
+        // 色块（所有行均位于 color_control_x）
         let swatch = Rect4 {
-            x: control_x, y: mid - swatch_size / 2.0,
+            x: color_control_x, y: mid - swatch_size / 2.0,
             w: swatch_size, h: swatch_size,
         };
         color_swatch_rects[i] = swatch;
@@ -4522,6 +4739,7 @@ fn compute_settings_layout(sw: f32, sh: f32, scale: f32) -> SettingsLayout {
         skip_row_mids, skip_toggle, skip_dropdown,
         color_row_mids,
         color_swatch_rects, color_hex_rects, color_default_btn_rects, color_palette_rects,
+        color_label_size,
         dev_warning_y, dev_debug_toggle, dev_clear_read_btn,
         apply_btn, cancel_btn,
     }
@@ -4537,7 +4755,7 @@ fn compute_settings_layout(sw: f32, sh: f32, scale: f32) -> SettingsLayout {
 /// - 12 色调色板预设（点击直接套用）
 fn draw_color_tab(engine: &Engine, layout: &SettingsLayout, font: &Option<Font>, scale: f32, project_config: &ProjectConfig, color_edit_active: Option<ColorField>, color_hex_buffer: &str) {
     let settings = engine.settings();
-    let label_size = 34.0 * scale;
+    let label_size = layout.color_label_size;
     let hint_size = 24.0 * scale;
     let hex_text_size = 24.0 * scale;
     let btn_text_size = 22.0 * scale;

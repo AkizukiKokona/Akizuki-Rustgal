@@ -572,6 +572,13 @@ fn builtin_english(key: &str) -> Option<&'static str> {
         "about.build_label" => "Build",
         "about.line4" => "心夏麻麻可爱喵",
         "about.line5" => "最喜欢心夏麻麻了喵",
+        // 启动时 GPU/驱动环境检测警告（仅检测到潜在兼容性问题时输出）。
+        "gpu.warning_prefix" => "[GPU Warning]",
+        "gpu.software_renderer" => "Software rendering detected ({renderer}). Performance and visual correctness may be compromised; a hardware OpenGL 3.3+ GPU is recommended.",
+        "gpu.llvmpipe" => "LLVMpipe software renderer detected. This is known to cause rendering glitches (e.g. overlapping sprites). Please use a hardware GPU.",
+        "gpu.vmware" => "VMware virtual GPU detected ({renderer}). Virtual GPUs may not correctly support all OpenGL features, which can cause visual artifacts.",
+        "gpu.old_opengl" => "OpenGL version too old ({version}). Version 3.3+ is recommended; older versions may cause rendering issues.",
+        "gpu.unknown_renderer" => "Unable to identify GPU renderer. If you experience visual glitches, please update your graphics driver.",
         _ => return None,
     })
 }
@@ -794,6 +801,9 @@ mod tests {
             "about.title", "about.name", "about.subtitle",
             "about.version_label", "about.build_label",
             "about.line4", "about.line5",
+            "gpu.warning_prefix", "gpu.software_renderer",
+            "gpu.llvmpipe", "gpu.vmware",
+            "gpu.old_opengl", "gpu.unknown_renderer",
         ] {
             assert!(builtin_english(key).is_some(), "内置英文表缺失 key: {}", key);
         }

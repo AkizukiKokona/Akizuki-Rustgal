@@ -1602,11 +1602,14 @@ impl Engine {
                     return;
                 }
                 VmEvent::Flow { target, title } => {
-                    // 章节单向跳转：更新当前章节名，并设置待处理章节通知。
-                    // 渲染层每帧调用 take_chapter_notify() 取走后播放
-                    // 全屏淡入淡出 + 顶部章节通知。
+                    // 章节单向跳转：更新当前章节名。
+                    // 仅当目标章节带显示标题（`# name title`）时才设置待处理
+                    // 章节通知——无标题的章节跳转（如分支 `-> 分支A`）不显示
+                    // toast，避免每次分支选择都弹通知。
                     self.current_section_name = target.clone();
-                    self.pending_chapter_notify = Some(ChapterNotify { name: target, title });
+                    if title.is_some() {
+                        self.pending_chapter_notify = Some(ChapterNotify { name: target, title });
+                    }
                     // Non-blocking: continue to next event
                 }
                 VmEvent::Visit { target, title } => {

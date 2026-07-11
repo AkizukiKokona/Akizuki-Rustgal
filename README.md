@@ -6,9 +6,9 @@
 
 [![License](https://img.shields.io/badge/license-MIT-blue.svg)](#许可证)
 [![Rust](https://img.shields.io/badge/rust-1.92+-orange.svg)](https://www.rust-lang.org)
-[![Version](https://img.shields.io/badge/version-1.0.72-success.svg)](#)
+[![Version](https://img.shields.io/badge/version-1.0.73-success.svg)](#)
 [![Platform](https://img.shields.io/badge/platform-Windows%20%7C%20Linux%20%7C%20macOS-lightgrey.svg)](#下载与安装)
-[![PRs Allowed](https://img.shields.io/badge/PRs-allowed-yellow.svg)](#贡献)
+[![PRs Not Recommended](https://img.shields.io/badge/PRs-not%20recommended-yellow.svg)](#贡献)
 
 </div>
 
@@ -345,7 +345,7 @@ strip = true         # 去除调试符号
 
 欢迎通过 Issue 反馈 bug 与功能建议。
 
-关于 Pull Request：您**可以**提交 PR，不过有一点想先说明——本项目坚持 **100% 纯 Rust** 实现，从词法分析到渲染、编辑器，每一行代码都是 Rust，不依赖任何脚本运行时。因此只有同样以纯 Rust 完成的贡献才能被合入；若您的改动需要借助非 Rust 组件（Python / Lua / TJS 等）或通过 FFI 调用非 Rust 库，通常无法采纳，这种情况欢迎改为提交 Issue 描述需求。
+关于 Pull Request：**不建议**提交 PR。本项目坚持 **100% 纯 Rust** 实现——从词法分析到渲染、编辑器，每一行代码都是 Rust，不依赖任何脚本运行时（无 Python、无 Lua、无 TJS）。这一原则是项目的核心定位，因此外部 PR 通常难以合入：一方面维护者需要确保每一处改动都保持纯 Rust，审查成本较高；另一方面若改动引入了非 Rust 组件或通过 FFI 调用非 Rust 库，会破坏项目的设计目标。如果您发现了 bug 或有功能需求，**更推荐通过 Issue 描述**，维护者会评估并在纯 Rust 前提下实现。当然，如果您确实有纯 Rust 的改进且愿意遵守项目规范，也可以提交 PR，但请在提之前先在 Issue 中讨论。
 
 1. Fork 本仓库
 2. 创建功能分支（`git checkout -b feature/amazing-feature`）

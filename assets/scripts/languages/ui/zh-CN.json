@@ -144,5 +144,12 @@
   "error.reason.save_load": "存档读取失败，文件可能损坏或与当前版本不兼容。",
   "error.reason.render": "渲染层出现异常，资源加载或绘制失败。",
   "error.reason.settings": "设置文件解析失败，配置可能已损坏。",
-  "error.reason.fatal": "发生未知致命错误，建议导出日志并重启引擎。"
+  "error.reason.fatal": "发生未知致命错误，建议导出日志并重启引擎。",
+
+  "gpu.warning_prefix": "[GPU 警告]",
+  "gpu.software_renderer": "检测到软件渲染（{renderer}）。性能与画面正确性可能受影响，建议使用支持 OpenGL 3.3+ 的硬件 GPU。",
+  "gpu.llvmpipe": "检测到 LLVMpipe 软件渲染器。此渲染器已知会导致画面异常（如立绘叠加），请使用硬件 GPU。",
+  "gpu.vmware": "检测到 VMware 虚拟 GPU（{renderer}）。虚拟 GPU 可能无法完整支持 OpenGL 特性，导致画面异常。",
+  "gpu.old_opengl": "OpenGL 版本过低（{version}）。建议使用 3.3+ 版本，旧版本可能导致画面问题。",
+  "gpu.unknown_renderer": "无法识别 GPU 渲染器。如遇画面异常，请更新显卡驱动。"
 }
