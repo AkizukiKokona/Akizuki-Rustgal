@@ -19,9 +19,12 @@ use std::process::{Child, Command, Stdio};
 use std::io::Read;
 use std::time::Duration;
 
+use iced::advanced::text::highlighter::Format as HighlightFormat;
+use iced::advanced::text::Highlighter as _;
+use iced::keyboard::{self, Key, Modifiers};
 use iced::widget::{
-    button, column, container, horizontal_space, opaque, pick_list, row, scrollable, stack,
-    text, text_editor, text_input, Column, Container, Row, Space,
+    button, column, container, horizontal_space, image, opaque, pick_list, row, scrollable,
+    slider, stack, text, text_editor, text_input, Column, Container, Row, Space,
 };
 use iced::{
     Alignment, Background, Border, Color, Element, Font, Length, Padding, Pixels, Shadow,
@@ -109,6 +112,110 @@ Aki: "Oh. I see."
 
 /// GitHub 仓库链接
 const GITHUB_URL: &str = "https://github.com/AkizukiKokona/Akizuki-Rustgal";
+
+/// Rust 官网链接（cargo 引导弹窗的「打开 rust-lang.org」按钮使用）。
+const RUST_LANG_URL: &str = "https://rust-lang.org";
+
+// ---------------------------------------------------------------------------
+// 语法高亮器（iced::advanced::text::Highlighter trait 实现）
+// ---------------------------------------------------------------------------
+
+/// `.akrs` 脚本语法高亮设置（空结构体，复用全局调色板）。
+#[derive(Debug, Clone, PartialEq)]
+struct AkrsHighlightSettings;
+
+/// `.akrs` 脚本语法高亮器：按行首 token 选择基础颜色，
+/// 同时对 `"..."` 字符串字面量和 `//` 注释做分段着色。
+/// 复用已有的 `line_base_color` 纯逻辑函数。
+struct AkrsHighlighter {
+    /// 当前高亮到的行号（text_editor 要求跟踪）。
+    current_line: usize,
+}
+
+/// 高亮输出：一个颜色值（对应 `HighlightFormat` 的 `color` 字段）。
+#[derive(Debug, Clone, Copy)]
+struct AkrsHighlight(Color);
+
+impl iced::advanced::text::Highlighter for AkrsHighlighter {
+    type Settings = AkrsHighlightSettings;
+    type Highlight = AkrsHighlight;
+    type Iterator<'a> = std::vec::IntoIter<(std::ops::Range<usize>, Self::Highlight)>;
+
+    fn new(_settings: &Self::Settings) -> Self {
+        Self { current_line: 0 }
+    }
+
+    fn update(&mut self, _new_settings: &Self::Settings) {}
+
+    fn change_line(&mut self, line: usize) {
+        self.current_line = line;
+    }
+
+    fn highlight_line(&mut self, line: &str) -> Self::Iterator<'_> {
+        let trimmed = line.trim_start();
+        let base = line_base_color(trimmed);
+        let leading_ws = line.len() - trimmed.len();
+
+        // 收集高亮分片：(字节范围, 颜色)
+        let mut spans: Vec<(std::ops::Range<usize>, AkrsHighlight)> = Vec::new();
+
+        // 注释：`//` 后整行着色为注释色（优先于其他规则）
+        if let Some(pos) = line.find("//") {
+            // 注释前的部分用基础色
+            if pos > 0 {
+                spans.push((0..pos, AkrsHighlight(base)));
+            }
+            spans.push((pos..line.len(), AkrsHighlight(COLOR_COMMENT)));
+            return spans.into_iter();
+        }
+
+        // 字符串字面量：扫描所有 "..." 区间，着色为字符串色
+        let mut in_string = false;
+        let mut string_start = 0usize;
+        let bytes = line.as_bytes();
+        let mut i = 0usize;
+        let mut last_end = 0usize;
+        while i < bytes.len() {
+            if bytes[i] == b'"' {
+                if !in_string {
+                    // 字符串开始前的部分用基础色
+                    if i > last_end {
+                        spans.push((last_end..i, AkrsHighlight(base)));
+                    }
+                    string_start = i;
+                    in_string = true;
+                } else {
+                    // 字符串结束（含闭合引号）
+                    spans.push((string_start..i + 1, AkrsHighlight(COLOR_STRING)));
+                    last_end = i + 1;
+                    in_string = false;
+                }
+            }
+            i += 1;
+        }
+        // 行末剩余部分
+        if last_end < line.len() {
+            let color = if in_string { COLOR_STRING } else { base };
+            spans.push((last_end..line.len(), AkrsHighlight(color)));
+        }
+
+        // 如果没有任何分片（空行），返回空迭代器
+        let _ = leading_ws;
+        spans.into_iter()
+    }
+
+    fn current_line(&self) -> usize {
+        self.current_line
+    }
+}
+
+/// 将 `AkrsHighlight` 转换为 iced 渲染器需要的 `Format<Font>`。
+fn akrs_highlight_to_format(h: &AkrsHighlight, _theme: &Theme) -> HighlightFormat<Font> {
+    HighlightFormat {
+        color: Some(h.0),
+        font: None,
+    }
+}
 
 // ---------------------------------------------------------------------------
 // 立绘预览
@@ -297,6 +404,8 @@ pub struct EditorApp {
     show_find_replace_dialog: bool,
     /// 查找替换对话框中的查找内容。
     find_replace_target: String,
+    /// 查找替换对话框中的替换内容。
+    find_replace_replacement: String,
     /// 查找替换对话框中待插入的语法（缓存）。
     find_replace_syntax: String,
     /// 文件选择对话框状态（None 表示未打开）。
@@ -527,6 +636,7 @@ impl Default for EditorApp {
             show_enlarged_preview: false,
             show_find_replace_dialog: false,
             find_replace_target: String::new(),
+            find_replace_replacement: String::new(),
             find_replace_syntax: String::new(),
             file_picker: None,
             project_config: ProjectConfig::default(),
@@ -585,6 +695,14 @@ impl EditorApp {
         let replaced = current.replace(target, replacement);
         self.editor_content = text_editor::Content::with_text(&replaced);
         true
+    }
+
+    /// 统计脚本中匹配 target 的次数（用于查找替换弹窗的命中数显示）。
+    fn find_count(&self, target: &str) -> usize {
+        if target.is_empty() {
+            return 0;
+        }
+        self.editor_content.text().matches(target).count()
     }
 
     // -- 文件操作（全部可失败，不 panic）-----------------------------------
@@ -1437,6 +1555,40 @@ impl EditorApp {
         }
     }
 
+    /// 加载立绘纹理到缓存（用于预览面板的 image 显示）。
+    fn load_sprite_texture(&mut self, name: &str) {
+        if name.is_empty() || self.sprite_preview.textures.contains_key(name) {
+            return;
+        }
+        let path = self.work_dir.join("assets").join("characters").join(format!("{}.png", name));
+        match load_png_handle(&path) {
+            Ok(handle) => {
+                self.sprite_preview.textures.insert(name.to_string(), handle);
+                self.sprite_preview.load_error = None;
+            }
+            Err(e) => {
+                self.sprite_preview.load_error = Some(format!("{}: {}", name, e));
+            }
+        }
+    }
+
+    /// 加载背景纹理到缓存（用于预览面板的 image 显示）。
+    fn load_bg_texture(&mut self, name: &str) {
+        if name.is_empty() || self.bg_preview.textures.contains_key(name) {
+            return;
+        }
+        let path = self.work_dir.join("assets").join("bg").join(format!("{}.png", name));
+        match load_png_handle(&path) {
+            Ok(handle) => {
+                self.bg_preview.textures.insert(name.to_string(), handle);
+                self.bg_preview.load_error = None;
+            }
+            Err(e) => {
+                self.bg_preview.load_error = Some(format!("{}: {}", name, e));
+            }
+        }
+    }
+
     /// 生成立绘摆放语法并插入脚本。
     fn generate_sprite_syntax(&mut self) {
         let sp = &self.sprite_preview;
@@ -1481,6 +1633,151 @@ impl EditorApp {
         }
         let syntax = format!("@music {}", mp.selected);
         self.smart_insert_syntax(&syntax);
+    }
+
+    // -- rpy 导入 ---------------------------------------------------------
+
+    /// 将 Ren'Py `.rpy` 脚本转换为 `.akrs` 格式。
+    /// 返回转换过程中产生的警告信息列表。
+    ///
+    /// 转换规则（参考原始 egui 实现）：
+    /// - `label name` → `# name`（章节）
+    /// - `scene bg_name` → `@bg bg_name with fade`（背景）
+    /// - `show char pose` → `+ char pose`（角色上场）
+    /// - `hide char` → `- char`（角色下场）
+    /// - `menu:` → `?`（选择开始），`"text" expression:` → `| "text" -> ...`
+    /// - `speaker "dialogue"` → `speaker: "dialogue"`
+    /// - `jump label` → `-> label`（流程跳转）
+    /// - `return` → `~~`（章节结束）
+    /// - `#` 注释行保留
+    fn convert_rpy_to_akrs(&mut self, source: &Path, target: &Path) -> Vec<String> {
+        let mut warnings = Vec::new();
+        let content = match std::fs::read_to_string(source) {
+            Ok(c) => c,
+            Err(e) => {
+                warnings.push(format!("读取源文件失败：{}", e));
+                return warnings;
+            }
+        };
+
+        let mut output = String::new();
+        let mut in_menu = false;
+        let mut menu_idx = 0usize;
+
+        for (line_no, raw) in content.lines().enumerate() {
+            let trimmed = raw.trim();
+            // 空行保留
+            if trimmed.is_empty() {
+                output.push('\n');
+                continue;
+            }
+            // Ren'Py 注释 `#` 保留
+            if trimmed.starts_with('#') {
+                output.push_str(trimmed);
+                output.push('\n');
+                continue;
+            }
+            // label name → # name
+            if let Some(rest) = trimmed.strip_prefix("label ") {
+                let name = rest.split_whitespace().next().unwrap_or(rest).trim_end_matches(':');
+                // 结束上一个章节
+                if !output.is_empty() && !output.ends_with("~~\n") {
+                    output.push_str("~~\n\n");
+                }
+                output.push_str(&format!("# {}\n\n", name));
+                in_menu = false;
+                continue;
+            }
+            // scene bg_name → @bg bg_name with fade
+            if let Some(rest) = trimmed.strip_prefix("scene ") {
+                let bg = rest.split_whitespace().next().unwrap_or(rest);
+                output.push_str(&format!("@bg {} with fade\n", bg));
+                continue;
+            }
+            // show char pose → + char pose
+            if let Some(rest) = trimmed.strip_prefix("show ") {
+                let parts: Vec<&str> = rest.split_whitespace().collect();
+                let char_name = parts.first().copied().unwrap_or("");
+                let pose = if parts.len() > 1 { parts[1] } else { "" };
+                if pose.is_empty() {
+                    output.push_str(&format!("+ {}\n", char_name));
+                } else {
+                    output.push_str(&format!("+ {} ({})\n", char_name, pose));
+                }
+                continue;
+            }
+            // hide char → - char
+            if let Some(rest) = trimmed.strip_prefix("hide ") {
+                let char_name = rest.split_whitespace().next().unwrap_or(rest);
+                output.push_str(&format!("- {}\n", char_name));
+                continue;
+            }
+            // menu: → ?
+            if trimmed == "menu:" || trimmed.starts_with("menu ") {
+                output.push_str("? \"请选择\"\n");
+                in_menu = true;
+                menu_idx = 0;
+                continue;
+            }
+            // menu 选项："text" expression: → | "text" -> Branch_N
+            if in_menu && trimmed.starts_with('"') {
+                if let Some(end_quote) = trimmed[1..].find('"') {
+                    let text = &trimmed[1..end_quote + 1];
+                    menu_idx += 1;
+                    let branch = format!("Branch_{}", menu_idx);
+                    output.push_str(&format!("| \"{}\" -> {}\n", text, branch));
+                    continue;
+                }
+            }
+            // jump label → -> label
+            if let Some(rest) = trimmed.strip_prefix("jump ") {
+                let label = rest.split_whitespace().next().unwrap_or(rest);
+                output.push_str(&format!("-> {}\n", label));
+                continue;
+            }
+            // return → ~~
+            if trimmed == "return" || trimmed == "return:" {
+                output.push_str("~~\n\n");
+                in_menu = false;
+                continue;
+            }
+            // 对话行：speaker "dialogue" 或 "narration"
+            // 形如 `e "Hello"` 或 `e happy "Hello"` → e: "Hello"
+            if let Some(quote_pos) = trimmed.find('"') {
+                if quote_pos > 0 {
+                    let speaker_part = trimmed[..quote_pos].trim();
+                    let dialogue = &trimmed[quote_pos..];
+                    // 去掉 speaker 中的 pose（空格后的部分）
+                    let speaker = speaker_part.split_whitespace().next().unwrap_or(speaker_part);
+                    if !speaker.is_empty() && !speaker.contains('$') {
+                        output.push_str(&format!("{}: {}\n", speaker, dialogue));
+                        continue;
+                    }
+                }
+                // 纯旁白 "text"
+                output.push_str(&format!("{}\n", trimmed));
+                continue;
+            }
+            // 无法识别的行：保留为注释并警告
+            warnings.push(format!("第 {} 行：无法自动转换「{}」，已保留为注释", line_no + 1, trimmed));
+            output.push_str(&format!("// {}（rpy 原行）\n", trimmed));
+        }
+
+        // 确保以 ~~ 结尾
+        if !output.ends_with("~~\n") && !output.trim().is_empty() {
+            output.push_str("~~\n");
+        }
+
+        match std::fs::write(target, &output) {
+            Ok(()) => {
+                self.status = format!("rpy 已转换：{}", target.display());
+            }
+            Err(e) => {
+                warnings.push(format!("写入目标文件失败：{}", e));
+                self.status = format!("rpy 转换写入失败：{}", e);
+            }
+        }
+        warnings
     }
 
     // -- 标签辅助 ---------------------------------------------------------
@@ -1599,6 +1896,9 @@ enum Message {
     ScanMusic,
     SpriteSelected(String),
     SpriteName(String),
+    SpriteX(f32),
+    SpriteY(f32),
+    SpriteScale(f32),
     BgSelected(String),
     BgTransition(String),
     MusicSelected(String),
@@ -1612,9 +1912,34 @@ enum Message {
     LoadTranslation,
     ReextractTranslatable,
     SaveTranslation,
+    /// 修改第 idx 条可翻译行的译文。
+    TranslationInput(usize, String),
 
     // 在文件管理器中打开工作目录
     OpenWorkDirInFileManager,
+
+    // 查找替换增强
+    FindReplaceReplacement(String),
+    FindNext,
+
+    // 放大预览
+    ShowEnlargedPreview,
+    CloseEnlargedPreview,
+
+    // rpy 导入
+    ToggleRpyImport,
+    RpyImportSourceInput(String),
+    RpyImportTargetInput(String),
+    DoRpyImport,
+
+    // 打包：打开产物文件夹
+    OpenBuildFolder,
+
+    // cargo 引导：打开 rust-lang.org
+    OpenRustLang,
+
+    // 快捷键帮助
+    ToggleShortcuts,
 }
 
 impl EditorApp {
@@ -1746,8 +2071,10 @@ impl EditorApp {
             Message::FindReplaceTarget(s) => self.find_replace_target = s,
             Message::DoFindReplace => {
                 let target = self.find_replace_target.clone();
-                if self.find_and_replace(&target, "") {
-                    self.status = format!("已替换所有「{}」", target);
+                let replacement = self.find_replace_replacement.clone();
+                if self.find_and_replace(&target, &replacement) {
+                    let n = self.find_count(&target);
+                    self.status = format!("已替换「{}」→「{}」（剩余 {} 处）", target, replacement, n);
                 } else {
                     self.status = format!("未找到「{}」", target);
                 }
@@ -1760,7 +2087,20 @@ impl EditorApp {
             Message::ProjectAuthor(s) => self.project_config.author = s,
             Message::ProjectDescription(s) => self.project_config.description = s,
             Message::ProjectLanguage(s) => self.project_config.language = s,
-            Message::SaveProjectConfig => self.save_project_config(),
+            Message::SaveProjectConfig => {
+                // 保存前检查标题/副标题是否过长，过长则弹出警告对话框
+                if self.project_config.is_title_too_long()
+                    || self.project_config.is_subtitle_too_long()
+                {
+                    self.title_warning = Some(TitleWarningState {
+                        new_title: self.project_config.title.clone(),
+                        new_subtitle: self.project_config.subtitle.clone(),
+                    });
+                    self.status = "标题或副标题过长，请确认".to_string();
+                } else {
+                    self.save_project_config();
+                }
+            }
             Message::OpenRecent(path) => {
                 self.open_project(&path);
                 self.show_welcome = false;
@@ -1777,9 +2117,18 @@ impl EditorApp {
             Message::ScanSprites => self.scan_sprites(),
             Message::ScanBgs => self.scan_bgs(),
             Message::ScanMusic => self.scan_music(),
-            Message::SpriteSelected(s) => self.sprite_preview.selected = s,
+            Message::SpriteSelected(s) => {
+                self.sprite_preview.selected = s.clone();
+                self.load_sprite_texture(&s);
+            }
             Message::SpriteName(s) => self.sprite_preview.character_name = s,
-            Message::BgSelected(s) => self.bg_preview.selected = s,
+            Message::SpriteX(v) => self.sprite_preview.x_percent = v,
+            Message::SpriteY(v) => self.sprite_preview.y_percent = v,
+            Message::SpriteScale(v) => self.sprite_preview.scale = v,
+            Message::BgSelected(s) => {
+                self.bg_preview.selected = s.clone();
+                self.load_bg_texture(&s);
+            }
             Message::BgTransition(s) => self.bg_preview.transition = s,
             Message::MusicSelected(s) => self.music_preview.selected = s,
             Message::GenerateSpriteSyntax => self.generate_sprite_syntax(),
@@ -1796,17 +2145,88 @@ impl EditorApp {
                 self.status = "已重新提取可翻译文本".to_string();
             }
             Message::SaveTranslation => self.save_translation(),
+            Message::TranslationInput(idx, text) => {
+                if let Some(t) = self.translation_file.as_mut() {
+                    if let Some(line) = self.translatable_lines.get(idx) {
+                        match line.kind {
+                            TranslatableKind::Section => t.set_section(&line.original, &text),
+                            TranslatableKind::Dialogue => t.set_dialogue(&line.original, &text),
+                            TranslatableKind::Narration => t.set_narration(&line.original, &text),
+                            TranslatableKind::Choice => t.set_choice(&line.original, &text),
+                            TranslatableKind::ChoicePrompt => {
+                                t.set_choice_prompt(&line.original, &text)
+                            }
+                            TranslatableKind::Character => t.set_character(&line.original, &text),
+                        }
+                    }
+                }
+            }
             Message::OpenWorkDirInFileManager => {
                 open_path_in_file_manager(&self.work_dir);
             }
+            Message::FindReplaceReplacement(s) => self.find_replace_replacement = s,
+            Message::FindNext => {
+                // 查找下一个：简单实现——统计命中数并在状态栏显示
+                let target = self.find_replace_target.clone();
+                let count = self.find_count(&target);
+                if count > 0 {
+                    self.status = format!("找到 {} 处「{}」", count, target);
+                } else {
+                    self.status = format!("未找到「{}」", target);
+                }
+            }
+            Message::ShowEnlargedPreview => self.show_enlarged_preview = true,
+            Message::CloseEnlargedPreview => self.show_enlarged_preview = false,
+            Message::ToggleRpyImport => self.show_rpy_import = !self.show_rpy_import,
+            Message::RpyImportSourceInput(s) => {
+                self.rpy_import_source = if s.trim().is_empty() {
+                    None
+                } else {
+                    Some(PathBuf::from(s))
+                };
+            }
+            Message::RpyImportTargetInput(s) => {
+                self.rpy_import_target = PathBuf::from(s);
+            }
+            Message::DoRpyImport => {
+                if let Some(source) = self.rpy_import_source.clone() {
+                    let target = if self.rpy_import_target.as_os_str().is_empty() {
+                        let stem = source
+                            .file_stem()
+                            .and_then(|s| s.to_str())
+                            .unwrap_or("converted");
+                        self.work_dir.join(format!("{}.akrs", stem))
+                    } else {
+                        self.rpy_import_target.clone()
+                    };
+                    self.rpy_import_warnings =
+                        self.convert_rpy_to_akrs(&source, &target);
+                    if self.rpy_import_warnings.is_empty() {
+                        self.rpy_import_warnings
+                            .push("转换完成，无警告".to_string());
+                    }
+                } else {
+                    self.rpy_import_warnings.clear();
+                    self.rpy_import_warnings.push("请先指定源 .rpy 文件".to_string());
+                }
+            }
+            Message::OpenBuildFolder => {
+                let dir = self.build.output_dir.clone();
+                open_path_in_file_manager(&dir);
+            }
+            Message::OpenRustLang => {
+                open_url_in_browser(RUST_LANG_URL);
+            }
+            Message::ToggleShortcuts => self.show_shortcuts = !self.show_shortcuts,
         }
         Task::none()
     }
 
     fn subscription(&self) -> Subscription<Message> {
-        // 每 100ms 产生一次 PollTick：轮询子进程并用固定 dt 推进引擎。
-        iced::time::every(Duration::from_millis(100))
-            .map(|_| Message::PollTick)
+        // 合并两个订阅：100ms 轮询 + 键盘快捷键
+        let tick = iced::time::every(Duration::from_millis(100)).map(|_| Message::PollTick);
+        let keys = keyboard::on_key_press(handle_key_press);
+        Subscription::batch([tick, keys])
     }
 
     fn view(&self) -> Element<'_, Message> {
@@ -1842,6 +2262,15 @@ impl EditorApp {
         }
         if self.title_warning.is_some() {
             layers.push(self.view_title_warning_modal());
+        }
+        if self.show_rpy_import {
+            layers.push(self.view_rpy_import_modal());
+        }
+        if self.show_enlarged_preview {
+            layers.push(self.view_enlarged_preview_modal());
+        }
+        if self.show_shortcuts {
+            layers.push(self.view_shortcuts_modal());
         }
 
         stack(layers).into()
@@ -2013,6 +2442,8 @@ impl EditorApp {
             b("项目设置", Message::ShowProjectSettings),
             b("打包", Message::ToggleBuildDialog),
             b("翻译", Message::ToggleTranslationMode),
+            b("rpy导入", Message::ToggleRpyImport),
+            b("快捷键", Message::ToggleShortcuts),
             b("关于", Message::ShowAbout),
         ]
         .spacing(6);
@@ -2132,14 +2563,21 @@ impl EditorApp {
     }
 
     fn view_center_panel(&self) -> Element<'_, Message> {
+        // 使用自定义 AkrsHighlighter 实现语法高亮：按行首 token 着色。
         let editor = text_editor(&self.editor_content)
             .on_action(Message::Edit)
             .font(Font::MONOSPACE)
             .size(FONT_SIZE)
-            .padding(8);
+            .padding(8)
+            .highlight_with::<AkrsHighlighter>(
+                AkrsHighlightSettings,
+                akrs_highlight_to_format,
+            );
 
         let content = if self.translation_mode {
-            self.view_translation_panel().or_else(|| Some(editor.into())).unwrap()
+            self.view_translation_panel()
+                .or_else(|| Some(editor.into()))
+                .unwrap()
         } else {
             editor.into()
         };
@@ -2155,7 +2593,30 @@ impl EditorApp {
     }
 
     fn view_translation_panel(&self) -> Option<Element<'_, Message>> {
+        // 顶部工具栏：语言输入 + 加载/重新提取/保存按钮
+        let toolbar = row![
+            text("目标语言：").size(12.0).color(COLOR_FLOW),
+            text_input("en-US", &self.translation_target_lang)
+                .on_input(Message::TranslationTargetLang)
+                .width(100)
+                .padding(4),
+            button(text("加载").size(11.0))
+                .on_press(Message::LoadTranslation)
+                .padding([4, 8]),
+            button(text("重新提取").size(11.0))
+                .on_press(Message::ReextractTranslatable)
+                .padding([4, 8]),
+            button(text("保存").size(11.0))
+                .on_press(Message::SaveTranslation)
+                .padding([4, 8]),
+        ]
+        .spacing(6)
+        .align_y(Alignment::Center);
+
         let mut col = Column::new().spacing(4);
+        col = col.push(toolbar);
+        col = col.push(Space::new(Length::Fill, 4));
+
         for (idx, line) in self.translatable_lines.iter().enumerate() {
             let kind_color = Self::kind_color(&line.kind);
             let kind_label = Self::kind_label(&line.kind);
@@ -2174,10 +2635,41 @@ impl EditorApp {
                     .color(Color::from_rgb(0.45, 0.45, 0.45)),
             ]
             .spacing(8);
-            let original = text(line.original.clone())
-                .size(13.0)
-                .color(Color::from_rgb(0.78, 0.78, 0.78));
-            col = col.push(header).push(original);
+
+            // 获取当前译文（从 translation_file 中查询）
+            let current_translation = if let Some(t) = &self.translation_file {
+                match line.kind {
+                    TranslatableKind::Section => t.t_section(&line.original).to_string(),
+                    TranslatableKind::Dialogue => t.t_dialogue(&line.original).to_string(),
+                    TranslatableKind::Narration => t.t_narration(&line.original).to_string(),
+                    TranslatableKind::Choice => t.t_choice(&line.original).to_string(),
+                    TranslatableKind::ChoicePrompt => t.t_choice_prompt(&line.original).to_string(),
+                    TranslatableKind::Character => t.t_character(&line.original).to_string(),
+                }
+            } else {
+                String::new()
+            };
+            // t_* 返回原文时表示无翻译——显示空输入框
+            let display = if current_translation == line.original {
+                String::new()
+            } else {
+                current_translation
+            };
+
+            // 左侧原文 + 右侧译文输入
+            let line_row = row![
+                text(line.original.clone())
+                    .size(13.0)
+                    .color(Color::from_rgb(0.78, 0.78, 0.78))
+                    .width(Length::FillPortion(1)),
+                text_input("译文", &display)
+                    .on_input(move |s| Message::TranslationInput(idx, s))
+                    .width(Length::FillPortion(1))
+                    .padding(4),
+            ]
+            .spacing(8);
+
+            col = col.push(header).push(line_row);
         }
         Some(col.into())
     }
@@ -2347,7 +2839,16 @@ impl EditorApp {
             .padding([6, 12]);
 
         col = col.push(Space::new(Length::Fill, 8));
-        col = col.push(advance);
+        col = col.push(
+            row![
+                advance,
+                horizontal_space(),
+                button(text("放大").size(12.0))
+                    .on_press(Message::ShowEnlargedPreview)
+                    .padding([6, 12]),
+            ]
+            .spacing(4),
+        );
 
         col.into()
     }
@@ -2367,21 +2868,43 @@ impl EditorApp {
                     .color(Color::from_rgb(0.5, 0.5, 0.55)),
             );
         } else {
-            for name in &self.sprite_preview.available {
-                let active = *name == self.sprite_preview.selected;
+            // 用 pick_list 选择立绘（列表可能很长，用下拉比按钮列表更紧凑）
+            col = col.push(
+                pick_list(
+                    self.sprite_preview.available.clone(),
+                    Some(self.sprite_preview.selected.clone()),
+                    Message::SpriteSelected,
+                )
+                .padding(5)
+                .placeholder("选择立绘"),
+            );
+        }
+
+        // 加载错误提示
+        if let Some(err) = &self.sprite_preview.load_error {
+            col = col.push(
+                text(err.clone())
+                    .size(11.0)
+                    .color(Color::from_rgb(0.8, 0.4, 0.4)),
+            );
+        }
+
+        // 图片预览（从缓存或直接加载）
+        if !self.sprite_preview.selected.is_empty() {
+            if let Some(handle) = self.sprite_preview.textures.get(&self.sprite_preview.selected) {
                 col = col.push(
-                    button(text(name.clone()).size(12.0))
-                        .on_press(Message::SpriteSelected(name.clone()))
-                        .padding([3, 6])
-                        .style(move |_t, _s| button::Style {
-                            background: Some(Background::Color(if active {
-                                Color::from_rgb(0.20, 0.22, 0.30)
-                            } else {
-                                Color::from_rgb(0.10, 0.11, 0.14)
-                            })),
-                            border: Border::default().rounded(3.0),
+                    container(image(handle).width(Length::Fill).height(200))
+                        .style(|_t| container::Style {
+                            background: Some(Background::Color(Color::from_rgb(0.05, 0.06, 0.08))),
+                            border: Border::default().rounded(4.0),
                             ..Default::default()
                         }),
+                );
+            } else {
+                col = col.push(
+                    text("（图片预览将在选择后加载）")
+                        .size(11.0)
+                        .color(Color::from_rgb(0.5, 0.5, 0.55)),
                 );
             }
         }
@@ -2390,6 +2913,48 @@ impl EditorApp {
             text_input("角色名（可选）", &self.sprite_preview.character_name)
                 .on_input(Message::SpriteName)
                 .padding(5),
+        );
+
+        // 滑块：X 位置、Y 位置、缩放
+        let sp = &self.sprite_preview;
+        col = col.push(
+            column![
+                row![
+                    text("X 位置").size(11.0).color(Color::from_rgb(0.6, 0.62, 0.68)),
+                    horizontal_space(),
+                    text(format!("{:.0}%", sp.x_percent * 100.0))
+                        .size(11.0)
+                        .color(COLOR_DIRECTION),
+                ],
+                slider(0.0f32..=1.0f32, sp.x_percent, Message::SpriteX),
+            ]
+            .spacing(2),
+        );
+        col = col.push(
+            column![
+                row![
+                    text("Y 位置").size(11.0).color(Color::from_rgb(0.6, 0.62, 0.68)),
+                    horizontal_space(),
+                    text(format!("{:.0}%", sp.y_percent * 100.0))
+                        .size(11.0)
+                        .color(COLOR_DIRECTION),
+                ],
+                slider(0.0f32..=1.0f32, sp.y_percent, Message::SpriteY),
+            ]
+            .spacing(2),
+        );
+        col = col.push(
+            column![
+                row![
+                    text("缩放").size(11.0).color(Color::from_rgb(0.6, 0.62, 0.68)),
+                    horizontal_space(),
+                    text(format!("{:.2}", sp.scale))
+                        .size(11.0)
+                        .color(COLOR_DIRECTION),
+                ],
+                slider(0.1f32..=3.0f32, sp.scale, Message::SpriteScale),
+            ]
+            .spacing(2),
         );
 
         let syntax = if self.sprite_preview.selected.is_empty() {
@@ -2401,7 +2966,10 @@ impl EditorApp {
             } else {
                 sp.character_name.clone()
             };
-            format!("+ {} at {:.2},{:.2} size {:.2}", name, sp.x_percent, sp.y_percent, sp.scale)
+            format!(
+                "+ {} at {:.2},{:.2} size {:.2}",
+                name, sp.x_percent, sp.y_percent, sp.scale
+            )
         };
         col = col.push(
             text(syntax)
@@ -2434,21 +3002,42 @@ impl EditorApp {
                     .color(Color::from_rgb(0.5, 0.5, 0.55)),
             );
         } else {
-            for name in &self.bg_preview.available {
-                let active = *name == self.bg_preview.selected;
+            col = col.push(
+                pick_list(
+                    self.bg_preview.available.clone(),
+                    Some(self.bg_preview.selected.clone()),
+                    Message::BgSelected,
+                )
+                .padding(5)
+                .placeholder("选择背景"),
+            );
+        }
+
+        // 加载错误提示
+        if let Some(err) = &self.bg_preview.load_error {
+            col = col.push(
+                text(err.clone())
+                    .size(11.0)
+                    .color(Color::from_rgb(0.8, 0.4, 0.4)),
+            );
+        }
+
+        // 图片预览
+        if !self.bg_preview.selected.is_empty() {
+            if let Some(handle) = self.bg_preview.textures.get(&self.bg_preview.selected) {
                 col = col.push(
-                    button(text(name.clone()).size(12.0))
-                        .on_press(Message::BgSelected(name.clone()))
-                        .padding([3, 6])
-                        .style(move |_t, _s| button::Style {
-                            background: Some(Background::Color(if active {
-                                Color::from_rgb(0.20, 0.22, 0.30)
-                            } else {
-                                Color::from_rgb(0.10, 0.11, 0.14)
-                            })),
-                            border: Border::default().rounded(3.0),
+                    container(image(handle).width(Length::Fill).height(160))
+                        .style(|_t| container::Style {
+                            background: Some(Background::Color(Color::from_rgb(0.05, 0.06, 0.08))),
+                            border: Border::default().rounded(4.0),
                             ..Default::default()
                         }),
+                );
+            } else {
+                col = col.push(
+                    text("（图片预览将在选择后加载）")
+                        .size(11.0)
+                        .color(Color::from_rgb(0.5, 0.5, 0.55)),
                 );
             }
         }
@@ -2674,12 +3263,17 @@ impl EditorApp {
     // 每个弹窗由 `opaque(...)` 全屏遮罩 + 居中的 `container` 卡片组成，
     // 模拟 modal 行为：opaque 拦截下层事件。
 
-    fn modal_card<'a>(&'a self, title: &'a str, body: Element<'a, Message>) -> Element<'a, Message> {
+    fn modal_card<'a>(
+        &'a self,
+        title: &'a str,
+        close_msg: Message,
+        body: Element<'a, Message>,
+    ) -> Element<'a, Message> {
         let header = row![
             text(title).size(15.0).color(COLOR_FLOW),
             horizontal_space(),
             button(text("✕").size(13.0))
-                .on_press(Message::CloseAbout)
+                .on_press(close_msg)
                 .padding([2, 8]),
         ];
 
@@ -2725,7 +3319,7 @@ impl EditorApp {
         ]
         .spacing(4);
 
-        self.modal_card("关于", body.into())
+        self.modal_card("关于", Message::CloseAbout, body.into())
     }
 
     fn view_file_picker_modal(&self) -> Element<'_, Message> {
@@ -2783,7 +3377,7 @@ impl EditorApp {
             .spacing(6)
             .width(Length::Fill);
 
-        self.modal_card("打开文件", body.into())
+        self.modal_card("打开文件", Message::FilePickerCancel, body.into())
     }
 
     fn view_dir_picker_modal(&self) -> Element<'_, Message> {
@@ -2834,18 +3428,36 @@ impl EditorApp {
             .spacing(6)
             .width(Length::Fill);
 
-        self.modal_card("打开项目", body.into())
+        self.modal_card("打开项目", Message::DirPickerCancel, body.into())
     }
 
     fn view_find_replace_modal(&self) -> Element<'_, Message> {
+        // 命中数：实时统计当前查找串在编辑器中的出现次数
+        let count = self.find_count(&self.find_replace_target);
+        let count_text = if self.find_replace_target.is_empty() {
+            String::new()
+        } else {
+            format!("命中 {} 处", count)
+        };
+
         let body = column![
-            text("查找替换（替换为空字符串）").size(14.0).color(COLOR_FLOW),
+            text("查找替换").size(14.0).color(COLOR_FLOW),
+            text("查找内容").size(11.0).color(Color::from_rgb(0.6, 0.62, 0.68)),
             text_input("查找内容", &self.find_replace_target)
                 .on_input(Message::FindReplaceTarget)
+                .on_submit(Message::FindNext)
+                .padding(6),
+            text("替换为").size(11.0).color(Color::from_rgb(0.6, 0.62, 0.68)),
+            text_input("替换内容", &self.find_replace_replacement)
+                .on_input(Message::FindReplaceReplacement)
                 .on_submit(Message::DoFindReplace)
                 .padding(6),
+            text(count_text).size(11.0).color(COLOR_CHOICE),
             row![
-                button(text("替换全部").size(12.0))
+                button(text("查找下一个").size(12.0))
+                    .on_press(Message::FindNext)
+                    .padding([5, 12]),
+                button(text("全部替换").size(12.0))
                     .on_press(Message::DoFindReplace)
                     .padding([5, 12]),
                 horizontal_space(),
@@ -2854,10 +3466,10 @@ impl EditorApp {
                     .padding([5, 12]),
             ],
         ]
-        .spacing(8)
+        .spacing(6)
         .width(Length::Fill);
 
-        self.modal_card("查找替换", body.into())
+        self.modal_card("查找替换", Message::ToggleFindReplace, body.into())
     }
 
     fn view_project_settings_modal(&self) -> Element<'_, Message> {
@@ -2901,7 +3513,7 @@ impl EditorApp {
         .spacing(4)
         .width(Length::Fill);
 
-        self.modal_card("项目设置", body.into())
+        self.modal_card("项目设置", Message::CloseProjectSettings, body.into())
     }
 
     fn view_build_modal(&self) -> Element<'_, Message> {
@@ -2927,24 +3539,61 @@ impl EditorApp {
             self.build.log.clone()
         };
 
+        // 构建结果摘要：成功/失败平台列表 + 产物目录
+        let mut result_col = Column::new().spacing(2);
+        if self.build.done {
+            if !self.build.succeeded.is_empty() {
+                let names: Vec<String> =
+                    self.build.succeeded.iter().map(|p| p.label().to_string()).collect();
+                result_col = result_col.push(
+                    text(format!("✓ 成功：{}", names.join(", ")))
+                        .size(11.0)
+                        .color(COLOR_CHOICE),
+                );
+            }
+            if !self.build.failed.is_empty() {
+                let names: Vec<String> =
+                    self.build.failed.iter().map(|(p, _)| p.label().to_string()).collect();
+                result_col = result_col.push(
+                    text(format!("✗ 失败：{}", names.join(", ")))
+                        .size(11.0)
+                        .color(COLOR_PAIR_HIGHLIGHT),
+                );
+            }
+            result_col = result_col.push(
+                text(format!("产物目录：{}", self.build.output_dir.display()))
+                    .size(11.0)
+                    .color(COLOR_FLOW),
+            );
+        }
+
+        // 是否禁用「开始打包」：构建进行中
+        let building = self.build.is_building();
+        let start_btn = button(text("开始打包").size(12.0))
+            .on_press_maybe(if building { None } else { Some(Message::StartBuild) })
+            .padding([5, 12]);
+
         let body = column![
             text("打包（cargo build --release --target）").size(14.0).color(COLOR_FLOW),
             platforms,
             row![
-                button(text("开始打包").size(12.0))
-                    .on_press(Message::StartBuild)
+                start_btn,
+                button(text("打开产物目录").size(12.0))
+                    .on_press(Message::OpenBuildFolder)
                     .padding([5, 12]),
+                horizontal_space(),
                 button(text("关闭").size(12.0))
                     .on_press(Message::ToggleBuildDialog)
                     .padding([5, 12]),
             ],
+            result_col,
             scrollable(text(log).font(Font::MONOSPACE).size(11.0).color(Color::from_rgb(0.8, 0.85, 0.9)))
                 .height(220),
         ]
         .spacing(6)
         .width(Length::Fill);
 
-        self.modal_card("打包", body.into())
+        self.modal_card("打包", Message::ToggleBuildDialog, body.into())
     }
 
     fn view_cargo_guide_modal(&self) -> Element<'_, Message> {
@@ -2953,8 +3602,14 @@ impl EditorApp {
             text("请先安装 Rust 工具链（https://rustup.rs）后再使用运行/打包功能。")
                 .size(12.0)
                 .color(Color::from_rgb(0.75, 0.78, 0.84)),
+            text(format!("也可访问官网了解：{}", RUST_LANG_URL))
+                .size(11.0)
+                .color(Color::from_rgb(0.6, 0.62, 0.68)),
             Space::new(Length::Fill, 8),
             row![
+                button(text("打开 rust-lang.org").size(12.0))
+                    .on_press(Message::OpenRustLang)
+                    .padding([5, 12]),
                 horizontal_space(),
                 button(text("知道了").size(12.0))
                     .on_press(Message::CloseCargoGuide)
@@ -2964,7 +3619,7 @@ impl EditorApp {
         .spacing(4)
         .width(Length::Fill);
 
-        self.modal_card("提示", body.into())
+        self.modal_card("提示", Message::CloseCargoGuide, body.into())
     }
 
     fn view_title_warning_modal(&self) -> Element<'_, Message> {
@@ -2988,7 +3643,130 @@ impl EditorApp {
         .spacing(4)
         .width(Length::Fill);
 
-        self.modal_card("警告", body.into())
+        self.modal_card("警告", Message::CancelTitleWarning, body.into())
+    }
+
+    // -- rpy 导入弹窗 -----------------------------------------------------
+
+    fn view_rpy_import_modal(&self) -> Element<'_, Message> {
+        let source_str = self
+            .rpy_import_source
+            .as_ref()
+            .map(|p| p.display().to_string())
+            .unwrap_or_default();
+        let target_str = self.rpy_import_target.display().to_string();
+
+        // 警告/结果列表
+        let mut warn_col = Column::new().spacing(2);
+        for w in &self.rpy_import_warnings {
+            let color = if w.starts_with("转换完成") {
+                COLOR_CHOICE
+            } else if w.contains("警告") || w.contains("请先") {
+                COLOR_PAIR_HIGHLIGHT
+            } else {
+                Color::from_rgb(0.8, 0.82, 0.88)
+            };
+            warn_col = warn_col.push(text(w.clone()).size(11.0).color(color));
+        }
+
+        let body = column![
+            text("将 Ren'Py .rpy 脚本转换为 .akrs 格式").size(14.0).color(COLOR_FLOW),
+            text("源 .rpy 文件").size(11.0).color(Color::from_rgb(0.6, 0.62, 0.68)),
+            text_input("例如 script.rpy", &source_str)
+                .on_input(Message::RpyImportSourceInput)
+                .padding(5),
+            text("目标 .akrs 文件（留空则自动同名）")
+                .size(11.0)
+                .color(Color::from_rgb(0.6, 0.62, 0.68)),
+            text_input("例如 script.akrs", &target_str)
+                .on_input(Message::RpyImportTargetInput)
+                .padding(5),
+            warn_col,
+            Space::new(Length::Fill, 6),
+            row![
+                button(text("开始转换").size(12.0))
+                    .on_press(Message::DoRpyImport)
+                    .padding([5, 12]),
+                horizontal_space(),
+                button(text("关闭").size(12.0))
+                    .on_press(Message::ToggleRpyImport)
+                    .padding([5, 12]),
+            ],
+        ]
+        .spacing(6)
+        .width(Length::Fill);
+
+        self.modal_card("导入 rpy", Message::ToggleRpyImport, body.into())
+    }
+
+    // -- 放大预览弹窗 -----------------------------------------------------
+
+    fn view_enlarged_preview_modal(&self) -> Element<'_, Message> {
+        // 复用剧本预览内容，放进更大尺寸的 modal 中
+        let preview = self.view_script_preview();
+        let body = container(preview)
+            .max_width(720)
+            .padding(8)
+            .style(|_t| container::Style {
+                background: Some(Background::Color(Color::from_rgb(0.10, 0.12, 0.16))),
+                border: Border::default().rounded(6.0),
+                ..Default::default()
+            });
+
+        let body = column![
+            body,
+            row![
+                horizontal_space(),
+                button(text("关闭").size(12.0))
+                    .on_press(Message::CloseEnlargedPreview)
+                    .padding([5, 12]),
+            ],
+        ]
+        .spacing(8)
+        .width(Length::Fill);
+
+        self.modal_card("剧本预览（放大）", Message::CloseEnlargedPreview, body.into())
+    }
+
+    // -- 快捷键帮助弹窗 ---------------------------------------------------
+
+    fn view_shortcuts_modal(&self) -> Element<'_, Message> {
+        let shortcuts = [
+            ("Ctrl + S", "保存当前剧本"),
+            ("Ctrl + N", "新建剧本"),
+            ("Ctrl + O", "打开已有剧本"),
+            ("Ctrl + F", "打开/关闭查找替换"),
+            ("Ctrl + R", "运行剧本预览"),
+            ("Ctrl + H", "打开/关闭快捷键帮助"),
+            ("F5", "运行当前脚本"),
+        ];
+
+        let mut list = Column::new().spacing(3);
+        for (key, desc) in shortcuts {
+            list = list.push(
+                row![
+                    text(key).size(12.0).color(COLOR_FLOW).width(Length::Fixed(110.0)),
+                    text(desc).size(12.0).color(Color::from_rgb(0.8, 0.82, 0.88)),
+                ]
+                .spacing(8),
+            );
+        }
+
+        let body = column![
+            text("快捷键").size(14.0).color(COLOR_FLOW),
+            list,
+            Space::new(Length::Fill, 6),
+            row![
+                horizontal_space(),
+                button(text("关闭").size(12.0))
+                    .on_press(Message::ToggleShortcuts)
+                    .padding([5, 12]),
+            ],
+        ]
+        .spacing(6)
+        .width(Length::Fill);
+
+        self.modal_card("快捷键", Message::ToggleShortcuts, body.into())
     }
 }
 
@@ -3019,13 +3797,41 @@ pub fn run_editor() -> Result<(), Box<dyn std::error::Error>> {
 
     let app = app.window(window);
 
-    let app = app.subscription(|_state: &EditorApp| {
-        iced::time::every(Duration::from_millis(100)).map(|_| Message::PollTick)
-    });
+    // 使用 EditorApp::subscription：合并 100ms 轮询 + 键盘快捷键
+    let app = app.subscription(EditorApp::subscription);
 
     app.run()
         .map_err(|e| Box::new(e) as Box<dyn std::error::Error>)?;
     Ok(())
+}
+
+/// 键盘快捷键处理：将按键事件映射为 Message。
+/// - Ctrl+S 保存 | Ctrl+N 新建 | Ctrl+O 打开 | Ctrl+F 查找替换
+/// - F5 运行 | Ctrl+R 启动游戏预览 | Ctrl+H 快捷键帮助
+fn handle_key_press(key: Key, modifiers: Modifiers) -> Option<Message> {
+    use iced::keyboard::key::Named;
+    if modifiers.control() {
+        match key.as_ref() {
+            Key::Character(c) => match c {
+                "s" | "S" => Some(Message::SaveFile),
+                "n" | "N" => Some(Message::NewFile),
+                "o" | "O" => Some(Message::OpenFilePicker),
+                "f" | "F" => Some(Message::ToggleFindReplace),
+                "r" | "R" => Some(Message::StartGamePreview),
+                "h" | "H" => Some(Message::ToggleShortcuts),
+                _ => None,
+            },
+            _ => None,
+        }
+    } else if modifiers.is_empty() {
+        if let Key::Named(Named::F5) = key.as_ref() {
+            Some(Message::RunScript)
+        } else {
+            None
+        }
+    } else {
+        None
+    }
 }
 
 /// 加载外部中文字体字节（优先加载运行时字体文件，其次系统字体）。
@@ -3116,6 +3922,18 @@ fn load_icon() -> Option<iced::window::Icon> {
 // 辅助函数：文件名清理、诊断格式化、标签
 // ---------------------------------------------------------------------------
 
+/// 从 PNG 文件加载 iced image Handle（RGBA 格式）。
+/// 注意：`image` 在本模块中被 `iced::widget::image` 遮蔽，
+/// 故用 `::image::` 前缀引用外部 image crate。
+fn load_png_handle(path: &Path) -> Result<iced::widget::image::Handle, String> {
+    let data = std::fs::read(path).map_err(|e| format!("{}", e))?;
+    let img = ::image::load_from_memory(&data)
+        .map_err(|e| format!("{}", e))?
+        .to_rgba8();
+    let (w, h) = img.dimensions();
+    Ok(iced::widget::image::Handle::from_rgba(w, h, img.into_raw()))
+}
+
 /// 在系统文件管理器中打开路径。
 fn open_path_in_file_manager(path: &Path) {
     #[cfg(target_os = "windows")]
@@ -3129,6 +3947,22 @@ fn open_path_in_file_manager(path: &Path) {
     #[cfg(all(unix, not(target_os = "macos")))]
     {
         let _ = Command::new("xdg-open").arg(path).spawn();
+    }
+}
+
+/// 在系统默认浏览器中打开 URL。
+fn open_url_in_browser(url: &str) {
+    #[cfg(target_os = "windows")]
+    {
+        let _ = Command::new("cmd").args(["/C", "start", url]).spawn();
+    }
+    #[cfg(target_os = "macos")]
+    {
+        let _ = Command::new("open").arg(url).spawn();
+    }
+    #[cfg(all(unix, not(target_os = "macos")))]
+    {
+        let _ = Command::new("xdg-open").arg(url).spawn();
     }
 }
 

@@ -10,7 +10,7 @@ akrs-runtime = { workspace = true }
 # 启用 iced 的 `image` widget：textures 缓存字段使用 `iced::widget::image::Handle`，
 # 且 `iced::window::icon::from_file_data` 解码窗口图标也依赖该 feature。
 # `smol` 提供 iced 的异步运行时后端，`iced::time::every` 轮询子进程需要它。
-iced = { workspace = true, features = ["image", "smol"] }
+iced = { workspace = true, features = ["image", "smol", "advanced"] }
 # 用于在编辑器中解码 PNG 立绘以供预览（不启动游戏进程）。
 image = { version = "0.24", default-features = false, features = ["png"] }
 
