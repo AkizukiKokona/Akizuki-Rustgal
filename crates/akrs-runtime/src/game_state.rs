@@ -244,13 +244,14 @@ impl SceneState {
         pose: Option<String>,
         transform: SpriteTransform,
     ) {
-        // 调试日志：定位「立绘叠加」问题。打印入场前后的在场角色列表。
-        let before: Vec<String> = self.characters.iter()
-            .map(|c| format!("{}({:?})", c.name, c.pose)).collect();
-        let log_name = name.clone();
-        let log_pose = pose.clone();
-        // Remove existing instance of this character (re-enter replaces)
-        self.characters.retain(|c| c.name != name);
+        // Remove existing instance of this character (re-enter replaces).
+        // 额外按 pose 资源名去重：即使角色名不一致，只要用了同一个立绘资源，
+        // 也移除旧的，防止「同名不同写法」或「资源名当角色名」导致两个立绘叠加。
+        let new_pose = pose.clone();
+        self.characters.retain(|c| {
+            c.name != name
+                && !(c.pose == new_pose && new_pose.is_some())
+        });
         // 若提供了 size，则 scale 用之；否则默认 1.0
         let scale = transform.scale.unwrap_or(1.0);
         self.characters.push(CharacterState {
@@ -267,12 +268,6 @@ impl SceneState {
         if transform.x.is_none() {
             self.auto_layout();
         }
-        let after: Vec<String> = self.characters.iter()
-            .map(|c| format!("{}({:?})", c.name, c.pose)).collect();
-        eprintln!(
-            "[akrs-debug] character_enter_with: name={:?} pose={:?} | before=[{}] after=[{}]",
-            log_name, log_pose, before.join(", "), after.join(", ")
-        );
     }
 
     /// Add or update a character at an explicit position.
@@ -290,12 +285,14 @@ impl SceneState {
         position: Position,
         transform: SpriteTransform,
     ) {
-        // 调试日志：定位「立绘叠加」问题。demo 的 `at x,y size N` 语法走此方法。
-        let before: Vec<String> = self.characters.iter()
-            .map(|c| format!("{}({:?})", c.name, c.pose)).collect();
-        let log_name = name.clone();
-        let log_pose = pose.clone();
-        self.characters.retain(|c| c.name != name);
+        // Remove existing instance of this character (re-enter replaces).
+        // 额外按 pose 资源名去重：即使角色名不一致，只要用了同一个立绘资源，
+        // 也移除旧的，防止「同名不同写法」或「资源名当角色名」导致两个立绘叠加。
+        let new_pose = pose.clone();
+        self.characters.retain(|c| {
+            c.name != name
+                && !(c.pose == new_pose && new_pose.is_some())
+        });
         let scale = transform.scale.unwrap_or(1.0);
         self.characters.push(CharacterState {
             name,
@@ -307,19 +304,10 @@ impl SceneState {
             custom_x: transform.x,
             custom_y: transform.y,
         });
-        let after: Vec<String> = self.characters.iter()
-            .map(|c| format!("{}({:?})", c.name, c.pose)).collect();
-        eprintln!(
-            "[akrs-debug] character_enter_at_with: name={:?} pose={:?} pos={:?} | before=[{}] after=[{}]",
-            log_name, log_pose, position, before.join(", "), after.join(", ")
-        );
     }
 
     /// Remove a character from stage and recalculate remaining positions.
     pub fn character_exit(&mut self, name: &str) {
-        // 调试日志：定位「立绘叠加」问题。打印下场前后的在场角色列表。
-        let before: Vec<String> = self.characters.iter()
-            .map(|c| format!("{}({:?})", c.name, c.pose)).collect();
         let before_len = self.characters.len();
         self.characters.retain(|c| c.name != name);
         // 匹配失败时打警告，帮助定位「立绘下不了场」问题：
@@ -334,12 +322,6 @@ impl SceneState {
             );
         }
         self.auto_layout();
-        let after: Vec<String> = self.characters.iter()
-            .map(|c| format!("{}({:?})", c.name, c.pose)).collect();
-        eprintln!(
-            "[akrs-debug] character_exit: name={:?} | before=[{}] after=[{}]",
-            name, before.join(", "), after.join(", ")
-        );
     }
 
     /// Automatically calculate character positions based on count.

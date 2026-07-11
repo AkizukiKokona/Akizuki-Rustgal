@@ -629,44 +629,19 @@ impl Engine {
     /// 加载已读历史（saves/read_history.json）。
     fn load_read_history(&mut self) {
         let path = std::path::PathBuf::from("saves").join("read_history.json");
-        let cwd = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("?"));
         if let Ok(content) = std::fs::read_to_string(&path) {
             if let Ok(history) = serde_json::from_str::<HashSet<String>>(&content) {
-                eprintln!(
-                    "[akrs-debug] load_read_history: 从 {} 加载了 {} 条已读记录（cwd={}）",
-                    path.display(), history.len(), cwd.display()
-                );
                 self.read_history = history;
-            } else {
-                eprintln!(
-                    "[akrs-debug] load_read_history: {} 解析失败，已读历史为空（cwd={}）",
-                    path.display(), cwd.display()
-                );
             }
-        } else {
-            eprintln!(
-                "[akrs-debug] load_read_history: {} 不存在或读取失败，已读历史为空（cwd={}）",
-                path.display(), cwd.display()
-            );
         }
     }
 
     /// 保存已读历史。
     pub fn save_read_history(&self) {
         let path = std::path::PathBuf::from("saves").join("read_history.json");
-        let cwd = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("?"));
         if let Ok(content) = serde_json::to_string(&self.read_history) {
             let _ = std::fs::create_dir_all("saves");
             let _ = std::fs::write(&path, content);
-            eprintln!(
-                "[akrs-debug] save_read_history: 保存了 {} 条已读记录到 {}（cwd={}）",
-                self.read_history.len(), path.display(), cwd.display()
-            );
-        } else {
-            eprintln!(
-                "[akrs-debug] save_read_history: 序列化失败，未保存（cwd={}）",
-                cwd.display()
-            );
         }
     }
 
@@ -1054,10 +1029,6 @@ impl Engine {
                     self.scene.background = snap.background;
                     self.scene.characters = snap.characters;
                     self.scene.music = snap.music.clone();
-                    eprintln!(
-                        "[akrs-debug] load(slot): 恢复场景快照，characters=[{}]",
-                        self.scene.characters.iter().map(|c| format!("{}({:?})", c.name, c.pose)).collect::<Vec<_>>().join(", ")
-                    );
                     if let Some(name) = &self.scene.music {
                         if !name.is_empty() {
                             events.push(EngineEvent::MusicChanged { name: name.clone() });
@@ -1069,10 +1040,6 @@ impl Engine {
                         self.scene.background = rebuilt.background.clone();
                         self.scene.characters = rebuilt.characters.clone();
                         self.scene.music = rebuilt.music.clone();
-                        eprintln!(
-                            "[akrs-debug] load(slot): 重建场景，characters=[{}]",
-                            self.scene.characters.iter().map(|c| format!("{}({:?})", c.name, c.pose)).collect::<Vec<_>>().join(", ")
-                        );
                         if let Some(name) = &self.scene.music {
                             if !name.is_empty() {
                                 events.push(EngineEvent::MusicChanged { name: name.clone() });
@@ -1296,10 +1263,6 @@ impl Engine {
                     self.scene.background = snap.background;
                     self.scene.characters = snap.characters;
                     self.scene.music = snap.music.clone();
-                    eprintln!(
-                        "[akrs-debug] load(autosave/continue/quicksave): 恢复场景快照，characters=[{}]",
-                        self.scene.characters.iter().map(|c| format!("{}({:?})", c.name, c.pose)).collect::<Vec<_>>().join(", ")
-                    );
                     if let Some(name) = &self.scene.music {
                         if !name.is_empty() {
                             events.push(EngineEvent::MusicChanged { name: name.clone() });
@@ -1398,10 +1361,6 @@ impl Engine {
                     self.scene.background = snap.background;
                     self.scene.characters = snap.characters;
                     self.scene.music = snap.music.clone();
-                    eprintln!(
-                        "[akrs-debug] load(autosave/continue/quicksave): 恢复场景快照，characters=[{}]",
-                        self.scene.characters.iter().map(|c| format!("{}({:?})", c.name, c.pose)).collect::<Vec<_>>().join(", ")
-                    );
                     if let Some(name) = &self.scene.music {
                         if !name.is_empty() {
                             events.push(EngineEvent::MusicChanged { name: name.clone() });
@@ -1491,10 +1450,6 @@ impl Engine {
                     self.scene.background = snap.background;
                     self.scene.characters = snap.characters;
                     self.scene.music = snap.music.clone();
-                    eprintln!(
-                        "[akrs-debug] load(autosave/continue/quicksave): 恢复场景快照，characters=[{}]",
-                        self.scene.characters.iter().map(|c| format!("{}({:?})", c.name, c.pose)).collect::<Vec<_>>().join(", ")
-                    );
                     if let Some(name) = &self.scene.music {
                         if !name.is_empty() {
                             events.push(EngineEvent::MusicChanged { name: name.clone() });

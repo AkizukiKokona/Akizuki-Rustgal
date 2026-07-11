@@ -2618,16 +2618,6 @@ async fn draw_single_background(bg: &BackgroundState, assets: &mut AssetManager,
 }
 
 async fn draw_characters(scene: &SceneState, assets: &mut AssetManager, sw: f32, sh: f32, font: &Option<Font>, scale: f32) {
-    // 调试日志：当场上同时有 2 个或以上角色时打印，定位「立绘叠加」问题。
-    // 无论角色是通过 enter_at_with / enter_with / 存档恢复哪种路径进入的，
-    // 只要 scene.characters 里有多个条目就会在此暴露。
-    if scene.characters.len() >= 2 {
-        eprintln!(
-            "[akrs-debug] draw_characters: 场上有 {} 个角色：[{}]",
-            scene.characters.len(),
-            scene.characters.iter().map(|c| format!("{}({:?})", c.name, c.pose)).collect::<Vec<_>>().join(", ")
-        );
-    }
     for char_state in &scene.characters {
         // 优先使用精确百分比位置（custom_x/custom_y）；否则回退到 position 字段。
         let x_frac = char_state.custom_x.unwrap_or_else(|| char_state.position.x_fraction());
