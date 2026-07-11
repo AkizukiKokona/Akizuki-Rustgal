@@ -619,14 +619,37 @@ pub fn init_graphics(window: &Window) -> (wgpu::Surface<'_>, wgpu::TextureFormat
     });
     let surface = instance
         .create_surface(window)
-        .expect("failed to create wgpu surface");
+        .unwrap_or_else(|e| {
+            panic!(
+                "wgpu surface 创建失败：{}\n\
+                 这通常表示显卡驱动有问题或不支持硬件加速。\n\
+                 请更新显卡驱动到最新版本后重试。",
+                e
+            )
+        });
 
     let adapter = pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {
         power_preference: wgpu::PowerPreference::HighPerformance,
         compatible_surface: Some(&surface),
         force_fallback_adapter: false,
     }))
-    .expect("failed to find a suitable wgpu adapter");
+    .unwrap_or_else(|| {
+        // 尝试不依赖 surface 再找一次（某些环境下 surface 兼容性筛选过严）。
+        let fallback = pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {
+            power_preference: wgpu::PowerPreference::LowPower,
+            compatible_surface: None,
+            force_fallback_adapter: true,
+        }));
+        fallback.unwrap_or_else(|| {
+            panic!(
+                "找不到可用的 wgpu 图形适配器。\n\
+                 可能原因：\n\
+                 1. 显卡驱动过旧或不支持 DX12/Vulkan；\n\
+                 2. 系统无硬件加速 GPU；\n\
+                 请更新显卡驱动后重试。"
+            )
+        })
+    });
 
     let (device, queue) = pollster::block_on(adapter.request_device(
         &wgpu::DeviceDescriptor {
@@ -637,7 +660,15 @@ pub fn init_graphics(window: &Window) -> (wgpu::Surface<'_>, wgpu::TextureFormat
         },
         None, // trace path
     ))
-    .expect("failed to acquire wgpu device");
+    .unwrap_or_else(|e| {
+        panic!(
+            "wgpu device 获取失败：{}\n\
+             适配器：{:?}\n\
+             可能是显卡驱动版本不满足 wgpu 最低要求，请更新驱动。",
+            e,
+            adapter.get_info()
+        )
+    });
 
     let caps = surface.get_capabilities(&adapter);
     let format = caps

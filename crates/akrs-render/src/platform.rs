@@ -87,6 +87,22 @@ pub fn try_alloc_console() -> bool {
     }
 }
 
+/// 弹出平台错误消息框显示 panic 信息。
+///
+/// `windows_subsystem = "windows"` 下无控制台，`println!` 不可见，
+/// panic 信息只能通过消息框呈现给用户。非 Windows 平台为空操作
+/// （那些平台的 panic 默认打到 stderr）。
+pub fn show_panic_messagebox(text: &str, caption: &str) {
+    #[cfg(target_os = "windows")]
+    {
+        windows_show_error_message_box(text, caption);
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        let _ = (text, caption);
+    }
+}
+
 // ─── Windows 实现 ───────────────────────────────────────────────────────────
 
 #[cfg(target_os = "windows")]
@@ -94,8 +110,8 @@ mod windows_impl {
     use windows_sys::Win32::Foundation::HWND;
     use windows_sys::Win32::System::Console::{AllocConsole, GetConsoleWindow};
     use windows_sys::Win32::UI::WindowsAndMessaging::{
-        FindWindowW, GetSystemMetrics, SetWindowPos, HWND_TOP, SM_CXSCREEN, SM_CYSCREEN,
-        SWP_NOACTIVATE, SWP_NOSIZE, SWP_NOZORDER,
+        FindWindowW, GetSystemMetrics, MessageBoxW, SetWindowPos, HWND_TOP, MB_ICONERROR,
+        MB_OK, SM_CXSCREEN, SM_CYSCREEN, SWP_NOACTIVATE, SWP_NOSIZE, SWP_NOZORDER,
     };
 
     /// 调用 `GetSystemMetrics(SM_CXSCREEN/SM_CYSCREEN)` 获取主显示器尺寸。
@@ -155,12 +171,29 @@ mod windows_impl {
             ok != 0 || GetConsoleWindow() != 0
         }
     }
+
+    /// 弹出一个 Windows 消息框显示错误信息（用于 panic hook）。
+    ///
+    /// `windows_subsystem = "windows"` 下无控制台，`println!` 不可见，
+    /// panic 信息只能通过消息框呈现给用户。
+    pub fn show_error_message_box(text: &str, caption: &str) {
+        let text_w: Vec<u16> = text.encode_utf16().chain(std::iter::once(0)).collect();
+        let caption_w: Vec<u16> = caption.encode_utf16().chain(std::iter::once(0)).collect();
+        unsafe {
+            MessageBoxW(
+                0 as HWND,
+                text_w.as_ptr(),
+                caption_w.as_ptr(),
+                MB_OK | MB_ICONERROR,
+            );
+        }
+    }
 }
 
 #[cfg(target_os = "windows")]
 use windows_impl::{
     alloc_console as windows_alloc_console, center_window as windows_center_window,
-    screen_size as windows_screen_size,
+    screen_size as windows_screen_size, show_error_message_box as windows_show_error_message_box,
 };
 
 // ─── macOS 实现（CoreGraphics FFI） ─────────────────────────────────────────

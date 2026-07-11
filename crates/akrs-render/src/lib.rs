@@ -22,7 +22,7 @@
 //! ```
 
 mod assets;
-mod platform;
+pub mod platform;
 mod renderer;
 mod ui_widgets;
 

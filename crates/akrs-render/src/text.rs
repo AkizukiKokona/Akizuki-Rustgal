@@ -99,6 +99,9 @@ pub struct TextDimensions {
 /// 一个已加载字体的内部句柄。
 #[derive(Clone)]
 struct FontInner {
+    /// fontdb 中的 face ID。当前仅用于 `get_font` 构造时传入，后续不直接读取，
+    /// 但保留以便未来实现字体热替换/卸载（`db_mut().unload_face`）。
+    #[allow(dead_code)]
     id: fontdb::ID,
     font: Arc<cosmic_text::Font>,
     /// 字体主家族名，用于在 `Buffer::set_text` 时通过 `Family::Name` 指定主字体，

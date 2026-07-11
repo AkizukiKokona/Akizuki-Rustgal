@@ -88,12 +88,23 @@ fn main() {
     // 初始化统一日志：默认 warn+，设 RUST_LOG=debug 可看调试日志。
     let _ = env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("warn")).try_init();
 
-    // Install a panic hook so that if the game crashes the console window
-    // stays open long enough for the player to read the error message.
+    // Install a panic hook so that if the game crashes the error message is
+    // visible even under `windows_subsystem = "windows"` (no console).
+    // 三管齐下：写 panic.log 文件 + 弹 Windows 消息框 + 追加到崩溃日志缓冲。
     std::panic::set_hook(Box::new(|panic_info| {
-        println!("{}", panic_info);
-        println!("Press Enter to exit...");
-        let _ = std::io::stdin().read_line(&mut String::new());
+        let msg = format!("{}", panic_info);
+        let full = format!(
+            "Akizuki*Rustgal 发生致命错误（panic）\n\n{}\n\n请将此信息反馈给开发者。",
+            msg
+        );
+        // 1. 写到 panic.log（当前目录），便于用户直接提交给开发者。
+        let _ = std::fs::write("panic.log", &full);
+        // 2. 追加到崩溃日志缓冲（供蓝屏"导出日志"按钮使用）。
+        akrs_runtime::crash::push_log(full.clone());
+        // 3. Windows 上弹消息框（GUI 子系统无控制台，println! 不可见）。
+        akrs_render::platform::show_panic_messagebox(&full, "Akizuki*Rustgal 崩溃");
+        // 4. 若已有控制台（debug_terminal 或从 cmd 启动），也打印到 stderr。
+        eprintln!("{}", full);
     }));
 
     let (script, project_config, project_dir) = load_script_and_config();
