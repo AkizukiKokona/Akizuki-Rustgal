@@ -533,60 +533,6 @@ impl Default for EditorApp {
 impl EditorApp {
     // -- 辅助方法：插入语法 -----------------------------------------------
 
-    /// 智能插入语法：如果剪贴板内容存在于脚本中，替换第一个匹配；
-    /// 否则追加到脚本末尾。
-    fn smart_insert_syntax(&mut self, syntax: &str, ctx: &egui::Context) {
-        // 获取剪贴板内容
-        let clipboard_text = ctx.input(|i| i.raw.events.iter().filter_map(|e| {
-            if let egui::Event::Paste(s) = e { Some(s.clone()) } else { None }
-        }).next());
-
-        // 如果剪贴板有内容且在脚本中能找到，则替换
-        if let Some(clip) = clipboard_text {
-            if !clip.is_empty() && self.editor_content.contains(&clip) {
-                // 替换第一个匹配
-                self.editor_content = self.editor_content.replace(&clip, syntax);
-                self.status = "已替换剪贴板内容为生成的语法".to_string();
-                return;
-            }
-        }
-
-        // 否则追加到末尾
-        self.editor_content.push_str(&format!("{}\n", syntax));
-        self.status = "语法已追加到脚本末尾".to_string();
-    }
-
-    /// 替换剪贴板内容为生成的语法。
-    fn replace_clipboard_with_syntax(&mut self, syntax: &str, ctx: &egui::Context) {
-        // 尝试从系统剪贴板获取文本
-        let clipboard_text = ctx.input(|i| {
-            // 从最近的 Paste 事件获取
-            i.raw.events.iter().filter_map(|e| {
-                if let egui::Event::Paste(s) = e { Some(s.clone()) } else { None }
-            }).next()
-        });
-
-        // 如果没有从事件获取，尝试使用 output 的剪贴板（用户之前复制过的）
-        let clip = clipboard_text.or_else(|| {
-            // 尝试读取系统剪贴板（需要特殊处理）
-            None // egui 不提供直接读取剪贴板的方法
-        });
-
-        // 如果剪贴板内容存在于脚本中，则替换
-        if let Some(clip_text) = clip {
-            if !clip_text.is_empty() && self.editor_content.contains(&clip_text) {
-                self.editor_content = self.editor_content.replace(&clip_text, syntax);
-                self.status = "已替换剪贴板内容为生成的语法".to_string();
-            } else {
-                self.editor_content.push_str(&format!("{}\n", syntax));
-                self.status = "剪贴板内容未在脚本中找到，语法已追加到末尾".to_string();
-            }
-        } else {
-            self.editor_content.push_str(&format!("{}\n", syntax));
-            self.status = "剪贴板为空，语法已追加到末尾".to_string();
-        }
-    }
-
     // -- 辅助方法：查找并替换 -----------------------------------------------
 
     /// 查找脚本中匹配 target 的内容，替换为 replacement。
@@ -2142,7 +2088,7 @@ impl EditorApp {
             let need_load = !self.sprite_preview.textures.contains_key(&selected);
             if need_load {
                 let path = self
-                    .work_dir
+                    .project_root()
                     .join("assets")
                     .join("characters")
                     .join(format!("{}.png", selected));
@@ -3681,7 +3627,7 @@ impl eframe::App for EditorApp {
                     );
                     ui.add_space(6.0);
 
-                    let mut edit_color = |ui: &mut egui::Ui, label: &str, color: &mut [u8; 4]| {
+                    let edit_color = |ui: &mut egui::Ui, label: &str, color: &mut [u8; 4]| {
                         ui.horizontal(|ui| {
                             ui.label(label);
                             let mut c = egui::Color32::from_rgba_unmultiplied(color[0], color[1], color[2], color[3]);
