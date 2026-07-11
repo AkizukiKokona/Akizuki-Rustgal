@@ -15,7 +15,7 @@ ending "true_end" epilogue "scripts/epilogue.akrs"
 @bg bg1 with fade
 
 // 立绘：心夏（身体1）居中
-+ kokonabody1 at 0.45,0.56 size 1.10
++ 心夏 (kokonabody1) at 0.45,0.56 size 1.10
 
 心夏: "引航者，今天晚上玩得开心吗？"
 
@@ -66,7 +66,7 @@ ending "true_end" epilogue "scripts/epilogue.akrs"
 "过了大约一刻钟，心夏从浴室里出来了。"
 
 // 立绘：心夏（身体2）居中
-+ kokonabody2 at 0.55,0.80 size 2.35
++ 心夏 (kokonabody2) at 0.55,0.80 size 2.35
 
 心夏: "引航者，我回来了哦。"
 
@@ -115,7 +115,7 @@ ending "true_end" epilogue "scripts/epilogue.akrs"
 - 心夏
 
 // 立绘：心夏（身体3）居中
-+ kokonabody3 at 0.55,0.60 size 1.00
++ 心夏 (kokonabody3) at 0.55,0.60 size 1.00
 
 心夏: "还不错嘛，和之前的感觉差不多，多谢引航者啦。"
 
