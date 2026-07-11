@@ -1325,7 +1325,7 @@ impl EditorApp {
                 Ok(Some(status)) => {
                     let platform = self.build.building.take().unwrap();
                     if status.success() {
-                        self.build.log_line(format!("✓ {} 构建成功", platform.label()));
+                        self.build.log_line(format!("[成功] {} 构建成功", platform.label()));
                         self.build.succeeded.push(platform);
 
                         // 收集构建产物到 output_dir
@@ -1350,7 +1350,7 @@ impl EditorApp {
                             }
                         }
                         let fail_msg = format!("exit code: {:?}", status.code());
-                        self.build.log_line(format!("✗ {} 构建失败 ({})", platform.label(), fail_msg));
+                        self.build.log_line(format!("[失败] {} 构建失败 ({})", platform.label(), fail_msg));
                         self.build.failed.push((platform, fail_msg));
                     }
                 }
@@ -1358,7 +1358,7 @@ impl EditorApp {
                     let platform = self.build.building.take().unwrap();
                     let fail_msg = format!("{}", e);
                     self.build
-                        .log_line(format!("✗ {} 构建异常: {}", platform.label(), fail_msg));
+                        .log_line(format!("[失败] {} 构建异常: {}", platform.label(), fail_msg));
                     self.build.failed.push((platform, fail_msg));
                 }
             }
@@ -1369,7 +1369,7 @@ impl EditorApp {
             let platform = self.build.queue.remove(0);
             self.build.building = Some(platform);
             self.build
-                .log_line(format!("→ 正在构建 {} (target: {})...", platform.label(), platform.target()));
+                .log_line(format!("[构建] 正在构建 {} (target: {})...", platform.label(), platform.target()));
 
             // 确保安装了目标平台
             let _ = Command::new("cargo")
@@ -1394,7 +1394,7 @@ impl EditorApp {
                 }
                 Err(e) => {
                     let fail_msg = format!("无法启动构建进程: {}", e);
-                    self.build.log_line(format!("✗ {} {}", platform.label(), fail_msg));
+                    self.build.log_line(format!("[失败] {} {}", platform.label(), fail_msg));
                     self.build.failed.push((platform, fail_msg));
                     self.build.building = None;
                 }
@@ -2266,7 +2266,7 @@ impl EditorApp {
                 };
                 if self.find_and_replace(&target, &replacement) {
                     let n = self.find_count(&target);
-                    self.status = format!("已替换「{}」→「{}」（剩余 {} 处）", target, replacement, n);
+                    self.status = format!("已替换「{}」为「{}」（剩余 {} 处）", target, replacement, n);
                 } else {
                     self.status = format!("未找到「{}」", target);
                 }
@@ -2496,7 +2496,10 @@ impl EditorApp {
             layers.push(self.view_shortcuts_modal());
         }
 
-        stack(layers).into()
+        stack(layers)
+            .width(Length::Fill)
+            .height(Length::Fill)
+            .into()
     }
 
     // -- 欢迎面板 ---------------------------------------------------------
@@ -2584,7 +2587,6 @@ impl EditorApp {
             column![
                 text("语法示例").size(18.0).color(COLOR_FLOW),
                 text(example)
-                    .font(Font::MONOSPACE)
                     .size(13.0)
                     .color(Color::from_rgb(0.78, 0.86, 1.0)),
             ]
@@ -3568,8 +3570,7 @@ impl EditorApp {
         close_msg: Message,
         body: Element<'a, Message>,
     ) -> Element<'a, Message> {
-        // Card 自带标题头与 on_close 关闭按钮，替代手写的 row![标题, ✕] 头部。
-        // Card 的 Style 不含阴影字段，保留原有阴影以维持视觉深度。
+        // Card 自带标题头与 on_close 关闭按钮。
         let card = Card::new(text(title).size(15.0).color(COLOR_FLOW), body)
             .padding(Padding::from(16))
             .max_width(560.0)
@@ -3588,21 +3589,27 @@ impl EditorApp {
                 close_color: Color::from_rgb(0.7, 0.72, 0.78),
             });
 
-        // Card::Style 无阴影字段，外层 container 补回原阴影。
-        let card = container(card).style(|_t| container::Style {
-            shadow: Shadow {
-                color: Color::from_rgba8(0, 0, 0, 0.5),
+        // 阴影包裹容器：宽度 Fill + max_width 560，与 Card 一致，
+        // 这样阴影容器与 Card 同宽，外层居中容器才能把整张卡居中。
+        let card = container(card)
+            .width(Length::Fill)
+            .max_width(560.0)
+            .style(|_t| container::Style {
+                shadow: Shadow {
+                    color: Color::from_rgba8(0, 0, 0, 0.5),
+                    ..Default::default()
+                },
                 ..Default::default()
-            },
-            ..Default::default()
-        });
+            });
 
+        // 背景遮罩 + 居中。width/height Fill 让遮罩覆盖整个窗口，
+        // center_x/center_y 把卡居中。opaque 阻止事件穿透到下层。
         opaque(
             container(card)
                 .width(Length::Fill)
                 .height(Length::Fill)
-                .align_x(Alignment::Center)
-                .align_y(Alignment::Center)
+                .center_x(Length::Fill)
+                .center_y(Length::Fill)
                 .style(|_t| container::Style {
                     background: Some(Background::Color(Color::from_rgba8(0, 0, 0, 0.55))),
                     ..Default::default()
@@ -3648,7 +3655,7 @@ impl EditorApp {
 
         let mut list = Column::new().spacing(2);
         for entry in &picker.entries {
-            let icon = if entry.is_dir { "📁 " } else { "📄 " };
+            let icon = if entry.is_dir { "[目录] " } else { "[文件] " };
             let active = picker.selected.as_deref() == Some(entry.name.as_str());
             list = list.push(
                 button(text(format!("{}{}", icon, entry.name)).size(12.0))
@@ -3710,7 +3717,7 @@ impl EditorApp {
                 continue;
             }
             list = list.push(
-                button(text(format!("📁 {}", entry.name)).size(12.0))
+                button(text(format!("[目录] {}", entry.name)).size(12.0))
                     .on_press(Message::DirPickerEnter(entry.name.clone()))
                     .padding([3, 6])
                     .width(Length::Fill)
@@ -3861,7 +3868,7 @@ impl EditorApp {
         let mut platforms = Column::new().spacing(4);
         for p in BuildPlatform::all() {
             let checked = *self.build.selected.get(&p).unwrap_or(&false);
-            let mark = if checked { "[✓] " } else { "[ ] " };
+            let mark = if checked { "[x] " } else { "[ ] " };
             platforms = platforms.push(
                 button(text(format!("{}{}", mark, p.label())).size(12.0))
                     .on_press(Message::ToggleBuildPlatform(p))
@@ -3887,7 +3894,7 @@ impl EditorApp {
                 let names: Vec<String> =
                     self.build.succeeded.iter().map(|p| p.label().to_string()).collect();
                 result_col = result_col.push(
-                    text(format!("✓ 成功：{}", names.join(", ")))
+                    text(format!("[成功] 成功：{}", names.join(", ")))
                         .size(11.0)
                         .color(COLOR_CHOICE),
                 );
@@ -3896,7 +3903,7 @@ impl EditorApp {
                 let names: Vec<String> =
                     self.build.failed.iter().map(|(p, _)| p.label().to_string()).collect();
                 result_col = result_col.push(
-                    text(format!("✗ 失败：{}", names.join(", ")))
+                    text(format!("[失败] 失败：{}", names.join(", ")))
                         .size(11.0)
                         .color(COLOR_PAIR_HIGHLIGHT),
                 );
@@ -4184,14 +4191,15 @@ pub fn run_editor() -> Result<(), Box<dyn std::error::Error>> {
     );
 
     // 注册 CJK 字体：用 cosmic-text 字形回退渲染中文。
-    // 注册后将其设为默认字体，确保 cosmic-text 优先选用该 CJK 字体，
-    // 而不是回退到不含中文字形的字体（避免中文显示为方框）。
-    // 注意：Font::with_name 的名字必须与 OTF 文件内部的 family name 完全一致，
-    // 该文件（SourceHanSansSC-Regular-2.otf）的 family name 为「思源黑体」。
+    // 关键：不要用 Font::with_name(具体名字) 设默认字体——因为加载到的字体
+    // 可能是 SourceHanSansSC（family=思源黑体），也可能是 Windows 系统回退
+    // msyh.ttc（family=Microsoft YaHei）或 macOS 的 PingFang（family=PingFang SC）。
+    // family name 不匹配时 cosmic-text 找不到对应字体，中文全显示为方框。
+    // 正确做法：仅 .font(bytes) 注册字体字节，默认字体保持 Font::DEFAULT
+    // （Family::SansSerif）。cosmic-text 会把注册的字体作为 SansSerif 的字形
+    // 回退，无论其实际 family name 是什么都能命中中文字形。
     let app = match install_cjk_fonts() {
-        Some(bytes) => app
-            .font(bytes)
-            .default_font(Font::with_name("思源黑体")),
+        Some(bytes) => app.font(bytes),
         None => app,
     };
 
@@ -4256,55 +4264,43 @@ fn track_modifiers(
 /// 返回 `Some(bytes)` 表示找到可用 CJK 字体，由 `run_editor` 通过
 /// `iced::application(...).font(bytes)` 注册，交由 cosmic-text 做字形回退。
 fn install_cjk_fonts() -> Option<Vec<u8>> {
-    let mut font_data: Option<Vec<u8>> = None;
-
-    // 1. 运行时外部字体文件（最高优先级）：多路径尝试，避免依赖 CWD。
-    //    候选顺序：CWD 相对路径 -> 可执行文件同级 -> CWD 上级
-    //    （编辑器可能在 target/debug 或 target/release 下运行，上级为项目根）。
     let rel_path = "assets/fonts/SourceHanSansSC-Regular-2.otf";
-    let mut runtime_candidates: Vec<PathBuf> = vec![PathBuf::from(rel_path)];
+
+    // 1. 运行时外部字体文件：从 CWD 和 exe 目录各自向上遍历目录树，
+    //    找到含 assets/fonts/ 的祖先目录。这样无论从项目根、target/debug、
+    //    还是其他位置运行都能找到字体文件。
+    let mut roots: Vec<PathBuf> = Vec::new();
+    if let Ok(cwd) = std::env::current_dir() {
+        roots.push(cwd);
+    }
     if let Ok(exe) = std::env::current_exe() {
         if let Some(exe_dir) = exe.parent() {
-            runtime_candidates.push(exe_dir.join(rel_path));
+            roots.push(exe_dir.to_path_buf());
         }
     }
-    if let Ok(cwd) = std::env::current_dir() {
-        if let Some(parent) = cwd.parent() {
-            runtime_candidates.push(parent.join(rel_path));
-        }
-    }
-    for path in &runtime_candidates {
-        match std::fs::read(path) {
-            Ok(bytes) => {
-                eprintln!(
-                    "[editor] 中文字体已加载（运行时 OTF）: {}",
-                    path.display()
-                );
-                font_data = Some(bytes);
-                break;
+    for root in &roots {
+        let mut dir: Option<&std::path::Path> = Some(root.as_path());
+        while let Some(d) = dir {
+            let candidate = d.join(rel_path);
+            if let Ok(bytes) = std::fs::read(&candidate) {
+                eprintln!("[editor] 中文字体已加载: {}", candidate.display());
+                return Some(bytes);
             }
-            Err(_) => {
-                eprintln!("[editor] 运行时字体未找到: {}", path.display());
-            }
+            dir = d.parent();
         }
     }
 
     // 2. 系统字体回退（按平台分别列出候选路径）
-    if font_data.is_none() {
-        let sys_candidates = system_cjk_font_path();
-        for path in &sys_candidates {
-            if let Ok(bytes) = std::fs::read(path) {
-                eprintln!("[editor] 使用系统中文字体: {}", path);
-                font_data = Some(bytes);
-                break;
-            }
+    let sys_candidates = system_cjk_font_path();
+    for path in &sys_candidates {
+        if let Ok(bytes) = std::fs::read(path) {
+            eprintln!("[editor] 使用系统中文字体: {}", path);
+            return Some(bytes);
         }
     }
 
-    if font_data.is_none() {
-        eprintln!("[editor] 警告：未找到中文字体，中文可能无法正确显示");
-    }
-    font_data
+    eprintln!("[editor] 警告：未找到中文字体，中文可能无法正确显示");
+    None
 }
 
 /// 返回当前平台的系统 CJK 字体候选路径列表。
