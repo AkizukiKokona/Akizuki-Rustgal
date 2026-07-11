@@ -1784,7 +1784,24 @@ impl Engine {
         // 保持位置/大小/透明度等全部不变。
         if action.kind == DirectionKind::Swap {
             let new_pose = action.pose.clone();
-            if let Some(char_state) = self.scene.characters.iter_mut().find(|c| c.name == action.character) {
+            if self.transition.is_active() {
+                // 过渡进行中：不能直接改现场 scene（现场是过渡前旧状态，
+                // swap point 会用 pending 覆盖，导致 swap 丢失）。
+                // 合并到 pending：以 enter 形式合并（pose 更新等价于同名角色重新入场），
+                // swap point 时由 apply_changes 的 character_enter_at_with 覆盖 pose。
+                let pose = action.pose.clone();
+                let position = action.position;
+                let transform = action.transform;
+                self.transition.merge_into_pending(
+                    None,
+                    vec![(action.character.clone(), pose, position, transform)],
+                    vec![],
+                    None,
+                );
+                events.push(EngineEvent::CharacterEntered {
+                    name: action.character,
+                });
+            } else if let Some(char_state) = self.scene.characters.iter_mut().find(|c| c.name == action.character) {
                 char_state.pose = new_pose;
                 events.push(EngineEvent::CharacterEntered {
                     name: action.character,
