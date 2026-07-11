@@ -997,6 +997,88 @@ impl HudVisibility {
     }
 }
 
+/// 检测 GPU/驱动环境，对可能导致画面异常的配置输出黄色 ANSI 警告。
+///
+/// 适配 wgpu 后端（对应 main 分支基于 miniquad OpenGL 的 `print_gpu_warning`）：
+/// 用 `wgpu::AdapterInfo` 替代 `glGetString(GL_RENDERER/VENDOR/VERSION)`。
+///
+/// 检测项：
+/// - `DeviceType::Cpu` 或名称含 llvmpipe/softpipe/swrast/software → 软件渲染器
+///   （已知会导致立绘叠加等画面异常）
+/// - `DeviceType::VirtualGpu` 或名称含 vmware/svga3d → 虚拟 GPU（可能不完整支持特性）
+/// - `Backend::Gl` → OpenGL 后端（wgpu 无版本概念，仅提示后端类型）
+/// - 名称/设备类型为空 → 无法识别
+///
+/// 警告文本经 UI 翻译器查询（与 main 一致的 `gpu.*` key）。
+/// 必须在 `init_graphics` 之后调用（适配器信息此时已存入 thread_local）。
+fn print_gpu_warning(engine: &Engine) {
+    let Some(info) = crate::wgpu_backend::get_adapter_info() else {
+        return;
+    };
+
+    let name = info.name.as_str();
+    let name_lower = name.to_lowercase();
+    let device_type = info.device_type;
+    let backend = info.backend;
+
+    // ANSI 黄色转义码（亮黄）。
+    const YELLOW: &str = "\x1b[33m";
+    const RESET: &str = "\x1b[0m";
+    let prefix = engine.t_ui("gpu.warning_prefix");
+
+    // 收集匹配的警告（可能多项）。
+    let mut warnings: Vec<String> = Vec::new();
+
+    // 1. LLVMpipe 软件渲染器（最可能导致立绘叠加的根因）。
+    if name_lower.contains("llvmpipe") {
+        warnings.push(engine.t_ui("gpu.llvmpipe").to_string());
+    }
+
+    // 2. 其他软件渲染器（softpipe、swrast、software，或 DeviceType::Cpu）。
+    let is_software = device_type == wgpu::DeviceType::Cpu
+        || name_lower.contains("softpipe")
+        || name_lower.contains("swrast")
+        || name_lower.contains("software");
+    if is_software {
+        if !warnings.is_empty() {
+            // LLVMpipe 已覆盖，避免重复。
+        } else {
+            let msg = engine
+                .t_ui("gpu.software_renderer")
+                .replace("{renderer}", name);
+            warnings.push(msg);
+        }
+    }
+
+    // 3. VMware 虚拟 GPU（VirtualGpu 或名称含 vmware/svga3d）。
+    let is_vmware = device_type == wgpu::DeviceType::VirtualGpu
+        || name_lower.contains("vmware")
+        || name_lower.contains("svga3d");
+    if is_vmware {
+        let msg = engine.t_ui("gpu.vmware").replace("{renderer}", name);
+        warnings.push(msg);
+    }
+
+    // 4. OpenGL 后端（wgpu 无版本号，仅提示后端类型；对应 main 的旧 OpenGL 检测）。
+    if backend == wgpu::Backend::Gl {
+        let msg = engine.t_ui("gpu.old_opengl").replace("{version}", "OpenGL");
+        warnings.push(msg);
+    }
+
+    // 5. 名称为空——无法识别。
+    if name.is_empty() {
+        warnings.push(engine.t_ui("gpu.unknown_renderer").to_string());
+    }
+
+    // 输出：每条警告一行，黄色文字。
+    for msg in &warnings {
+        eprintln!("{}{} {}{}", YELLOW, prefix, msg, RESET);
+    }
+
+    // 始终打印一行环境信息（非警告色），供调试参考。
+    eprintln!("[GPU] adapter=\"{}\" device_type={:?} backend={:?}", name, device_type, backend);
+}
+
 /// Entry point: launch the game with a wgpu/winit window.
 ///
 /// ```ignore
@@ -1026,6 +1108,10 @@ pub fn run(mut engine: Engine, project_config: &ProjectConfig) {
 
     // 启动时先用白色填充，避免"先黑一帧再渲染"的视觉瑕疵。
     clear_background(WHITE);
+
+    // GPU/驱动环境检测：init_graphics 之后调用（适配器信息此时已存入 thread_local）。
+    // 仅在检测到潜在兼容性问题时输出黄色警告。
+    print_gpu_warning(&engine);
 
     // 应用项目配置的初始窗口大小和全屏状态。
     if project_config.start_fullscreen {
@@ -4335,6 +4421,8 @@ struct SettingsLayout {
     /// 配色标签页：5 行 × 12 色调色板预设小色块（共 60 个）。
     /// 索引 = row * 12 + palette_index。
     color_palette_rects: [Rect4; 60],
+    /// 配色标签页标签字号（比通用标签小，给较长的配色行标签留出空间）。
+    color_label_size: f32,
     /// 开发者标签页：红字警告文本的顶部 y（标题下方）。
     dev_warning_y: f32,
     /// 开发者标签页：显示终端调试输出开关。
@@ -4495,21 +4583,26 @@ fn compute_settings_layout(sw: f32, sh: f32, scale: f32) -> SettingsLayout {
     }
     // 配色行内几何：色块 / 十六进制框 / 调色板。
     // 主题色行（0,1,2）在色块后多一个「项目默认/自定义」按钮；已读/未读行（3,4）没有。
+    // 配色行标签较长（如日文「テーマカラー1（パネル背景）」），通用 control_x
+    // 不足以容纳，因此配色行使用独立的 color_control_x（更靠右），并缩小调色板
+    // 单元尺寸以在 1280 宽度下不溢出。
+    let color_label_size = 28.0 * scale;
+    let color_control_x = panel_x + 500.0 * scale;
     let swatch_size = 44.0 * scale;
-    let hex_box_w = 168.0 * scale;
+    let hex_box_w = 150.0 * scale;
     let hex_box_h = 40.0 * scale;
     let def_btn_w = 132.0 * scale;
-    let palette_cell = 30.0 * scale;
-    let palette_gap = 5.0 * scale;
+    let palette_cell = 26.0 * scale;
+    let palette_gap = 4.0 * scale;
     let mut color_swatch_rects = [Rect4::default(); 5];
     let mut color_hex_rects = [Rect4::default(); 5];
     let mut color_default_btn_rects = [Rect4::default(); 3];
     let mut color_palette_rects = [Rect4::default(); 60];
     for i in 0..5 {
         let mid = color_row_mids[i];
-        // 色块（所有行均位于 control_x）
+        // 色块（所有行均位于 color_control_x）
         let swatch = Rect4 {
-            x: control_x, y: mid - swatch_size / 2.0,
+            x: color_control_x, y: mid - swatch_size / 2.0,
             w: swatch_size, h: swatch_size,
         };
         color_swatch_rects[i] = swatch;
@@ -4581,6 +4674,7 @@ fn compute_settings_layout(sw: f32, sh: f32, scale: f32) -> SettingsLayout {
         skip_row_mids, skip_toggle, skip_dropdown,
         color_row_mids,
         color_swatch_rects, color_hex_rects, color_default_btn_rects, color_palette_rects,
+        color_label_size,
         dev_warning_y, dev_debug_toggle, dev_clear_read_btn,
         apply_btn, cancel_btn,
     }
@@ -4595,7 +4689,7 @@ fn compute_settings_layout(sw: f32, sh: f32, scale: f32) -> SettingsLayout {
 /// - 十六进制输入框（点击激活文本输入，支持 #RRGGBB / #RRGGBBAA）
 /// - 12 色调色板预设（点击直接套用）
 fn draw_color_tab(engine: &mut Engine, layout: &SettingsLayout, font: &Option<Font>, scale: f32, project_config: &ProjectConfig, color_edit_active: &mut Option<ColorField>, color_hex_buffer: &mut String, ws: &mut crate::ui_widgets::UiWidgetsState) {
-    let label_size = 34.0 * scale;
+    let label_size = layout.color_label_size;
     let hint_size = 24.0 * scale;
     let hex_text_size = 24.0 * scale;
     let btn_text_size = 22.0 * scale;

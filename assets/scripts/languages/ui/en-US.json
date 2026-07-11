@@ -144,5 +144,11 @@
   "error.reason.save_load": "Failed to load the save file; it may be corrupted or incompatible with the current version.",
   "error.reason.render": "The renderer encountered an anomaly (resource loading or drawing failed).",
   "error.reason.settings": "Failed to parse the settings file; the configuration may be corrupted.",
-  "error.reason.fatal": "An unknown fatal error occurred. Please export the log and restart the engine."
+  "error.reason.fatal": "An unknown fatal error occurred. Please export the log and restart the engine.",
+  "gpu.warning_prefix": "[GPU Warning]",
+  "gpu.software_renderer": "Software rendering detected ({renderer}). Performance and visual correctness may be compromised; a hardware-accelerated GPU is recommended.",
+  "gpu.llvmpipe": "LLVMpipe software renderer detected. This is known to cause rendering glitches (e.g. overlapping sprites). Please use a hardware GPU.",
+  "gpu.vmware": "VMware virtual GPU detected ({renderer}). Virtual GPUs may not correctly support all graphics features, which can cause visual artifacts.",
+  "gpu.old_opengl": "{version} backend detected. This backend has limited graphics feature support and may cause rendering issues; Vulkan/DX12/Metal is recommended.",
+  "gpu.unknown_renderer": "Unable to identify GPU renderer. If you experience visual glitches, please update your graphics driver."
 }

@@ -185,6 +185,8 @@ struct Backend {
     device: wgpu::Device,
     queue: wgpu::Queue,
     format: wgpu::TextureFormat,
+    /// 适配器信息（GPU 名称/设备类型/驱动/后端），供 GPU 警告检测读取。
+    adapter_info: wgpu::AdapterInfo,
     pipeline: wgpu::RenderPipeline,
     bind_group_layout: wgpu::BindGroupLayout,
     uniform_buffer: wgpu::Buffer,
@@ -260,7 +262,12 @@ fn fs(in: VsOut) -> @location(0) vec4<f32> {
 "#;
 
 impl Backend {
-    fn new(device: wgpu::Device, queue: wgpu::Queue, format: wgpu::TextureFormat) -> Self {
+    fn new(
+        device: wgpu::Device,
+        queue: wgpu::Queue,
+        format: wgpu::TextureFormat,
+        adapter_info: wgpu::AdapterInfo,
+    ) -> Self {
         let bind_group_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("akrs bgl"),
             entries: &[
@@ -385,6 +392,7 @@ impl Backend {
             device,
             queue,
             format,
+            adapter_info,
             pipeline,
             bind_group_layout,
             uniform_buffer,
@@ -697,7 +705,8 @@ pub fn init_graphics(window: &Window) -> (wgpu::Surface<'_>, wgpu::TextureFormat
         size.height as f32 / scale,
     );
 
-    let mut backend = Backend::new(device, queue, format);
+    let adapter_info = adapter.get_info();
+    let mut backend = Backend::new(device, queue, format, adapter_info);
     backend.scale_factor = scale;
     backend.logical_size = logical;
 
@@ -1183,6 +1192,11 @@ pub fn screen_height() -> f32 {
 }
 pub fn dpi_scale() -> f32 {
     BACKEND.with(|b| b.borrow().as_ref().map_or(1.0, |be| be.scale_factor))
+}
+/// 返回当前适配器信息（GPU 名称/设备类型/驱动/后端），未初始化时返回 None。
+/// 供 `print_gpu_warning` 检测软件渲染器/虚拟 GPU 等。
+pub fn get_adapter_info() -> Option<wgpu::AdapterInfo> {
+    BACKEND.with(|b| b.borrow().as_ref().map(|be| be.adapter_info.clone()))
 }
 pub fn mouse_position() -> (f32, f32) {
     BACKEND.with(|b| b.borrow().as_ref().map_or((0.0, 0.0), |be| be.mouse_pos))
