@@ -544,10 +544,14 @@ impl Backend {
         let frame = match surface.get_current_texture() {
             Ok(f) => f,
             // 显存不足：无法恢复，直接放弃本帧。
-            Err(wgpu::SurfaceError::OutOfMemory) => return,
+            Err(wgpu::SurfaceError::OutOfMemory) => {
+                log::error!("[DEBUG-TEMP] render_frame: get_current_texture OutOfMemory");
+                return;
+            }
             // Lost/Outdated/Timeout：surface 与窗口尺寸不匹配或被系统回收，
             // 标记 dirty 让 run() 下一帧强制 reconfigure，否则会永久白屏。
-            Err(_) => {
+            Err(e) => {
+                log::warn!("[DEBUG-TEMP] render_frame: get_current_texture 失败 {:?}，置 surface_dirty", e);
                 self.surface_dirty = true;
                 return;
             }
@@ -633,6 +637,7 @@ fn create_texture_inner(
 /// 把渲染状态存入 thread_local，返回（surface, 物理宽, 物理高）。
 /// `surface` 借用 `window`，调用方须保证 window 存活期 ≥ surface。
 pub fn init_graphics(window: &Window) -> (wgpu::Surface<'_>, wgpu::TextureFormat) {
+    log::info!("[DEBUG-TEMP] init_graphics: 创建 wgpu Instance (backends=all)");
     let instance = wgpu::Instance::new(wgpu::InstanceDescriptor {
         backends: wgpu::Backends::all(),
         ..Default::default()
@@ -647,13 +652,16 @@ pub fn init_graphics(window: &Window) -> (wgpu::Surface<'_>, wgpu::TextureFormat
                 e
             )
         });
+    log::info!("[DEBUG-TEMP] init_graphics: surface 创建成功");
 
+    log::info!("[DEBUG-TEMP] init_graphics: 请求 adapter (HighPerformance, compatible_surface=Some)");
     let adapter = pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {
         power_preference: wgpu::PowerPreference::HighPerformance,
         compatible_surface: Some(&surface),
         force_fallback_adapter: false,
     }))
     .unwrap_or_else(|| {
+        log::warn!("[DEBUG-TEMP] init_graphics: 首次 request_adapter 失败，尝试 fallback (LowPower, no surface, force_fallback)");
         // 尝试不依赖 surface 再找一次（某些环境下 surface 兼容性筛选过严）。
         let fallback = pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {
             power_preference: wgpu::PowerPreference::LowPower,
@@ -689,6 +697,7 @@ pub fn init_graphics(window: &Window) -> (wgpu::Surface<'_>, wgpu::TextureFormat
             adapter.get_info()
         )
     });
+    log::info!("[DEBUG-TEMP] init_graphics: device/queue 获取成功");
 
     let caps = surface.get_capabilities(&adapter);
     let format = caps
@@ -697,8 +706,10 @@ pub fn init_graphics(window: &Window) -> (wgpu::Surface<'_>, wgpu::TextureFormat
         .copied()
         .find(|&f| f == wgpu::TextureFormat::Bgra8Unorm)
         .unwrap_or_else(|| caps.formats.first().copied().unwrap_or(wgpu::TextureFormat::Bgra8Unorm));
+    log::info!("[DEBUG-TEMP] init_graphics: surface caps formats={:?} selected={:?}", caps.formats, format);
 
     let size = window.inner_size();
+    log::info!("[DEBUG-TEMP] init_graphics: 配置 surface {}x{} (物理像素)", size.width, size.height);
     let config = wgpu::SurfaceConfiguration {
         usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
         format,
@@ -710,6 +721,7 @@ pub fn init_graphics(window: &Window) -> (wgpu::Surface<'_>, wgpu::TextureFormat
         view_formats: vec![],
     };
     surface.configure(&device, &config);
+    log::info!("[DEBUG-TEMP] init_graphics: surface.configure 完成");
 
     let scale = window.scale_factor() as f32;
     let logical = (
@@ -780,6 +792,11 @@ pub fn take_surface_dirty() -> bool {
             false
         }
     })
+}
+
+// [DEBUG-TEMP] 返回当前帧顶点数（诊断用：0 表示本帧无绘制指令 → 白屏根因之一）
+pub fn vertex_count() -> usize {
+    BACKEND.with(|b| b.borrow().as_ref().map_or(0, |be| be.vertices.len()))
 }
 
 // ─── 事件处理（pump_events 回调） ─────────────────────────────────────────────

@@ -8,7 +8,9 @@
 //!   akrs-game <path.akrs>      — run the specified script
 //!   akrs-game --project <dir>  — run from project directory
 
-#![cfg_attr(target_os = "windows", windows_subsystem = "windows")]
+// [DEBUG-TEMP] 临时关闭 windows_subsystem = "windows"，强制显示控制台窗口
+// 以便在 Windows 上看到完整的 println!/eprintln! 日志输出。调试完成后恢复。
+// #![cfg_attr(target_os = "windows", windows_subsystem = "windows")]
 
 use akrs_core::ProjectConfig;
 use akrs_runtime::{Engine, crash::{self, CrashInfo, error_code}};
@@ -85,29 +87,59 @@ fn load_script_and_config() -> (String, ProjectConfig, PathBuf) {
 }
 
 fn main() {
-    // 初始化统一日志：默认 warn+，设 RUST_LOG=debug 可看调试日志。
-    let _ = env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("warn")).try_init();
+    // [DEBUG-TEMP] 强制分配控制台（Windows），确保所有日志可见
+    #[cfg(target_os = "windows")]
+    {
+        let _ = akrs_render::platform::try_alloc_console();
+    }
 
-    // Install a panic hook so that if the game crashes the error message is
-    // visible even under `windows_subsystem = "windows"` (no console).
-    // 三管齐下：写 panic.log 文件 + 弹 Windows 消息框 + 追加到崩溃日志缓冲。
+    // [DEBUG-TEMP] 日志级别强制设为 trace，同时输出到 stderr（控制台）和 debug.log 文件。
+    // 用 env_logger 输出到 stderr，format 闭包内同时 append 到 debug.log。
+    use std::io::Write;
+    let log_file = std::fs::OpenOptions::new()
+        .create(true)
+        .write(true)
+        .truncate(true)
+        .open("debug.log")
+        .ok();
+    let file_for_log = log_file.map(std::sync::Mutex::new);
+    let mut builder = env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("trace"));
+    builder.format(move |buf, record| {
+        let ts = buf.timestamp_millis();
+        let line = format!("{} [{}] {}\n", ts, record.level(), record.args());
+        // stderr（控制台）
+        let _ = std::io::stderr().write_all(line.as_bytes());
+        // debug.log 文件
+        if let Some(ref mtx) = file_for_log {
+            if let Ok(mut f) = mtx.lock() {
+                let _ = f.write_all(line.as_bytes());
+                let _ = f.flush();
+            }
+        }
+        Ok(())
+    });
+    builder.target(env_logger::Target::Stderr);
+    let _ = builder.try_init();
+    log::info!("[DEBUG-TEMP] === akrs-game 启动（调试模式：trace 级别日志 + debug.log）===");
+
+    // panic hook：保留原有三管齐下，但额外打印完整 backtrace。
     std::panic::set_hook(Box::new(|panic_info| {
         let msg = format!("{}", panic_info);
+        let backtrace = std::backtrace::Backtrace::force_capture();
         let full = format!(
-            "Akizuki*Rustgal 发生致命错误（panic）\n\n{}\n\n请将此信息反馈给开发者。",
-            msg
+            "Akizuki*Rustgal 发生致命错误（panic）\n\n{}\n\nBacktrace:\n{}\n\n请将此信息反馈给开发者。",
+            msg, backtrace
         );
-        // 1. 写到 panic.log（当前目录），便于用户直接提交给开发者。
         let _ = std::fs::write("panic.log", &full);
-        // 2. 追加到崩溃日志缓冲（供蓝屏"导出日志"按钮使用）。
         akrs_runtime::crash::push_log(full.clone());
-        // 3. Windows 上弹消息框（GUI 子系统无控制台，println! 不可见）。
         akrs_render::platform::show_panic_messagebox(&full, "Akizuki*Rustgal 崩溃");
-        // 4. 若已有控制台（debug_terminal 或从 cmd 启动），也打印到 stderr。
         eprintln!("{}", full);
     }));
 
+    log::info!("[DEBUG-TEMP] main: 调用 load_script_and_config()");
     let (script, project_config, project_dir) = load_script_and_config();
+    log::info!("[DEBUG-TEMP] main: 剧本加载完成，长度 {} 字节", script.len());
+    log::info!("[DEBUG-TEMP] main: project_dir = {}", project_dir.display());
 
     // 编译剧本：失败时不退出，而是降级为"仅标题页"模式。
     // 玩家仍可进入标题页、修改设置，但点击"开始游戏/读档/继续游戏"时

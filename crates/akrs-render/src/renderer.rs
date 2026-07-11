@@ -1095,6 +1095,7 @@ pub fn run(mut engine: Engine, project_config: &ProjectConfig) {
 
     // 创建 winit 事件循环 + 窗口 + wgpu surface。
     let conf = window_conf();
+    log::info!("[DEBUG-TEMP] run: 创建事件循环");
     let mut event_loop = winit::event_loop::EventLoop::new()
         .expect("failed to create event loop");
     let mut window_builder = winit::window::WindowBuilder::new()
@@ -1109,7 +1110,10 @@ pub fn run(mut engine: Engine, project_config: &ProjectConfig) {
     let window = window_builder
         .build(&event_loop)
         .expect("failed to create window");
+    log::info!("[DEBUG-TEMP] run: 窗口创建成功，inner_size={:?} scale_factor={}",
+        window.inner_size(), window.scale_factor());
     let (surface, _format) = crate::wgpu_backend::init_graphics(&window);
+    log::info!("[DEBUG-TEMP] run: wgpu init_graphics 完成，format={:?}", _format);
 
     // 启动时先用白色填充，避免"先黑一帧再渲染"的视觉瑕疵。
     clear_background(WHITE);
@@ -1117,19 +1121,26 @@ pub fn run(mut engine: Engine, project_config: &ProjectConfig) {
     // GPU/驱动环境检测：init_graphics 之后调用（适配器信息此时已存入 thread_local）。
     // 仅在检测到潜在兼容性问题时输出黄色警告。
     print_gpu_warning(&engine);
+    if let Some(ai) = crate::wgpu_backend::get_adapter_info() {
+        log::info!("[DEBUG-TEMP] run: adapter info name={:?} device_type={:?} backend={:?} driver={:?} driver_info={:?}",
+            ai.name, ai.device_type, ai.backend, ai.driver, ai.driver_info);
+    }
 
     // 应用项目配置的初始窗口大小和全屏状态。
     if project_config.start_fullscreen {
+        log::info!("[DEBUG-TEMP] run: start_fullscreen=true");
         set_fullscreen(true);
     } else {
         // 用真实 DPI 重新计算窗口尺寸并居中。
         let dpi = dpi_scale();
         let screen_phys = get_screen_size();
+        log::info!("[DEBUG-TEMP] run: 窗口模式 dpi={} screen_phys={:?}", dpi, screen_phys);
         let (final_w, final_h) = clip_resolution_to_screen(
             project_config.default_resolution,
             screen_phys,
             dpi,
         );
+        log::info!("[DEBUG-TEMP] run: 请求窗口尺寸 {}x{} (逻辑)", final_w, final_h);
         request_new_screen_size(final_w as f32, final_h as f32);
         // 物理像素尺寸用于平台层居中调用（Windows 用 SetWindowPos）。
         crate::platform::center_window_on_screen(
@@ -1300,6 +1311,7 @@ pub fn run(mut engine: Engine, project_config: &ProjectConfig) {
         window.inner_size().width,
         window.inner_size().height,
     );
+    let mut _dbg_frame: u64 = 0;
     loop {
         crate::wgpu_backend::begin_frame();
         crate::wgpu_backend::pump_events(&mut event_loop, Some(std::time::Duration::ZERO));
@@ -1309,6 +1321,7 @@ pub fn run(mut engine: Engine, project_config: &ProjectConfig) {
         // 实际尺寸，紧接其后的 reconfigure 才能用「新尺寸」配置 surface，
         // 避免本帧 render_frame 用旧 surface 渲染到新窗口导致白屏 + 底部黑边。
         if let Some(fs) = crate::wgpu_backend::take_pending_fullscreen() {
+            log::info!("[DEBUG-TEMP] frame {}: take_pending_fullscreen={}", _dbg_frame, fs);
             if fs {
                 window.set_fullscreen(Some(winit::window::Fullscreen::Borderless(None)));
             } else {
@@ -1316,6 +1329,7 @@ pub fn run(mut engine: Engine, project_config: &ProjectConfig) {
             }
         }
         if let Some((lw, lh)) = crate::wgpu_backend::take_pending_resize() {
+            log::info!("[DEBUG-TEMP] frame {}: take_pending_resize={}x{}", _dbg_frame, lw, lh);
             let _ = window.request_inner_size(winit::dpi::LogicalSize::new(lw, lh));
         }
 
@@ -1325,7 +1339,10 @@ pub fn run(mut engine: Engine, project_config: &ProjectConfig) {
             window.inner_size().width,
             window.inner_size().height,
         );
-        if cur_size != last_surface_size || crate::wgpu_backend::take_surface_dirty() {
+        let dirty = crate::wgpu_backend::take_surface_dirty();
+        if cur_size != last_surface_size || dirty {
+            log::info!("[DEBUG-TEMP] frame {}: reconfigure_surface {}x{} (dirty={}, prev={:?})",
+                _dbg_frame, cur_size.0, cur_size.1, dirty, last_surface_size);
             crate::wgpu_backend::reconfigure_surface(&surface, cur_size.0, cur_size.1);
             last_surface_size = cur_size;
         }
@@ -1386,6 +1403,7 @@ pub fn run(mut engine: Engine, project_config: &ProjectConfig) {
         // progress (unless we're on the title screen or the story has ended)
         // and then exit immediately.
         if is_quit_requested() {
+            log::info!("[DEBUG-TEMP] frame {}: is_quit_requested=true，退出", _dbg_frame);
             if engine.phase() != EnginePhase::Title {
                 let _ = engine.save_autosave();
             }
@@ -2421,7 +2439,14 @@ pub fn run(mut engine: Engine, project_config: &ProjectConfig) {
             draw_chapter_toast(&chapter_anim, sw, sh, &font, scale);
         }
 
+        // [DEBUG-TEMP] 前 10 帧每帧日志 + 之后每 60 帧一次状态日志
+        if _dbg_frame < 10 || _dbg_frame % 60 == 0 {
+            log::info!("[DEBUG-TEMP] frame {}: phase={:?} ui_mode={:?} sw={} sh={} dpi={} scale={} vertices={}",
+                _dbg_frame, engine.phase(), ui_mode, sw, sh, dpi, scale,
+                crate::wgpu_backend::vertex_count());
+        }
         crate::wgpu_backend::render_frame(&surface);
+        _dbg_frame += 1;
     }
 }
 
