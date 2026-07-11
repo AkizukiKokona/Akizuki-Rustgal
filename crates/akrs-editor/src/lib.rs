@@ -266,6 +266,11 @@ pub struct EditorApp {
     project_config: ProjectConfig,
     /// 是否已经加载了项目配置。
     project_loaded: bool,
+    /// 项目根目录（open_project 时记录，预览子进程的 CWD 用此而非 work_dir）。
+    /// 注意：work_dir 会被 open_file_path 覆盖为「打开文件的父目录」用于文件浏览，
+    /// 但预览子进程必须以项目根为 CWD，否则 saves/*.json、project.json、assets/
+    /// 都会从错误的子目录读取，导致尾声按钮、已读历史、设置等状态漂移。
+    project_dir: Option<PathBuf>,
     /// 最近打开的项目列表。
     recent_projects: RecentProjects,
     /// 是否显示项目设置对话框。
@@ -499,6 +504,7 @@ impl Default for EditorApp {
             file_picker: None,
             project_config: ProjectConfig::default(),
             project_loaded: false,
+            project_dir: None,
             recent_projects,
             show_project_settings: false,
             title_warning: None,
@@ -757,6 +763,7 @@ impl EditorApp {
         // 加载项目配置
         self.project_config = ProjectConfig::load(project_dir);
         self.project_loaded = true;
+        self.project_dir = Some(project_dir.to_path_buf());
         self.work_dir = project_dir.to_path_buf();
         self.refresh_file_list();
 
@@ -1127,6 +1134,14 @@ impl EditorApp {
             None => return,
         };
 
+        // 预览子进程的 CWD 必须是项目根目录，而非 work_dir。
+        // 原因：open_file_path 会把 work_dir 覆盖为「打开文件的父目录」（如 scripts/），
+        // 若以 work_dir 为 CWD，游戏会从错误的子目录读取 saves/endings.json、
+        // saves/read_history.json、project.json、assets/ 等，导致尾声按钮异常显示、
+        // 已读历史丢失、标题/副标题丢失等状态漂移问题。
+        // 优先用 open_project 时记录的 project_dir；未加载项目时回退 work_dir。
+        let preview_cwd = self.project_dir.clone().unwrap_or_else(|| self.work_dir.clone());
+
         match Command::new("cargo")
             .arg("run")
             .arg("--release")
@@ -1135,14 +1150,14 @@ impl EditorApp {
             .arg("--")
             .arg("--script")
             .arg(&script_path)
-            .current_dir(&self.work_dir)
+            .current_dir(&preview_cwd)
             .stdout(Stdio::inherit())
             .stderr(Stdio::inherit())
             .spawn()
         {
             Ok(child) => {
                 self.game_process = Some(child);
-                self.status = format!("游戏预览已启动（{}）", script_path.display());
+                self.status = format!("游戏预览已启动（{}，CWD={}）", script_path.display(), preview_cwd.display());
             }
             Err(e) => {
                 self.status = format!("启动预览失败: {}", e);

@@ -1790,6 +1790,9 @@ pub async fn run(mut engine: Engine, project_config: &ProjectConfig) {
                                         ui_mode = UiMode::Normal;
                                     } else {
                                         // 重建引擎回到标题（沿用 BackToTitle 的重建逻辑）。
+                                        // 重建前先把本会话新增的已读历史落盘
+                                        // （Engine::new 会重新加载）。
+                                        engine.save_read_history();
                                         let source = engine.source().to_string();
                                         let saved_settings = engine.settings().clone();
                                         let saved_translations_dir =

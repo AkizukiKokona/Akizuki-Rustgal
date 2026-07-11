@@ -244,6 +244,11 @@ impl SceneState {
         pose: Option<String>,
         transform: SpriteTransform,
     ) {
+        // 调试日志：定位「立绘叠加」问题。打印入场前后的在场角色列表。
+        let before: Vec<String> = self.characters.iter()
+            .map(|c| format!("{}({:?})", c.name, c.pose)).collect();
+        let log_name = name.clone();
+        let log_pose = pose.clone();
         // Remove existing instance of this character (re-enter replaces)
         self.characters.retain(|c| c.name != name);
         // 若提供了 size，则 scale 用之；否则默认 1.0
@@ -262,6 +267,12 @@ impl SceneState {
         if transform.x.is_none() {
             self.auto_layout();
         }
+        let after: Vec<String> = self.characters.iter()
+            .map(|c| format!("{}({:?})", c.name, c.pose)).collect();
+        eprintln!(
+            "[akrs-debug] character_enter_with: name={:?} pose={:?} | before=[{}] after=[{}]",
+            log_name, log_pose, before.join(", "), after.join(", ")
+        );
     }
 
     /// Add or update a character at an explicit position.
@@ -295,11 +306,14 @@ impl SceneState {
 
     /// Remove a character from stage and recalculate remaining positions.
     pub fn character_exit(&mut self, name: &str) {
-        let before = self.characters.len();
+        // 调试日志：定位「立绘叠加」问题。打印下场前后的在场角色列表。
+        let before: Vec<String> = self.characters.iter()
+            .map(|c| format!("{}({:?})", c.name, c.pose)).collect();
+        let before_len = self.characters.len();
         self.characters.retain(|c| c.name != name);
         // 匹配失败时打警告，帮助定位「立绘下不了场」问题：
         // 最常见原因是入场用的名字与下场不一致（例如把立绘资源名当角色名）。
-        if self.characters.len() == before {
+        if self.characters.len() == before_len {
             eprintln!(
                 "[akrs] 警告：尝试让角色「{}」下场，但该角色不在场上（当前在场：{:?}）。\n\
                  这通常是因为入场（+）与下场（-）的名字不一致——请检查剧本中\n\
@@ -309,6 +323,12 @@ impl SceneState {
             );
         }
         self.auto_layout();
+        let after: Vec<String> = self.characters.iter()
+            .map(|c| format!("{}({:?})", c.name, c.pose)).collect();
+        eprintln!(
+            "[akrs-debug] character_exit: name={:?} | before=[{}] after=[{}]",
+            name, before.join(", "), after.join(", ")
+        );
     }
 
     /// Automatically calculate character positions based on count.
