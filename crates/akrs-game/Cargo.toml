@@ -12,3 +12,6 @@ path = "src/main.rs"
 akrs-core = { workspace = true }
 akrs-runtime = { workspace = true }
 akrs-render = { workspace = true }
+# env_logger：游戏入口初始化统一日志（默认 warn+，RUST_LOG=debug 看调试）。
+env_logger = { workspace = true }
+log = { workspace = true }

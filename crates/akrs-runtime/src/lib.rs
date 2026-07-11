@@ -61,8 +61,8 @@ pub use game_state::{
     SceneState, BackgroundState, CharacterState, DialogueState,
     ChoicesState, ChoiceOptionState, TransitionOverlay, TransitionPhase,
 };
-pub use save_load::{SaveManager, SaveSlot, SaveMetadata, SceneSnapshot, format_timestamp, format_play_time};
-pub use settings::{Settings, SkipMode, SettingsTab};
+pub use save_load::{SaveManager, SaveSlot, SaveMetadata, SaveError, SceneSnapshot, format_timestamp, format_play_time};
+pub use settings::{Settings, SettingsError, SkipMode, SettingsTab};
 pub use translator::{Translator, UiTranslator, detect_system_language};
 pub use transition::TransitionManager;
 

@@ -31,7 +31,7 @@
 
 use crate::game_state::{SceneState, ChoiceOptionState};
 use crate::save_load::{SaveManager, SceneSnapshot};
-use crate::settings::{Settings, SkipMode};
+use crate::settings::{Settings, SettingsError, SkipMode};
 use crate::translator::{Translator, UiTranslator};
 use crate::transition::TransitionManager;
 
@@ -489,7 +489,7 @@ impl Engine {
         if path.exists() {
             self.translator = Translator::from_file(&path);
         } else {
-            eprintln!("[Engine] 语言文件不存在：{:?}，使用原文", path);
+            log::warn!("[Engine] 语言文件不存在：{:?}，使用原文", path);
             self.translator = Translator::new();
         }
         self.settings.language = lang_code.to_string();
@@ -508,7 +508,7 @@ impl Engine {
         if path.exists() {
             self.translator = Translator::from_file(&path);
         } else {
-            eprintln!("[Engine] 语言文件不存在：{:?}，使用原文", path);
+            log::warn!("[Engine] 语言文件不存在：{:?}，使用原文", path);
             self.translator = Translator::new();
         }
     }
@@ -522,7 +522,7 @@ impl Engine {
             match UiTranslator::from_file(&path, lang_code.to_string()) {
                 Ok(t) => self.ui_translator = t,
                 Err(e) => {
-                    eprintln!("[Engine] UI 翻译文件加载失败：{}", e);
+                    log::warn!("[Engine] UI 翻译文件加载失败：{}", e);
                     self.ui_translator = UiTranslator::new();
                 }
             }
@@ -545,7 +545,7 @@ impl Engine {
             match UiTranslator::from_file(&path, lang) {
                 Ok(t) => self.ui_translator = t,
                 Err(e) => {
-                    eprintln!("[Engine] UI 翻译文件加载失败：{}", e);
+                    log::warn!("[Engine] UI 翻译文件加载失败：{}", e);
                     self.ui_translator = UiTranslator::new();
                 }
             }
@@ -626,19 +626,19 @@ impl Engine {
         let cwd = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("?"));
         if let Ok(content) = std::fs::read_to_string(&path) {
             if let Ok(history) = serde_json::from_str::<HashSet<String>>(&content) {
-                eprintln!(
+                log::debug!(
                     "[akrs-debug] load_read_history: 从 {} 加载了 {} 条已读记录（cwd={}）",
                     path.display(), history.len(), cwd.display()
                 );
                 self.read_history = history;
             } else {
-                eprintln!(
+                log::debug!(
                     "[akrs-debug] load_read_history: {} 解析失败，已读历史为空（cwd={}）",
                     path.display(), cwd.display()
                 );
             }
         } else {
-            eprintln!(
+            log::debug!(
                 "[akrs-debug] load_read_history: {} 不存在或读取失败，已读历史为空（cwd={}）",
                 path.display(), cwd.display()
             );
@@ -652,12 +652,12 @@ impl Engine {
         if let Ok(content) = serde_json::to_string(&self.read_history) {
             let _ = std::fs::create_dir_all("saves");
             let _ = std::fs::write(&path, content);
-            eprintln!(
+            log::debug!(
                 "[akrs-debug] save_read_history: 保存了 {} 条已读记录到 {}（cwd={}）",
                 self.read_history.len(), path.display(), cwd.display()
             );
         } else {
-            eprintln!(
+            log::debug!(
                 "[akrs-debug] save_read_history: 序列化失败，未保存（cwd={}）",
                 cwd.display()
             );
@@ -718,7 +718,7 @@ impl Engine {
     }
 
     /// Persist the current settings to `saves/settings.json`.
-    pub fn save_settings(&self) -> Result<(), String> {
+    pub fn save_settings(&self) -> Result<(), SettingsError> {
         let path = Settings::default_path();
         // Ensure the saves directory exists.
         if let Some(parent) = path.parent() {
@@ -1007,7 +1007,7 @@ impl Engine {
             self.scene_snapshot(),
         ) {
             Ok(_) => events.push(EngineEvent::Saved { slot }),
-            Err(e) => events.push(EngineEvent::Error { message: e }),
+            Err(e) => events.push(EngineEvent::Error { message: e.to_string() }),
         }
         events
     }
@@ -1079,7 +1079,7 @@ impl Engine {
                 events.push(EngineEvent::Loaded { slot });
             }
             Err(e) => {
-                events.push(EngineEvent::Error { message: e });
+                events.push(EngineEvent::Error { message: e.to_string() });
             }
         }
         events
@@ -1245,7 +1245,7 @@ impl Engine {
             self.scene_snapshot(),
         ) {
             Ok(_) => {}
-            Err(e) => events.push(EngineEvent::Error { message: e }),
+            Err(e) => events.push(EngineEvent::Error { message: e.to_string() }),
         }
         events
     }
@@ -1291,7 +1291,7 @@ impl Engine {
                 self.process_events_into(&mut events);
             }
             Err(e) => {
-                events.push(EngineEvent::Error { message: e });
+                events.push(EngineEvent::Error { message: e.to_string() });
             }
         }
         events
@@ -1314,7 +1314,7 @@ impl Engine {
     pub fn delete_autosave(&mut self) -> Vec<EngineEvent> {
         let mut events = Vec::new();
         if let Err(e) = self.saves.delete_autosave() {
-            events.push(EngineEvent::Error { message: e });
+            events.push(EngineEvent::Error { message: e.to_string() });
         }
         events
     }
@@ -1343,7 +1343,7 @@ impl Engine {
             self.scene_snapshot(),
         ) {
             Ok(_) => {}
-            Err(e) => events.push(EngineEvent::Error { message: e }),
+            Err(e) => events.push(EngineEvent::Error { message: e.to_string() }),
         }
         events
     }
@@ -1389,7 +1389,7 @@ impl Engine {
                 self.process_events_into(&mut events);
             }
             Err(e) => {
-                events.push(EngineEvent::Error { message: e });
+                events.push(EngineEvent::Error { message: e.to_string() });
             }
         }
         events
@@ -1408,7 +1408,7 @@ impl Engine {
     pub fn delete_continue(&mut self) -> Vec<EngineEvent> {
         let mut events = Vec::new();
         if let Err(e) = self.saves.delete_continue() {
-            events.push(EngineEvent::Error { message: e });
+            events.push(EngineEvent::Error { message: e.to_string() });
         }
         events
     }
@@ -1432,7 +1432,7 @@ impl Engine {
             self.scene_snapshot(),
         ) {
             Ok(_) => events.push(EngineEvent::Saved { slot: usize::MAX - 2 }),
-            Err(e) => events.push(EngineEvent::Error { message: e }),
+            Err(e) => events.push(EngineEvent::Error { message: e.to_string() }),
         }
         events
     }
@@ -1479,7 +1479,7 @@ impl Engine {
                 events.push(EngineEvent::Loaded { slot: usize::MAX - 2 });
             }
             Err(e) => {
-                events.push(EngineEvent::Error { message: e });
+                events.push(EngineEvent::Error { message: e.to_string() });
             }
         }
         events

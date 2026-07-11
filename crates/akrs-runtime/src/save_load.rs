@@ -63,6 +63,39 @@ pub struct SceneSnapshot {
     pub music: Option<String>,
 }
 
+/// 存档系统错误。
+///
+/// 用 `thiserror` 派生 `Error`/`Display`，替代原先散落各处的 `Result<_, String>`。
+/// 各 IO/序列化变体用 `map_err(VariantConstructor)` 显式构造，以保留 read/write/delete
+/// 等不同语义上下文（同一源类型 `io::Error`/`serde_json::Error` 出现在多个变体中，
+/// 故不全部使用 `#[from]`）。
+#[derive(Debug, thiserror::Error)]
+pub enum SaveError {
+    /// 槽位编号越界。
+    #[error("slot {slot} out of range (max {max})")]
+    SlotOutOfRange {
+        /// 越界的槽位号。
+        slot: usize,
+        /// 最大槽位数。
+        max: usize,
+    },
+    /// 序列化存档失败（serde_json 错误）。
+    #[error("failed to serialize save: {0}")]
+    Serialize(serde_json::Error),
+    /// 读取存档文件失败（IO 错误）。
+    #[error("failed to read save file: {0}")]
+    Read(std::io::Error),
+    /// 写入存档文件失败（IO 错误）。
+    #[error("failed to write save file: {0}")]
+    Write(std::io::Error),
+    /// 解析存档 JSON 失败。
+    #[error("failed to parse save file: {0}")]
+    Parse(serde_json::Error),
+    /// 删除存档文件失败（IO 错误）。
+    #[error("failed to delete save: {0}")]
+    Delete(std::io::Error),
+}
+
 /// Special slot number recorded in the autosave's metadata.
 ///
 /// This value is intentionally outside the range `0..max_slots` so the
@@ -98,9 +131,9 @@ impl SaveManager {
         play_time_secs: u64,
         description: &str,
         scene: Option<SceneSnapshot>,
-    ) -> Result<SaveMetadata, String> {
+    ) -> Result<SaveMetadata, SaveError> {
         if slot >= self.max_slots {
-            return Err(format!("slot {} out of range (max {})", slot, self.max_slots));
+            return Err(SaveError::SlotOutOfRange { slot, max: self.max_slots });
         }
 
         let timestamp = SystemTime::now()
@@ -128,27 +161,23 @@ impl SaveManager {
             scene,
         };
 
-        let json = serde_json::to_string_pretty(&save)
-            .map_err(|e| format!("failed to serialize save: {}", e))?;
+        let json = serde_json::to_string_pretty(&save).map_err(SaveError::Serialize)?;
 
-        std::fs::write(self.slot_path(slot), json)
-            .map_err(|e| format!("failed to write save file: {}", e))?;
+        std::fs::write(self.slot_path(slot), json).map_err(SaveError::Write)?;
 
         Ok(metadata)
     }
 
     /// Load a save slot.
-    pub fn load(&self, slot: usize) -> Result<SaveSlot, String> {
+    pub fn load(&self, slot: usize) -> Result<SaveSlot, SaveError> {
         if slot >= self.max_slots {
-            return Err(format!("slot {} out of range (max {})", slot, self.max_slots));
+            return Err(SaveError::SlotOutOfRange { slot, max: self.max_slots });
         }
 
         let path = self.slot_path(slot);
-        let content = std::fs::read_to_string(&path)
-            .map_err(|e| format!("failed to read save file: {}", e))?;
+        let content = std::fs::read_to_string(&path).map_err(SaveError::Read)?;
 
-        let save: SaveSlot = serde_json::from_str(&content)
-            .map_err(|e| format!("failed to parse save file: {}", e))?;
+        let save: SaveSlot = serde_json::from_str(&content).map_err(SaveError::Parse)?;
 
         Ok(save)
     }
@@ -159,11 +188,10 @@ impl SaveManager {
     }
 
     /// Delete a save slot.
-    pub fn delete(&self, slot: usize) -> Result<(), String> {
+    pub fn delete(&self, slot: usize) -> Result<(), SaveError> {
         let path = self.slot_path(slot);
         if path.exists() {
-            std::fs::remove_file(&path)
-                .map_err(|e| format!("failed to delete save: {}", e))?;
+            std::fs::remove_file(&path).map_err(SaveError::Delete)?;
         }
         Ok(())
     }
@@ -210,13 +238,11 @@ impl SaveManager {
     ///
     /// 保留存档原有的 `metadata` / `vm_state` / `settings` 不变，只补 `scene`。
     /// 写入失败仅返回 `Err`，不影响读档流程（读档方会忽略升级失败）。
-    pub fn upgrade_scene(&self, slot: usize, scene: SceneSnapshot) -> Result<(), String> {
+    pub fn upgrade_scene(&self, slot: usize, scene: SceneSnapshot) -> Result<(), SaveError> {
         let mut save = self.load(slot)?;
         save.scene = Some(scene);
-        let json = serde_json::to_string_pretty(&save)
-            .map_err(|e| format!("failed to serialize upgraded save: {}", e))?;
-        std::fs::write(self.slot_path(slot), json)
-            .map_err(|e| format!("failed to write upgraded save: {}", e))?;
+        let json = serde_json::to_string_pretty(&save).map_err(SaveError::Serialize)?;
+        std::fs::write(self.slot_path(slot), json).map_err(SaveError::Write)?;
         Ok(())
     }
 
@@ -235,18 +261,14 @@ impl SaveManager {
     /// 读取整份存档、修改 metadata.note 后回写。空字符串会转为 `None`，
     /// 这样序列化时不会写出 `note` 字段（与默认无备注的存档一致）。
     /// 槽位不存在时返回错误。
-    pub fn set_note(&self, slot: usize, note: &str) -> Result<(), String> {
+    pub fn set_note(&self, slot: usize, note: &str) -> Result<(), SaveError> {
         let path = self.slot_path(slot);
-        let content = std::fs::read_to_string(&path)
-            .map_err(|e| format!("failed to read save for set_note: {}", e))?;
-        let mut save: SaveSlot = serde_json::from_str(&content)
-            .map_err(|e| format!("failed to parse save for set_note: {}", e))?;
+        let content = std::fs::read_to_string(&path).map_err(SaveError::Read)?;
+        let mut save: SaveSlot = serde_json::from_str(&content).map_err(SaveError::Parse)?;
         let trimmed = note.trim();
         save.metadata.note = if trimmed.is_empty() { None } else { Some(trimmed.to_string()) };
-        let json = serde_json::to_string_pretty(&save)
-            .map_err(|e| format!("failed to serialize save for set_note: {}", e))?;
-        std::fs::write(&path, json)
-            .map_err(|e| format!("failed to write save for set_note: {}", e))?;
+        let json = serde_json::to_string_pretty(&save).map_err(SaveError::Serialize)?;
+        std::fs::write(&path, json).map_err(SaveError::Write)?;
         Ok(())
     }
 
@@ -271,7 +293,7 @@ impl SaveManager {
         play_time_secs: u64,
         description: &str,
         scene: Option<SceneSnapshot>,
-    ) -> Result<SaveMetadata, String> {
+    ) -> Result<SaveMetadata, SaveError> {
         let timestamp = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .map(|d| d.as_secs())
@@ -297,23 +319,19 @@ impl SaveManager {
             scene,
         };
 
-        let json = serde_json::to_string_pretty(&save)
-            .map_err(|e| format!("failed to serialize autosave: {}", e))?;
+        let json = serde_json::to_string_pretty(&save).map_err(SaveError::Serialize)?;
 
-        std::fs::write(self.autosave_path(), json)
-            .map_err(|e| format!("failed to write autosave file: {}", e))?;
+        std::fs::write(self.autosave_path(), json).map_err(SaveError::Write)?;
 
         Ok(metadata)
     }
 
     /// Load the autosave slot.
-    pub fn load_autosave(&self) -> Result<SaveSlot, String> {
+    pub fn load_autosave(&self) -> Result<SaveSlot, SaveError> {
         let path = self.autosave_path();
-        let content = std::fs::read_to_string(&path)
-            .map_err(|e| format!("failed to read autosave file: {}", e))?;
+        let content = std::fs::read_to_string(&path).map_err(SaveError::Read)?;
 
-        let save: SaveSlot = serde_json::from_str(&content)
-            .map_err(|e| format!("failed to parse autosave file: {}", e))?;
+        let save: SaveSlot = serde_json::from_str(&content).map_err(SaveError::Parse)?;
 
         Ok(save)
     }
@@ -326,11 +344,10 @@ impl SaveManager {
     /// Delete the autosave (called on a clean exit or after it has been loaded).
     ///
     /// Succeeds (no-op) when no autosave is present.
-    pub fn delete_autosave(&self) -> Result<(), String> {
+    pub fn delete_autosave(&self) -> Result<(), SaveError> {
         let path = self.autosave_path();
         if path.exists() {
-            std::fs::remove_file(&path)
-                .map_err(|e| format!("failed to delete autosave: {}", e))?;
+            std::fs::remove_file(&path).map_err(SaveError::Delete)?;
         }
         Ok(())
     }
@@ -353,7 +370,7 @@ impl SaveManager {
         play_time_secs: u64,
         description: &str,
         scene: Option<SceneSnapshot>,
-    ) -> Result<SaveMetadata, String> {
+    ) -> Result<SaveMetadata, SaveError> {
         let timestamp = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .map(|d| d.as_secs())
@@ -382,23 +399,19 @@ impl SaveManager {
             scene,
         };
 
-        let json = serde_json::to_string_pretty(&save)
-            .map_err(|e| format!("failed to serialize continue save: {}", e))?;
+        let json = serde_json::to_string_pretty(&save).map_err(SaveError::Serialize)?;
 
-        std::fs::write(self.continue_path(), json)
-            .map_err(|e| format!("failed to write continue save file: {}", e))?;
+        std::fs::write(self.continue_path(), json).map_err(SaveError::Write)?;
 
         Ok(metadata)
     }
 
     /// Load the continue save.
-    pub fn load_continue(&self) -> Result<SaveSlot, String> {
+    pub fn load_continue(&self) -> Result<SaveSlot, SaveError> {
         let path = self.continue_path();
-        let content = std::fs::read_to_string(&path)
-            .map_err(|e| format!("failed to read continue save file: {}", e))?;
+        let content = std::fs::read_to_string(&path).map_err(SaveError::Read)?;
 
-        let save: SaveSlot = serde_json::from_str(&content)
-            .map_err(|e| format!("failed to parse continue save file: {}", e))?;
+        let save: SaveSlot = serde_json::from_str(&content).map_err(SaveError::Parse)?;
 
         Ok(save)
     }
@@ -409,11 +422,10 @@ impl SaveManager {
     }
 
     /// Delete the continue save (可选择性删除).
-    pub fn delete_continue(&self) -> Result<(), String> {
+    pub fn delete_continue(&self) -> Result<(), SaveError> {
         let path = self.continue_path();
         if path.exists() {
-            std::fs::remove_file(&path)
-                .map_err(|e| format!("failed to delete continue save: {}", e))?;
+            std::fs::remove_file(&path).map_err(SaveError::Delete)?;
         }
         Ok(())
     }
@@ -441,7 +453,7 @@ impl SaveManager {
         play_time_secs: u64,
         description: &str,
         scene: Option<SceneSnapshot>,
-    ) -> Result<SaveMetadata, String> {
+    ) -> Result<SaveMetadata, SaveError> {
         const QUICKSAVE_SLOT_MARKER: usize = usize::MAX - 2;
 
         let timestamp = SystemTime::now()
@@ -469,23 +481,19 @@ impl SaveManager {
             scene,
         };
 
-        let json = serde_json::to_string_pretty(&save)
-            .map_err(|e| format!("failed to serialize quick-save: {}", e))?;
+        let json = serde_json::to_string_pretty(&save).map_err(SaveError::Serialize)?;
 
-        std::fs::write(self.quicksave_path(), json)
-            .map_err(|e| format!("failed to write quick-save file: {}", e))?;
+        std::fs::write(self.quicksave_path(), json).map_err(SaveError::Write)?;
 
         Ok(metadata)
     }
 
     /// Load the quick-save slot.
-    pub fn load_quicksave(&self) -> Result<SaveSlot, String> {
+    pub fn load_quicksave(&self) -> Result<SaveSlot, SaveError> {
         let path = self.quicksave_path();
-        let content = std::fs::read_to_string(&path)
-            .map_err(|e| format!("failed to read quick-save file: {}", e))?;
+        let content = std::fs::read_to_string(&path).map_err(SaveError::Read)?;
 
-        let save: SaveSlot = serde_json::from_str(&content)
-            .map_err(|e| format!("failed to parse quick-save file: {}", e))?;
+        let save: SaveSlot = serde_json::from_str(&content).map_err(SaveError::Parse)?;
 
         Ok(save)
     }
@@ -498,11 +506,10 @@ impl SaveManager {
     /// Delete the quick-save (e.g., after it has been loaded, or on demand).
     ///
     /// Succeeds (no-op) when no quick-save is present.
-    pub fn delete_quicksave(&self) -> Result<(), String> {
+    pub fn delete_quicksave(&self) -> Result<(), SaveError> {
         let path = self.quicksave_path();
         if path.exists() {
-            std::fs::remove_file(&path)
-                .map_err(|e| format!("failed to delete quick-save: {}", e))?;
+            std::fs::remove_file(&path).map_err(SaveError::Delete)?;
         }
         Ok(())
     }

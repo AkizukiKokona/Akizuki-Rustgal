@@ -117,11 +117,11 @@ impl Translator {
     pub fn from_file(path: &Path) -> Self {
         match std::fs::read_to_string(path) {
             Ok(content) => Self::from_json_str(&content).unwrap_or_else(|e| {
-                eprintln!("[Translator] 解析翻译文件 {:?} 失败：{}", path, e);
+                log::warn!("[Translator] 解析翻译文件 {:?} 失败：{}", path, e);
                 Self::default()
             }),
             Err(e) => {
-                eprintln!("[Translator] 读取翻译文件 {:?} 失败：{}", path, e);
+                log::warn!("[Translator] 读取翻译文件 {:?} 失败：{}", path, e);
                 Self::default()
             }
         }

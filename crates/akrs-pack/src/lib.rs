@@ -55,41 +55,26 @@ pub struct PackResult {
 }
 
 /// Errors that can occur during packaging.
-#[derive(Debug)]
+#[derive(Debug, thiserror::Error)]
 pub enum PackError {
     /// The binary file doesn't exist.
+    #[error("Binary not found: {0}")]
     BinaryNotFound(PathBuf),
     /// The assets directory doesn't exist.
+    #[error("Assets directory not found: {0}")]
     AssetsDirNotFound(PathBuf),
     /// An I/O error occurred.
-    IoError(io::Error),
+    #[error("I/O error: {0}")]
+    IoError(#[from] io::Error),
     /// Failed to create output directory.
-    OutputDirCreationFailed(PathBuf, io::Error),
-}
-
-impl std::fmt::Display for PackError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            PackError::BinaryNotFound(p) => {
-                write!(f, "Binary not found: {}", p.display())
-            }
-            PackError::AssetsDirNotFound(p) => {
-                write!(f, "Assets directory not found: {}", p.display())
-            }
-            PackError::IoError(e) => write!(f, "I/O error: {}", e),
-            PackError::OutputDirCreationFailed(p, e) => {
-                write!(f, "Failed to create output directory {}: {}", p.display(), e)
-            }
-        }
-    }
-}
-
-impl std::error::Error for PackError {}
-
-impl From<io::Error> for PackError {
-    fn from(e: io::Error) -> Self {
-        PackError::IoError(e)
-    }
+    #[error("Failed to create output directory {path}: {source}")]
+    OutputDirCreationFailed {
+        /// 创建失败的输出目录路径。
+        path: PathBuf,
+        /// 底层 IO 错误。
+        #[source]
+        source: io::Error,
+    },
 }
 
 /// Detect the current platform.
@@ -192,7 +177,10 @@ pub fn pack(config: &PackConfig) -> Result<PackResult, PackError> {
 
     // Create output directory
     fs::create_dir_all(&config.output_dir).map_err(|e| {
-        PackError::OutputDirCreationFailed(config.output_dir.clone(), e)
+        PackError::OutputDirCreationFailed {
+            path: config.output_dir.clone(),
+            source: e,
+        }
     })?;
 
     // Copy binary
@@ -421,7 +409,6 @@ fn print_help() {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::assert_matches;
     use std::io::Write;
 
     #[test]
@@ -504,7 +491,7 @@ mod tests {
         };
 
         let result = pack(&config);
-        assert_matches!(result, Err(PackError::BinaryNotFound(_)));
+        assert!(matches!(result, Err(PackError::BinaryNotFound(_))));
     }
 
     #[test]

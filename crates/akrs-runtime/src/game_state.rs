@@ -268,7 +268,7 @@ impl SceneState {
         }
         let after: Vec<String> = self.characters.iter()
             .map(|c| format!("{}({:?})", c.name, c.pose)).collect();
-        eprintln!(
+        log::debug!(
             "[akrs-debug] character_enter_with: name={:?} pose={:?} | before=[{}] after=[{}]",
             log_name, log_pose, before.join(", "), after.join(", ")
         );
@@ -310,7 +310,7 @@ impl SceneState {
         let before_len = self.characters.len();
         self.characters.retain(|c| c.name != name);
         if self.characters.len() == before_len {
-            eprintln!(
+            log::warn!(
                 "[akrs] 警告：尝试让角色「{}」下场，但该角色不在场上（当前在场：{:?}）。\n\
                  这通常是因为入场（+）与下场（-）的名字不一致——请检查剧本中\n\
                  立绘入场是否误把资源名当成了角色名（正确写法：+ 角色名 (立绘资源名)）。",
@@ -321,7 +321,7 @@ impl SceneState {
         self.auto_layout();
         let after: Vec<String> = self.characters.iter()
             .map(|c| format!("{}({:?})", c.name, c.pose)).collect();
-        eprintln!(
+        log::debug!(
             "[akrs-debug] character_exit: name={:?} | before=[{}] after=[{}]",
             name, before.join(", "), after.join(", ")
         );

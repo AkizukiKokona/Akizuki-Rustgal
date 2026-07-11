@@ -18,6 +18,9 @@ iced = { workspace = true, features = ["image", "smol", "advanced"] }
 iced_aw = { version = "0.10", default-features = false, features = ["card", "tabs"] }
 # 用于在编辑器中解码 PNG 立绘以供预览（不启动游戏进程）。
 image = { version = "0.24", default-features = false, features = ["png"] }
+# log + env_logger：编辑器入口初始化统一日志。
+log = { workspace = true }
+env_logger = { workspace = true }
 
 [build-dependencies]
 winres = "0.1"

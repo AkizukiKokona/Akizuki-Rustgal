@@ -1,6 +1,19 @@
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 
+/// 项目配置持久化错误。
+///
+/// 用 `thiserror` 派生 `Error`/`Display`，替代原先的 `Result<(), String>`。
+#[derive(Debug, thiserror::Error)]
+pub enum ProjectError {
+    /// 序列化 project.json 失败（serde_json 错误）。
+    #[error("序列化失败：{0}")]
+    Serialize(serde_json::Error),
+    /// 写入 project.json 失败（IO 错误）。
+    #[error("写入失败：{0}")]
+    Write(std::io::Error),
+}
+
 /// 项目配置：存储游戏项目的所有个性化设置，
 /// 包括标题、作者、窗口设置、默认语言、版本号等。
 ///
@@ -146,12 +159,10 @@ impl ProjectConfig {
     }
 
     /// 保存到项目目录下的 project.json。
-    pub fn save(&self, project_dir: &Path) -> Result<(), String> {
+    pub fn save(&self, project_dir: &Path) -> Result<(), ProjectError> {
         let path = project_dir.join("project.json");
-        let content = serde_json::to_string_pretty(self)
-            .map_err(|e| format!("序列化失败：{}", e))?;
-        std::fs::write(&path, content)
-            .map_err(|e| format!("写入失败：{}", e))?;
+        let content = serde_json::to_string_pretty(self).map_err(ProjectError::Serialize)?;
+        std::fs::write(&path, content).map_err(ProjectError::Write)?;
         Ok(())
     }
 

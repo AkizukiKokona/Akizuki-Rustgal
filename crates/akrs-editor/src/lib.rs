@@ -3845,6 +3845,9 @@ impl EditorApp {
 
 /// 启动 GUI 编辑器应用。
 pub fn run_editor() -> Result<(), Box<dyn std::error::Error>> {
+    // 初始化统一日志：默认 warn+，设 RUST_LOG=debug 可看调试日志。
+    let _ = env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("warn")).try_init();
+
     let icon = load_icon();
 
     let mut window = iced::window::Settings::default();

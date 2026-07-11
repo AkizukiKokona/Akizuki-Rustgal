@@ -309,7 +309,7 @@ impl TransitionManager {
     ) {
         let before: Vec<String> = scene.characters.iter()
             .map(|c| format!("{}({:?})", c.name, c.pose)).collect();
-        eprintln!(
+        log::debug!(
             "[akrs-debug] transition.apply_changes START | scene before=[{}] | enter={:?} exit={:?} bg={:?}",
             before.join(", "),
             chars_enter.iter().map(|(n, p, _, _)| format!("{}({:?})", n, p)).collect::<Vec<_>>(),
@@ -341,7 +341,7 @@ impl TransitionManager {
 
         let after: Vec<String> = scene.characters.iter()
             .map(|c| format!("{}({:?})", c.name, c.pose)).collect();
-        eprintln!(
+        log::debug!(
             "[akrs-debug] transition.apply_changes END | scene after=[{}]",
             after.join(", ")
         );

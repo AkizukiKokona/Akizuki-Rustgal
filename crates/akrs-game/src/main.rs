@@ -85,6 +85,9 @@ fn load_script_and_config() -> (String, ProjectConfig, PathBuf) {
 }
 
 fn main() {
+    // 初始化统一日志：默认 warn+，设 RUST_LOG=debug 可看调试日志。
+    let _ = env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("warn")).try_init();
+
     // Install a panic hook so that if the game crashes the console window
     // stays open long enough for the player to read the error message.
     std::panic::set_hook(Box::new(|panic_info| {

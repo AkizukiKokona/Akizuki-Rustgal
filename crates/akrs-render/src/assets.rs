@@ -89,7 +89,7 @@ impl AssetManager {
             if std::path::Path::new(&with_png).exists() {
                 with_png
             } else {
-                eprintln!("[Warning] Missing resource: {} (expected at {} or {}.png)", name, path_str, path_str);
+                log::warn!("[Warning] Missing resource: {} (expected at {} or {}.png)", name, path_str, path_str);
                 self.cache.insert(key, None);
                 return None;
             }
@@ -105,7 +105,7 @@ impl AssetManager {
                 Some(texture)
             }
             Err(e) => {
-                eprintln!("[Warning] Failed to load texture '{}': {}", final_path, e);
+                log::warn!("[Warning] Failed to load texture '{}': {}", final_path, e);
                 self.cache.insert(key, None);
                 None
             }
@@ -127,7 +127,7 @@ impl AssetManager {
     fn check_audio_exists(&self, kind: AssetKind, name: &str) -> bool {
         let path = self.resolve_path(kind, name);
         if !path.exists() {
-            eprintln!(
+            log::warn!(
                 "[Warning] Missing {kind:?}: {name} (expected at {path})",
                 path = path.to_string_lossy()
             );
@@ -164,7 +164,7 @@ impl AssetManager {
         let path = match self.resolve_audio_path(kind, name) {
             Some(p) => p,
             None => {
-                eprintln!(
+                log::warn!(
                     "[Warning] Missing {kind:?}: {name} (looked in assets/{subdir}/{name}[.mp3/.wav/.ogg/.flac])",
                     subdir = kind.subdir()
                 );
@@ -176,18 +176,27 @@ impl AssetManager {
         let path_str = path.to_string_lossy().to_string();
         // BGM 流式播放（不全量驻留内存）；SE/语音整段驻留以便快速触发。
         // 各自带 SoundKind，使 play_sound 能路由到对应 track、settings 的三个音量字段
-        // 能独立生效。
+        // 能独立生效。audio 模块返回 AudioError，此处统一转 String 以保持本函数
+        // 既有的 `Result<Sound, String>` 内部链。
         let result: Result<Sound, String> = match kind {
-            AssetKind::Music => audio::load_streaming_sound(&path, audio::SoundKind::Bgm),
+            AssetKind::Music => {
+                audio::load_streaming_sound(&path, audio::SoundKind::Bgm).map_err(|e| e.to_string())
+            }
             AssetKind::Voice => std::fs::read(&path)
                 .map_err(|e| e.to_string())
-                .and_then(|b| audio::load_sound_kind_from_bytes(&b, audio::SoundKind::Voice)),
+                .and_then(|b| {
+                    audio::load_sound_kind_from_bytes(&b, audio::SoundKind::Voice)
+                        .map_err(|e| e.to_string())
+                }),
             _ => {
                 // AssetKind::Sound 走 SE；Bg/Character/Title 不会经 get_sound，
                 // 兜底按 SE 处理。
                 std::fs::read(&path)
                     .map_err(|e| e.to_string())
-                    .and_then(|b| audio::load_sound_kind_from_bytes(&b, audio::SoundKind::Se))
+                    .and_then(|b| {
+                        audio::load_sound_kind_from_bytes(&b, audio::SoundKind::Se)
+                            .map_err(|e| e.to_string())
+                    })
             }
         };
         match result {
@@ -196,7 +205,7 @@ impl AssetManager {
                 Some(sound)
             }
             Err(e) => {
-                eprintln!("[Warning] Failed to load sound '{}': {}", path_str, e);
+                log::warn!("[Warning] Failed to load sound '{}': {}", path_str, e);
                 self.sound_cache.insert(key, None);
                 None
             }

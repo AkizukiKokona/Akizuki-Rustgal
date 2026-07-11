@@ -31,6 +31,12 @@ akrs-pack = { path = "crates/akrs-pack" }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 codespan-reporting = "0.12"
+# thiserror：统一错误类型派生（#[derive(Error)] + #[error] + #[from]）。
+thiserror = "1"
+# log + env_logger：统一日志门面与初始化。env_logger 默认 warn+，
+# 设 RUST_LOG=debug 可看调试日志。
+log = "0.4"
+env_logger = "0.11"
 notify = "6"
 notify-debouncer-mini = "0.4"
 syn = { version = "2", features = ["full", "extra-traits"] }

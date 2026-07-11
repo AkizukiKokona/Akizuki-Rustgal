@@ -186,6 +186,9 @@ struct Backend {
     queue: wgpu::Queue,
     format: wgpu::TextureFormat,
     pipeline: wgpu::RenderPipeline,
+    /// 过渡合成管线：与主管线共享 bind group layout / 顶点布局，仅片元着色器不同
+    /// （`fs_transition`，按 uniform params 选择 slide/dissolve/blur 效果）。
+    transition_pipeline: wgpu::RenderPipeline,
     bind_group_layout: wgpu::BindGroupLayout,
     uniform_buffer: wgpu::Buffer,
     sampler: wgpu::Sampler,
@@ -196,12 +199,24 @@ struct Backend {
     vertex_capacity: u64,
     /// 每帧的绘制命令队列。
     draw_cmds: Vec<DrawCmd>,
+    /// 过渡绘制命令队列（用 transition_pipeline 渲染，与 draw_cmds 共享 vertex buffer）。
+    transition_cmds: Vec<DrawCmd>,
     vertices: Vec<Vertex>,
     /// 纹理 id → bind group 缓存。
     bind_groups: HashMap<u64, wgpu::BindGroup>,
     next_tex_id: u64,
     /// 清屏色（由 `clear_background` 设置）。
     clear_color: wgpu::Color,
+    /// 过渡 uniform 参数 (progress, mode, dir_x, dir_y)，写入 uniform_buffer 的后 16 字节。
+    transition_params: [f32; 4],
+    /// 离屏渲染目标（场景先画到它，再 copy 到 surface；同时作为过渡合成的目标）。
+    offscreen_texture: Option<wgpu::Texture>,
+    offscreen_view: Option<wgpu::TextureView>,
+    offscreen_size: wgpu::Extent3d,
+    /// 过渡期间保存的「旧场景」纹理（Out 阶段每帧 copy offscreen 到它；In 阶段读取做效果）。
+    transition_old_frame: Option<SavedFrame>,
+    /// 本帧是否要把 offscreen 内容捕获到 transition_old_frame（由 renderer 在 Out 阶段置位）。
+    capture_old_frame_requested: bool,
     // —— 输入状态 ——
     logical_size: (f32, f32),
     scale_factor: f32,
@@ -235,7 +250,9 @@ thread_local! {
 }
 
 const SHADER: &str = r#"
-struct Uniforms { size: vec4<f32>; };
+// uniform buffer 32 字节：前 16 为屏幕逻辑尺寸（主管线 vs 用），
+// 后 16 为过渡参数（过渡管线 fs_transition 用）。主管线只读前 16。
+struct Uniforms { size: vec4<f32>; params: vec4<f32>; };
 @group(0) @binding(0) var<uniform> u: Uniforms;
 @group(0) @binding(1) var tex: texture_2d<f32>;
 @group(0) @binding(2) var samp: sampler;
@@ -256,6 +273,57 @@ fn vs(in: VsIn) -> VsOut {
 @fragment
 fn fs(in: VsOut) -> @location(0) vec4<f32> {
     return textureSample(tex, samp, in.uv) * in.color;
+}
+
+// 过渡片元着色器：把「旧场景纹理」按 progress/mode 合成到当前帧之上。
+// u.params = (progress, mode, dir_x, dir_y)。mode:
+//   0 = slide  （直接采样纹理；偏移已由顶点位置体现）
+//   1 = dissolve（hash > progress 处保留旧场景，其余 discard 露出下层新场景）
+//   2 = blur   （5×5 box blur 采样旧场景，用于模糊过渡）
+//   3 = dissolve_to_color（hash < progress 处保留，其余 discard；用于 Out 阶段把旧场景「溶解到黑」）
+@fragment
+fn fs_transition(in: VsOut) -> @location(0) vec4<f32> {
+    let mode = u.params.y;
+    let progress = clamp(u.params.x, 0.0, 1.0);
+    let texel = vec2<f32>(1.0 / max(u.size.x, 1.0), 1.0 / max(u.size.y, 1.0));
+
+    if (mode < 0.5) {
+        // slide：纯纹理（顶点位置已含偏移）。
+        return textureSample(tex, samp, in.uv) * in.color;
+    } else if (mode < 1.5) {
+        // dissolve：保留 hash > progress 的像素（In 阶段旧场景逐渐消失）。
+        let col = textureSample(tex, samp, in.uv) * in.color;
+        let h = hash_noise(in.uv);
+        if (h <= progress) {
+            discard;
+        }
+        return col;
+    } else if (mode < 2.5) {
+        // blur：5×5 box blur。
+        var sum = vec4<f32>(0.0);
+        let r = 3.0;
+        for (var dy = -2; dy <= 2; dy = dy + 1) {
+            for (var dx = -2; dx <= 2; dx = dx + 1) {
+                let off = vec2<f32>(f32(dx), f32(dy)) * texel * r;
+                sum = sum + textureSampleLevel(tex, samp, in.uv + off, 0.0);
+            }
+        }
+        return (sum / 25.0) * in.color;
+    } else {
+        // dissolve_to_color：保留 hash < progress 的像素（Out 阶段黑色逐渐覆盖）。
+        let col = textureSample(tex, samp, in.uv) * in.color;
+        let h = hash_noise(in.uv);
+        if (h >= progress) {
+            discard;
+        }
+        return col;
+    }
+}
+
+// 廉价的 per-pixel 哈希噪声，用于 dissolve 阈值。
+fn hash_noise(p: vec2<f32>) -> f32 {
+    let v = dot(p, vec2<f32>(12.9898, 78.233));
+    return fract(sin(v) * 43758.5453);
 }
 "#;
 

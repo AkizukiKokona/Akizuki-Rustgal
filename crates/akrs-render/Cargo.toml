@@ -17,6 +17,9 @@ bytemuck = { workspace = true }
 kira = { workspace = true }
 # 文本后端（任务2 内置重做）：cosmic-text（harfbuzz + swash）。
 cosmic-text = { workspace = true }
+# thiserror：AudioError 派生；log：统一日志门面。
+thiserror = { workspace = true }
+log = { workspace = true }
 
 # Windows 平台专用：用于真实显示器尺寸检测、窗口居中、控制台分配。
 # 仅在编译 Windows 目标时引入，其他平台无此依赖。

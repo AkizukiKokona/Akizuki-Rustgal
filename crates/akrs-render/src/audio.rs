@@ -69,6 +69,24 @@ pub struct PlaySoundParams {
 /// BGM 交叉淡入淡出的默认时长。
 pub const BGM_CROSSFADE_DURATION: Duration = Duration::from_millis(1000);
 
+/// 音频加载错误。
+///
+/// 用 `thiserror` 派生 `Error`/`Display`，替代原先散落各处的 `Result<_, String>`。
+#[derive(Debug, thiserror::Error)]
+pub enum AudioError {
+    /// 从字节解码音频数据失败（mp3/wav/ogg/flac 解码或格式识别错误）。
+    #[error("failed to decode audio data: {0}")]
+    Decode(String),
+    /// 打开流式音频文件失败（文件不存在、权限不足或解码探测失败）。
+    #[error("failed to open streaming audio {path}: {message}")]
+    Streaming {
+        /// 流式音频文件路径。
+        path: PathBuf,
+        /// 底层错误描述。
+        message: String,
+    },
+}
+
 // ─── 内部状态 ───────────────────────────────────────────────────────────────
 
 /// 三条独立音轨的句柄。
@@ -123,7 +141,7 @@ pub fn init_audio() {
         {
             Ok(m) => Some(m),
             Err(e) => {
-                eprintln!("[audio] AudioManager 初始化失败（将禁用音频输出）：{}", e);
+                log::warn!("[audio] AudioManager 初始化失败（将禁用音频输出）：{}", e);
                 None
             }
         };
@@ -135,7 +153,7 @@ pub fn init_audio() {
             Some(TrackRoutes { bgm, se, voice })
         });
         if tracks.is_none() && manager.is_some() {
-            eprintln!("[audio] 子轨创建失败（将禁用音频输出）");
+            log::warn!("[audio] 子轨创建失败（将禁用音频输出）");
         }
         *a.borrow_mut() = Some(AudioState {
             manager,
@@ -189,18 +207,19 @@ fn set_track_volume_inner(st: &mut AudioState, kind: SoundKind, volume: f32) {
 // ─── 公共 API ───────────────────────────────────────────────────────────────
 
 /// 从字节同步加载音频（mp3/wav/ogg/flac 自动识别），默认归类为 [`SoundKind::Se`]。
-/// 失败返回错误字符串。即使无音频设备也可调用（仅缓存解码数据）。
+/// 失败返回 [`AudioError`]。即使无音频设备也可调用（仅缓存解码数据）。
 ///
 /// 保留以兼容 macroquad 同名 API；如需指定类型（如语音），用 [`load_sound_kind_from_bytes`]。
-pub fn load_sound_from_bytes(bytes: &[u8]) -> Result<Sound, String> {
+pub fn load_sound_from_bytes(bytes: &[u8]) -> Result<Sound, AudioError> {
     load_sound_kind_from_bytes(bytes, SoundKind::Se)
 }
 
 /// 从字节同步加载音频并指定声音类型（决定路由到的 track）。
 /// 用于 SE / 语音等整段驻留的短/中长度声音。BGM 请用 [`load_streaming_sound`]。
-pub fn load_sound_kind_from_bytes(bytes: &[u8], kind: SoundKind) -> Result<Sound, String> {
+pub fn load_sound_kind_from_bytes(bytes: &[u8], kind: SoundKind) -> Result<Sound, AudioError> {
     init_audio();
-    let data = StaticSoundData::from_cursor(Cursor::new(bytes.to_vec())).map_err(|e| e.to_string())?;
+    let data = StaticSoundData::from_cursor(Cursor::new(bytes.to_vec()))
+        .map_err(|e| AudioError::Decode(e.to_string()))?;
     AUDIO.with(|a| {
         let mut g = a.borrow_mut();
         let st = g.as_mut().expect("audio backend not initialized");
@@ -225,11 +244,14 @@ pub fn load_sound_kind_from_bytes(bytes: &[u8], kind: SoundKind) -> Result<Sound
 pub fn load_streaming_sound(
     path: impl AsRef<std::path::Path>,
     kind: SoundKind,
-) -> Result<Sound, String> {
+) -> Result<Sound, AudioError> {
     init_audio();
     let path = path.as_ref().to_path_buf();
     // 预探测：确保文件存在且可被 symphonia 解析，错误尽早暴露（与静态加载语义一致）。
-    StreamingSoundData::from_file(&path).map_err(|e| format!("{}: {}", path.display(), e))?;
+    StreamingSoundData::from_file(&path).map_err(|e| AudioError::Streaming {
+        path: path.clone(),
+        message: e.to_string(),
+    })?;
     AUDIO.with(|a| {
         let mut g = a.borrow_mut();
         let st = g.as_mut().expect("audio backend not initialized");
@@ -281,7 +303,7 @@ pub fn play_sound(sound: Sound, params: PlaySoundParams) {
                 }
                 match track.play(d) {
                     Ok(h) => stored.current = Some(CurrentHandle::Static(h)),
-                    Err(e) => eprintln!("[audio] 播放失败：{}", e),
+                    Err(e) => log::warn!("[audio] 播放失败：{}", e),
                 }
             }
             SoundDataKind::Streaming(path) => {
@@ -289,7 +311,7 @@ pub fn play_sound(sound: Sound, params: PlaySoundParams) {
                 let mut d = match StreamingSoundData::from_file(&path) {
                     Ok(d) => d,
                     Err(e) => {
-                        eprintln!("[audio] 流式打开失败 {}: {}", path.display(), e);
+                        log::warn!("[audio] 流式打开失败 {}: {}", path.display(), e);
                         return;
                     }
                 };
@@ -302,7 +324,7 @@ pub fn play_sound(sound: Sound, params: PlaySoundParams) {
                 }
                 match track.play(d) {
                     Ok(h) => stored.current = Some(CurrentHandle::Streaming(h)),
-                    Err(e) => eprintln!("[audio] 播放失败：{}", e),
+                    Err(e) => log::warn!("[audio] 播放失败：{}", e),
                 }
             }
         }
