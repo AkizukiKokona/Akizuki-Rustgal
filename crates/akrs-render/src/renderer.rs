@@ -1088,6 +1088,11 @@ fn print_gpu_warning(engine: &Engine) {
 /// }
 /// ```
 pub fn run(mut engine: Engine, project_config: &ProjectConfig) {
+    // Windows：在创建任何窗口前设置进程级 AppUserModelID，使任务栏使用
+    // with_window_icon 设置的自定义图标而非 Windows 默认软件图标。
+    // 必须在创建窗口/事件循环前调用（MSDN 要求在呈现任何 UI 前设置）。
+    crate::platform::set_app_user_model_id();
+
     // 创建 winit 事件循环 + 窗口 + wgpu surface。
     let conf = window_conf();
     let mut event_loop = winit::event_loop::EventLoop::new()
@@ -1299,17 +1304,10 @@ pub fn run(mut engine: Engine, project_config: &ProjectConfig) {
         crate::wgpu_backend::begin_frame();
         crate::wgpu_backend::pump_events(&mut event_loop, Some(std::time::Duration::ZERO));
 
-        // 窗口尺寸变化时重新配置 wgpu surface。
-        let cur_size = (
-            window.inner_size().width,
-            window.inner_size().height,
-        );
-        if cur_size != last_surface_size {
-            crate::wgpu_backend::reconfigure_surface(&surface, cur_size.0, cur_size.1);
-            last_surface_size = cur_size;
-        }
-
         // 应用待处理的窗口控制请求（全屏切换 / 尺寸调整）。
+        // 必须在 surface reconfigure 之前执行：request_inner_size 会改变窗口
+        // 实际尺寸，紧接其后的 reconfigure 才能用「新尺寸」配置 surface，
+        // 避免本帧 render_frame 用旧 surface 渲染到新窗口导致白屏 + 底部黑边。
         if let Some(fs) = crate::wgpu_backend::take_pending_fullscreen() {
             if fs {
                 window.set_fullscreen(Some(winit::window::Fullscreen::Borderless(None)));
@@ -1319,6 +1317,17 @@ pub fn run(mut engine: Engine, project_config: &ProjectConfig) {
         }
         if let Some((lw, lh)) = crate::wgpu_backend::take_pending_resize() {
             let _ = window.request_inner_size(winit::dpi::LogicalSize::new(lw, lh));
+        }
+
+        // 窗口尺寸变化时重新配置 wgpu surface。
+        // 放在 request_inner_size 之后，确保本帧渲染前 surface 与窗口尺寸一致。
+        let cur_size = (
+            window.inner_size().width,
+            window.inner_size().height,
+        );
+        if cur_size != last_surface_size || crate::wgpu_backend::take_surface_dirty() {
+            crate::wgpu_backend::reconfigure_surface(&surface, cur_size.0, cur_size.1);
+            last_surface_size = cur_size;
         }
 
         let dt = get_frame_time();

@@ -19,6 +19,14 @@
 #[allow(dead_code)]
 pub const WINDOW_TITLE: &str = "Akizuki*Rustgal";
 
+/// AppUserModelID：Windows 任务栏用它把进程/窗口归到一个应用按钮下。
+/// winit 的 `with_window_icon` 只设置窗口栏图标；不设显式 AppUserModelID 时，
+/// Windows 任务栏会用启发式猜测应用身份，常回退为默认软件图标。
+/// 在创建任何窗口前调用 `SetCurrentProcessExplicitAppUserModelID` 显式声明身份，
+/// 使任务栏使用窗口图标而非默认图标。该值需与启动快捷方式的 AppUserModelID 一致。
+#[allow(dead_code)]
+pub const APP_USER_MODEL_ID: &str = "Akizuki.Rustgal";
+
 /// 获取主显示器的物理像素尺寸（尽力而为）。
 ///
 /// 返回的是显示器自身的分辨率，与窗口大小、DPI 缩放无关。
@@ -87,6 +95,21 @@ pub fn try_alloc_console() -> bool {
     }
 }
 
+/// 显式设置当前进程的 AppUserModelID（仅 Windows 有效）。
+///
+/// 必须在创建任何窗口前调用（`run()` 开头即调用一次）。设置后 Windows
+/// 任务栏据此识别应用身份，配合 `with_window_icon` 使任务栏显示自定义图标，
+/// 而非默认软件图标。非 Windows 平台为空操作。
+pub fn set_app_user_model_id() {
+    #[cfg(target_os = "windows")]
+    {
+        windows_set_app_user_model_id()
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+    }
+}
+
 /// 弹出平台错误消息框显示 panic 信息。
 ///
 /// `windows_subsystem = "windows"` 下无控制台，`println!` 不可见，
@@ -109,6 +132,7 @@ pub fn show_panic_messagebox(text: &str, caption: &str) {
 mod windows_impl {
     use windows_sys::Win32::Foundation::HWND;
     use windows_sys::Win32::System::Console::{AllocConsole, GetConsoleWindow};
+    use windows_sys::Win32::UI::Shell::SetCurrentProcessExplicitAppUserModelID;
     use windows_sys::Win32::UI::WindowsAndMessaging::{
         FindWindowW, GetSystemMetrics, MessageBoxW, SetWindowPos, HWND_TOP, MB_ICONERROR,
         MB_OK, SM_CXSCREEN, SM_CYSCREEN, SWP_NOACTIVATE, SWP_NOSIZE, SWP_NOZORDER,
@@ -172,6 +196,20 @@ mod windows_impl {
         }
     }
 
+    /// 调用 `SetCurrentProcessExplicitAppUserModelID` 设置进程级 AppUserModelID。
+    /// 必须在创建任何窗口前调用。失败时静默放弃（不影响后续窗口创建）。
+    pub fn set_app_user_model_id() {
+        // 编码为以 0 结尾的 UTF-16 wide string（PCWSTR 要求）。
+        let app_id: Vec<u16> = super::APP_USER_MODEL_ID
+            .encode_utf16()
+            .chain(std::iter::once(0))
+            .collect();
+        unsafe {
+            // 返回 HRESULT；S_OK (0) 表示成功，失败时忽略。
+            let _ = SetCurrentProcessExplicitAppUserModelID(app_id.as_ptr());
+        }
+    }
+
     /// 弹出一个 Windows 消息框显示错误信息（用于 panic hook）。
     ///
     /// `windows_subsystem = "windows"` 下无控制台，`println!` 不可见，
@@ -193,7 +231,8 @@ mod windows_impl {
 #[cfg(target_os = "windows")]
 use windows_impl::{
     alloc_console as windows_alloc_console, center_window as windows_center_window,
-    screen_size as windows_screen_size, show_error_message_box as windows_show_error_message_box,
+    screen_size as windows_screen_size, set_app_user_model_id as windows_set_app_user_model_id,
+    show_error_message_box as windows_show_error_message_box,
 };
 
 // ─── macOS 实现（CoreGraphics FFI） ─────────────────────────────────────────

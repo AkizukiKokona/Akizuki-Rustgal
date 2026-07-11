@@ -227,6 +227,11 @@ struct Backend {
     // —— 窗口控制请求（由 set_fullscreen / request_new_screen_size 写入）——
     pending_fullscreen: Option<bool>,
     pending_resize: Option<(f32, f32)>,
+    // —— surface 失效标志 ——
+    // render_frame 取不到当前纹理（Lost/Outdated/Timeout）时置 true，
+    // 由 run() 消费并强制 reconfigure_surface，避免尺寸未变但 surface
+    // 丢失时永久白屏。
+    surface_dirty: bool,
     // —— 帧计时 ——
     last_instant: Instant,
     frame_time: f32,
@@ -420,6 +425,7 @@ impl Backend {
             start_time: Instant::now(),
             pending_fullscreen: None,
             pending_resize: None,
+            surface_dirty: false,
             last_instant: now,
             frame_time: 0.0,
         }
@@ -537,8 +543,14 @@ impl Backend {
 
         let frame = match surface.get_current_texture() {
             Ok(f) => f,
+            // 显存不足：无法恢复，直接放弃本帧。
             Err(wgpu::SurfaceError::OutOfMemory) => return,
-            Err(_) => return,
+            // Lost/Outdated/Timeout：surface 与窗口尺寸不匹配或被系统回收，
+            // 标记 dirty 让 run() 下一帧强制 reconfigure，否则会永久白屏。
+            Err(_) => {
+                self.surface_dirty = true;
+                return;
+            }
         };
         let view = frame
             .texture
@@ -754,6 +766,20 @@ pub fn take_pending_fullscreen() -> Option<bool> {
 }
 pub fn take_pending_resize() -> Option<(f32, f32)> {
     BACKEND.with(|b| b.borrow_mut().as_mut()?.pending_resize.take())
+}
+/// 取出并清除 surface 失效标志（render_frame 取纹理失败时置位）。
+/// run() 据此在尺寸未变但 surface 丢失时强制 reconfigure。
+pub fn take_surface_dirty() -> bool {
+    BACKEND.with(|b| {
+        let mut g = b.borrow_mut();
+        if let Some(be) = g.as_mut() {
+            let dirty = be.surface_dirty;
+            be.surface_dirty = false;
+            dirty
+        } else {
+            false
+        }
+    })
 }
 
 // ─── 事件处理（pump_events 回调） ─────────────────────────────────────────────
@@ -1281,9 +1307,20 @@ pub fn pump_events(
     event_loop: &mut winit::event_loop::EventLoop<()>,
     timeout: Option<Duration>,
 ) -> PumpStatus {
-    event_loop.pump_events(timeout, |event, _elwt| {
+    let status = event_loop.pump_events(timeout, |event, _elwt| {
         handle_event(event);
-    })
+    });
+    // 若事件循环被请求退出（如回调内调用 elwt.exit()），同步置 quit_requested，
+    // 让 run() 现有的「保存 + process::exit」退出路径接管，避免退出请求被忽略
+    // 导致窗口无法关闭。本程序通常不主动调用 elwt.exit()，此处为安全兜底。
+    if let PumpStatus::Exit(_) = status {
+        BACKEND.with(|b| {
+            if let Some(be) = b.borrow_mut().as_mut() {
+                be.quit_requested = true;
+            }
+        });
+    }
+    status
 }
 
 // ─── prelude：与 macroquad::prelude 同名的导出 ────────────────────────────────
