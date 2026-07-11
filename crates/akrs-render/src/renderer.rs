@@ -54,6 +54,42 @@ thread_local! {
     static GAME_THEME: std::cell::Cell<GameTheme> = std::cell::Cell::new(GameTheme::default());
 }
 
+// Dissolve/Blur 过渡用的 noise 纹理缓存（256×256 灰度随机）。
+// 首次调用时创建并缓存，后续直接返回克隆。Texture2D 内部是 Arc，克隆廉价。
+thread_local! {
+    static NOISE_TEXTURE: std::cell::RefCell<Option<Texture2D>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+/// 获取或创建 noise 纹理（256×256 灰度随机），用于 Dissolve/Blur 过渡的像素级效果。
+/// 纹理的 R=G=B=A=随机字节，绘制时用 tint(0,0,0,alpha) 调制，
+/// shader 输出 (0,0,0, noise*alpha)，实现按 noise 值分层的像素级溶解。
+fn get_noise_texture() -> Texture2D {
+    NOISE_TEXTURE.with(|t| {
+        let mut g = t.borrow_mut();
+        if let Some(tex) = g.as_ref() {
+            return tex.clone();
+        }
+        const SIZE: usize = 256;
+        let mut pixels = vec![0u8; SIZE * SIZE * 4];
+        // xorshift32 PRNG（无需外部依赖），固定种子保证每次启动 noise 图案一致。
+        let mut state: u32 = 0xDEADBEEFu32;
+        for chunk in pixels.chunks_mut(4) {
+            state ^= state << 13;
+            state ^= state >> 17;
+            state ^= state << 5;
+            let v = (state & 0xFF) as u8;
+            chunk[0] = v;
+            chunk[1] = v;
+            chunk[2] = v;
+            chunk[3] = v;
+        }
+        let tex = crate::wgpu_backend::create_texture(SIZE as u32, SIZE as u32, &pixels);
+        *g = Some(tex.clone());
+        tex
+    })
+}
+
 /// 读取当前主题色。
 fn theme() -> GameTheme {
     GAME_THEME.with(|t| t.get())
@@ -2424,14 +2460,49 @@ fn draw_title_screen(engine: &Engine, buttons: &mut Vec<ButtonRect>, sw: f32, sh
     }
 }
 
+/// 计算 Slide 过渡的场景偏移量 (offset_x, offset_y)。
+///
+/// - Out 阶段：旧场景向指定方向滑出屏幕（如 SlideLeft: x = -progress * sw）。
+/// - In 阶段：新场景从反方向滑入屏幕（如 SlideLeft: x = (1-progress) * sw）。
+///
+/// 其他过渡类型或 bg_crossfade 返回 (0,0)。偏移量应用到 draw_background
+/// 和 draw_characters 的所有坐标，实现真正的场景滑动而非黑矩形伪 Fade。
+fn compute_slide_offset(scene: &SceneState, sw: f32, sh: f32) -> (f32, f32) {
+    use akrs_core::Transition;
+    if let Some(overlay) = &scene.transition {
+        if overlay.bg_crossfade {
+            return (0.0, 0.0);
+        }
+        let p = overlay.progress;
+        match (overlay.kind, overlay.phase) {
+            (Transition::SlideLeft, TransitionPhase::Out) => (-p * sw, 0.0),
+            (Transition::SlideLeft, TransitionPhase::In) => ((1.0 - p) * sw, 0.0),
+            (Transition::SlideRight, TransitionPhase::Out) => (p * sw, 0.0),
+            (Transition::SlideRight, TransitionPhase::In) => (-(1.0 - p) * sw, 0.0),
+            (Transition::SlideUp, TransitionPhase::Out) => (0.0, -p * sh),
+            (Transition::SlideUp, TransitionPhase::In) => (0.0, (1.0 - p) * sh),
+            (Transition::SlideDown, TransitionPhase::Out) => (0.0, p * sh),
+            (Transition::SlideDown, TransitionPhase::In) => (0.0, -(1.0 - p) * sh),
+            _ => (0.0, 0.0),
+        }
+    } else {
+        (0.0, 0.0)
+    }
+}
+
 fn draw_scene(engine: &Engine, assets: &mut AssetManager, sw: f32, sh: f32, show_ui: bool, font: &Option<Font>, scale: f32) {
     let scene = engine.scene();
 
+    // 计算 Slide 过渡的场景偏移量（其他过渡返回 (0,0)）。
+    // Slide 效果通过偏移 draw_background/draw_characters 的所有坐标实现，
+    // 而非在 draw_transition 中画遮罩。空白区域由 clear_color=BLACK 自然填充。
+    let slide_offset = compute_slide_offset(scene, sw, sh);
+
     // Draw background
-    draw_background(scene, assets, sw, sh);
+    draw_background(scene, assets, sw, sh, slide_offset);
 
     // Draw characters
-    draw_characters(scene, assets, sw, sh, font, scale);
+    draw_characters(scene, assets, sw, sh, font, scale, slide_offset);
 
     // Draw transition overlay
     draw_transition(scene, sw, sh);
@@ -2525,9 +2596,10 @@ fn draw_chapter_toast(anim: &ChapterAnimation, sw: f32, sh: f32, font: &Option<F
     }
 }
 
-fn draw_background(scene: &SceneState, assets: &mut AssetManager, sw: f32, sh: f32) {
+fn draw_background(scene: &SceneState, assets: &mut AssetManager, sw: f32, sh: f32, slide_offset: (f32, f32)) {
     // 背景交叉淡入：当处于 bg_crossfade 过渡时，同时绘制旧背景（淡出）与新背景（淡入）。
     // 不画全屏遮罩，对话框等 UI 在背景之上正常绘制、不被遮挡。
+    // bg_crossfade 仅用于 Fade/Dissolve，slide_offset 此时为 (0,0)。
     if let Some(overlay) = &scene.transition {
         if overlay.bg_crossfade {
             // 合并进度 t（0→1）：Out 阶段 0→0.5，In 阶段 0.5→1.0。
@@ -2538,14 +2610,14 @@ fn draw_background(scene: &SceneState, assets: &mut AssetManager, sw: f32, sh: f
             };
             // 先画旧背景（淡出）。
             if let Some(prev) = &scene.prev_background {
-                draw_single_background(prev, assets, sw, sh, 1.0 - t);
+                draw_single_background(prev, assets, sw, sh, 1.0 - t, (0.0, 0.0));
             } else {
                 // 无旧背景：用黑底淡出。
                 draw_rectangle(0.0, 0.0, sw, sh, Color::new(0.0, 0.0, 0.0, 1.0 - t));
             }
             // 再画新背景（淡入）。
             if let Some(bg) = &scene.background {
-                draw_single_background(bg, assets, sw, sh, t);
+                draw_single_background(bg, assets, sw, sh, t, (0.0, 0.0));
             } else {
                 draw_rectangle(0.0, 0.0, sw, sh, Color::new(0.0, 0.0, 0.0, t));
             }
@@ -2553,9 +2625,9 @@ fn draw_background(scene: &SceneState, assets: &mut AssetManager, sw: f32, sh: f
         }
     }
 
-    // 普通模式：只画当前背景。
+    // 普通模式：只画当前背景（Slide 过渡时应用 slide_offset 偏移）。
     if let Some(bg) = &scene.background {
-        draw_single_background(bg, assets, sw, sh, bg.alpha);
+        draw_single_background(bg, assets, sw, sh, bg.alpha, slide_offset);
     } else {
         // Default: black background
         draw_rectangle(0.0, 0.0, sw, sh, BLACK);
@@ -2564,7 +2636,8 @@ fn draw_background(scene: &SceneState, assets: &mut AssetManager, sw: f32, sh: f
 
 /// 绘制单个背景图层（按 cover 模式缩放铺满屏幕），alpha 由调用方指定。
 /// 交叉淡入时分别以互补 alpha 调用两次绘制新旧背景。
-fn draw_single_background(bg: &BackgroundState, assets: &mut AssetManager, sw: f32, sh: f32, alpha: f32) {
+/// slide_offset 用于 Slide 过渡时偏移整个背景图层。
+fn draw_single_background(bg: &BackgroundState, assets: &mut AssetManager, sw: f32, sh: f32, alpha: f32, slide_offset: (f32, f32)) {
     if let Some(tex) = assets.get_texture(AssetKind::Bg, &bg.name) {
         // Draw texture scaled to screen
         let tex_w = tex.width();
@@ -2572,8 +2645,8 @@ fn draw_single_background(bg: &BackgroundState, assets: &mut AssetManager, sw: f
         let scale = (sw / tex_w).max(sh / tex_h);
         let draw_w = tex_w * scale;
         let draw_h = tex_h * scale;
-        let offset_x = (sw - draw_w) / 2.0 + bg.offset_x * sw;
-        let offset_y = (sh - draw_h) / 2.0 + bg.offset_y * sh;
+        let offset_x = (sw - draw_w) / 2.0 + bg.offset_x * sw + slide_offset.0;
+        let offset_y = (sh - draw_h) / 2.0 + bg.offset_y * sh + slide_offset.1;
         draw_texture_ex(
             tex.clone(),
             offset_x,
@@ -2587,7 +2660,7 @@ fn draw_single_background(bg: &BackgroundState, assets: &mut AssetManager, sw: f
     } else {
         // Placeholder: colored rectangle based on resource name hash
         let placeholder_color = name_to_color(&bg.name);
-        draw_rectangle(0.0, 0.0, sw, sh, Color::new(
+        draw_rectangle(slide_offset.0, slide_offset.1, sw, sh, Color::new(
             placeholder_color.0,
             placeholder_color.1,
             placeholder_color.2,
@@ -2596,7 +2669,7 @@ fn draw_single_background(bg: &BackgroundState, assets: &mut AssetManager, sw: f
     }
 }
 
-fn draw_characters(scene: &SceneState, assets: &mut AssetManager, sw: f32, sh: f32, font: &Option<Font>, scale: f32) {
+fn draw_characters(scene: &SceneState, assets: &mut AssetManager, sw: f32, sh: f32, font: &Option<Font>, scale: f32, slide_offset: (f32, f32)) {
     for char_state in &scene.characters {
         // 优先使用精确百分比位置（custom_x/custom_y）；否则回退到 position 字段。
         let x_frac = char_state.custom_x.unwrap_or_else(|| char_state.position.x_fraction());
@@ -2616,16 +2689,16 @@ fn draw_characters(scene: &SceneState, assets: &mut AssetManager, sw: f32, sh: f
             let scale_factor = (sh * 0.8) / tex_h;
             let draw_w = tex_w * scale_factor;
             let draw_h = tex_h * scale_factor;
-            // x：按 x_frac 百分比水平居中。
-            let x = sw * x_frac - draw_w / 2.0 + char_state.offset_x;
-            // y：按 y_frac 百分比定位立绘中心点。
+            // x：按 x_frac 百分比水平居中（+ Slide 过渡偏移）。
+            let x = sw * x_frac - draw_w / 2.0 + char_state.offset_x + slide_offset.0;
+            // y：按 y_frac 百分比定位立绘中心点（+ Slide 过渡偏移）。
             // 当 y_frac=1.0（底部）时，立绘底部贴齐屏幕底部（留 50px*scale 边距），
             // 与原有行为一致；y_frac<1.0 时立绘中心点对齐到屏幕 y_frac 位置。
-            let y = if (y_frac - 1.0).abs() < 0.001 {
+            let y = (if (y_frac - 1.0).abs() < 0.001 {
                 sh - draw_h - 50.0 * scale
             } else {
                 sh * y_frac - draw_h / 2.0
-            };
+            }) + slide_offset.1;
             draw_texture_ex(
                 tex.clone(),
                 x,
@@ -2641,12 +2714,12 @@ fn draw_characters(scene: &SceneState, assets: &mut AssetManager, sw: f32, sh: f
             let placeholder_color = name_to_color(&char_state.name);
             let char_w = 200.0 * scale * char_state.scale;
             let char_h = 400.0 * scale * char_state.scale;
-            let x = sw * x_frac - char_w / 2.0 + char_state.offset_x;
-            let y = if (y_frac - 1.0).abs() < 0.001 {
+            let x = sw * x_frac - char_w / 2.0 + char_state.offset_x + slide_offset.0;
+            let y = (if (y_frac - 1.0).abs() < 0.001 {
                 sh - char_h - 50.0 * scale
             } else {
                 sh * y_frac - char_h / 2.0
-            };
+            }) + slide_offset.1;
             draw_rectangle(
                 x, y, char_w, char_h,
                 Color::new(placeholder_color.0, placeholder_color.1, placeholder_color.2, char_state.alpha),
@@ -2830,43 +2903,44 @@ fn draw_transition(scene: &SceneState, sw: f32, sh: f32) {
             Transition::FadeWhite => {
                 draw_rectangle(0.0, 0.0, sw, sh, Color::new(1.0, 1.0, 1.0, base_alpha));
             }
-            // 滑动效果（简化为淡入淡出 + 方向性暗示）
-            // 由于 macroquad 不支持多 pass 渲染，无法实现真正的场景滑动，
-            // 这里用带有方向性偏移的遮罩模拟滑动感
-            Transition::SlideLeft => {
-                let offset = sw * base_alpha * 0.2;
-                draw_rectangle(0.0 + offset, 0.0, sw - offset, sh, Color::new(0.0, 0.0, 0.0, base_alpha));
+            // 滑动效果：场景偏移由 compute_slide_offset + draw_background/draw_characters
+            // 处理（真正的场景滑动）。draw_transition 中无需画遮罩，
+            // 滑动时空白区域由 clear_color=BLACK 自然填充为黑色。
+            Transition::SlideLeft | Transition::SlideRight
+            | Transition::SlideUp | Transition::SlideDown => {
+                // no-op：滑动效果已通过 slide_offset 实现
             }
-            Transition::SlideRight => {
-                let offset = sw * base_alpha * 0.2;
-                draw_rectangle(0.0, 0.0, sw - offset, sh, Color::new(0.0, 0.0, 0.0, base_alpha));
-            }
-            Transition::SlideUp => {
-                let offset = sh * base_alpha * 0.2;
-                draw_rectangle(0.0, 0.0 + offset, sw, sh - offset, Color::new(0.0, 0.0, 0.0, base_alpha));
-            }
-            Transition::SlideDown => {
-                let offset = sh * base_alpha * 0.2;
-                draw_rectangle(0.0, 0.0, sw, sh - offset, Color::new(0.0, 0.0, 0.0, base_alpha));
-            }
-            // 溶解效果（简化为淡入淡出，因为无法实现真正的交叉淡入）
+            // 溶解效果：用 noise 纹理做像素级 alpha mask。
+            // noise 纹理的 RGBA = (n,n,n,n)（n 为随机字节），绘制时 tint=(0,0,0,base_alpha)，
+            // shader 输出 (0,0,0, n*base_alpha)，经 ALPHA_BLENDING 后：
+            //   final = scene * (1 - n*base_alpha)
+            // 即 noise 值高的像素先变黑、noise 值低的像素后变黑，实现像素级溶解。
+            // 再叠加一个均匀黑矩形 (alpha=base_alpha) 确保 progress=1 时完全变黑：
+            //   final = scene * (1 - n*base_alpha) * (1 - base_alpha)
+            // Out 阶段：旧场景像素按 noise 值依次消失。
+            // In 阶段（base_alpha=1-progress）：新场景像素按 noise 值依次出现。
             Transition::Dissolve => {
-                // Dissolve 交叉淡入需要同时渲染新旧场景，
-                // macroquad 单 pass 架构无法实现，退化为 Fade
+                let noise = get_noise_texture();
+                draw_texture_ex(
+                    noise,
+                    0.0, 0.0,
+                    Color::new(0.0, 0.0, 0.0, base_alpha),
+                    DrawTextureParams {
+                        dest_size: Some(Vec2::new(sw, sh)),
+                        ..Default::default()
+                    },
+                );
                 draw_rectangle(0.0, 0.0, sw, sh, Color::new(0.0, 0.0, 0.0, base_alpha));
             }
-            // 擦除效果（从左/右边缘擦除）
+            // 擦除效果（从边缘扩展的纯黑矩形）
+            // WipeLeft：黑色从右边缘向左扩展（Out），从左向右收缩（In）。
+            // WipeRight：黑色从左边缘向右扩展（Out），从右向左收缩（In）。
             Transition::WipeLeft => {
-                // Out 阶段：黑色遮罩从右向左扩展
-                // In 阶段：黑色遮罩从左向右收缩
                 let wipe_x = match overlay.phase {
                     TransitionPhase::Out => sw * (1.0 - base_alpha),
                     TransitionPhase::In => 0.0,
                 };
-                let wipe_w = match overlay.phase {
-                    TransitionPhase::Out => sw * base_alpha,
-                    TransitionPhase::In => sw * base_alpha,
-                };
+                let wipe_w = sw * base_alpha;
                 draw_rectangle(wipe_x, 0.0, wipe_w, sh, Color::new(0.0, 0.0, 0.0, 1.0));
             }
             Transition::WipeRight => {
@@ -2874,14 +2948,25 @@ fn draw_transition(scene: &SceneState, sw: f32, sh: f32) {
                     TransitionPhase::Out => 0.0,
                     TransitionPhase::In => sw * (1.0 - base_alpha),
                 };
-                let wipe_w = match overlay.phase {
-                    TransitionPhase::Out => sw * base_alpha,
-                    TransitionPhase::In => sw * base_alpha,
-                };
+                let wipe_w = sw * base_alpha;
                 draw_rectangle(wipe_x, 0.0, wipe_w, sh, Color::new(0.0, 0.0, 0.0, 1.0));
             }
-            // 模糊效果（简化为淡入淡出，因为 macroquad 不支持模糊 shader）
+            // 模糊效果：真实高斯模糊需要 offscreen texture + 两 pass blur shader，
+            // 当前 wgpu 后端为单 pass 直接渲染到 surface 架构，暂未实现 offscreen。
+            // 退化为带 noise 纹理的 fade：在均匀 fade 之上叠加 35% 强度的 noise
+            // 叠层，模拟模糊的"颗粒感"质感，比纯 fade 更接近模糊视觉效果。
+            // 后续若实现 offscreen 渲染，可替换为真正的 box/gaussian blur。
             Transition::Blur => {
+                let noise = get_noise_texture();
+                draw_texture_ex(
+                    noise,
+                    0.0, 0.0,
+                    Color::new(0.0, 0.0, 0.0, base_alpha * 0.35),
+                    DrawTextureParams {
+                        dest_size: Some(Vec2::new(sw, sh)),
+                        ..Default::default()
+                    },
+                );
                 draw_rectangle(0.0, 0.0, sw, sh, Color::new(0.0, 0.0, 0.0, base_alpha));
             }
             // Instant 不需要绘制任何过渡效果
