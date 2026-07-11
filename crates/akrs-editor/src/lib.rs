@@ -1034,9 +1034,21 @@ impl EditorApp {
         }
     }
 
+    /// 返回项目根目录路径。
+    ///
+    /// 优先返回 `project_dir`（`open_project` 时记录的项目根）；
+    /// 若未加载项目则回退到 `work_dir`。
+    ///
+    /// 资源扫描、打包复制、翻译文件定位等**项目级路径**必须用此方法，
+    /// 而非直接用 `work_dir`——后者会被 `open_file_path` 覆盖为
+    /// 「打开文件的父目录」（如 `scripts/`），导致资源路径漂移。
+    fn project_root(&self) -> &Path {
+        self.project_dir.as_deref().unwrap_or(&self.work_dir)
+    }
+
     /// 翻译文件的路径（assets/scripts/languages/{lang}.json）。
     fn translation_file_path(&self, lang: &str) -> PathBuf {
-        self.work_dir.join("assets").join("scripts").join("languages").join(format!("{}.json", lang))
+        self.project_root().join("assets").join("scripts").join("languages").join(format!("{}.json", lang))
     }
 
     /// 加载指定语言的翻译文件；不存在则创建空的。
@@ -1210,7 +1222,7 @@ impl EditorApp {
         // 创建脚本快照，确保打包期间内容一致
         let snapshot_dir = self.build.output_dir.join("snapshot");
         let _ = std::fs::remove_dir_all(&snapshot_dir);
-        let scripts_src = self.work_dir.join("scripts");
+        let scripts_src = self.project_root().join("scripts");
         if scripts_src.exists() {
             let _ = std::fs::create_dir_all(&snapshot_dir);
             copy_dir_recursive(&scripts_src, &snapshot_dir);
@@ -1247,7 +1259,7 @@ impl EditorApp {
                         self.build.succeeded.push(platform);
 
                         // 收集构建产物到 output_dir
-                        let target_dir = self.work_dir.join(format!(
+                        let target_dir = self.project_root().join(format!(
                             "target/{}/release",
                             platform.target()
                         ));
@@ -1393,14 +1405,14 @@ impl EditorApp {
             .build
             .snapshot_dir
             .clone()
-            .unwrap_or_else(|| self.work_dir.join("scripts"));
+            .unwrap_or_else(|| self.project_root().join("scripts"));
         if scripts_src.exists() {
             let scripts_dst = output_dir.join("scripts");
             copy_dir_recursive(&scripts_src, &scripts_dst);
         }
 
         // 资源始终从项目目录复制（资源不在快照范围内）
-        let assets_src = self.work_dir.join("assets");
+        let assets_src = self.project_root().join("assets");
         if assets_src.exists() {
             let assets_dst = output_dir.join("assets");
             copy_dir_recursive(&assets_src, &assets_dst);
@@ -2017,7 +2029,7 @@ impl EditorApp {
         let ctx = ui.ctx().clone();
 
         // 扫描 assets/characters/ 目录（检测变更后重新扫描）。
-        let chars_dir = self.work_dir.join("assets").join("characters");
+        let chars_dir = self.project_root().join("assets").join("characters");
         if self.sprite_preview.scanned_dir.as_ref() != Some(&chars_dir) {
             self.sprite_preview.available.clear();
             if let Ok(entries) = std::fs::read_dir(&chars_dir) {
@@ -2246,7 +2258,7 @@ impl EditorApp {
         let ctx = ui.ctx().clone();
 
         // 扫描 assets/bg/ 目录（检测变更后重新扫描）
-        let bg_dir = self.work_dir.join("assets").join("bg");
+        let bg_dir = self.project_root().join("assets").join("bg");
         if self.bg_preview.scanned_dir.as_ref() != Some(&bg_dir) {
             self.bg_preview.available.clear();
             if let Ok(entries) = std::fs::read_dir(&bg_dir) {
@@ -2331,7 +2343,7 @@ impl EditorApp {
             let selected = self.bg_preview.selected.clone();
             let need_load = !self.bg_preview.textures.contains_key(&selected);
             if need_load {
-                let bg_dir = self.work_dir.join("assets").join("bg");
+                let bg_dir = self.project_root().join("assets").join("bg");
                 // 尝试 png, jpg, jpeg 扩展名
                 let extensions = ["png", "jpg", "jpeg"];
                 for ext in extensions {
@@ -2438,7 +2450,7 @@ impl EditorApp {
         let ctx = ui.ctx().clone();
 
         // 扫描 assets/music/ 目录（检测变更后重新扫描）
-        let music_dir = self.work_dir.join("assets").join("music");
+        let music_dir = self.project_root().join("assets").join("music");
         if self.music_preview.scanned_dir.as_ref() != Some(&music_dir) {
             self.music_preview.available.clear();
             if let Ok(entries) = std::fs::read_dir(&music_dir) {
@@ -2965,7 +2977,7 @@ impl eframe::App for EditorApp {
                     self.rpy_import_source = None;
                     // 默认保存到项目的 scripts 目录，或工作目录
                     if self.project_loaded {
-                        self.rpy_import_target = self.work_dir.join("scripts").join("imported.akrs");
+                        self.rpy_import_target = self.project_root().join("scripts").join("imported.akrs");
                     } else {
                         self.rpy_import_target = self.work_dir.join("imported.akrs");
                     }
@@ -3271,8 +3283,8 @@ impl eframe::App for EditorApp {
                     ui.horizontal(|ui| {
                         ui.text_edit_singleline(&mut self.rpy_import_target.display().to_string());
                         if ui.button("选择路径...").clicked() {
-                            // 简化：直接使用工作目录
-                            self.rpy_import_target = self.work_dir.join("scripts").join("imported.akrs");
+                            // 简化：直接使用项目根目录
+                            self.rpy_import_target = self.project_root().join("scripts").join("imported.akrs");
                         }
                     });
                     ui.label(egui::RichText::new("提示：默认保存到项目的 scripts 目录，或桌面").color(egui::Color32::GRAY));
@@ -3371,7 +3383,7 @@ impl eframe::App for EditorApp {
                             for entry in &entries {
                                 let is_selected = selected.as_ref().is_some_and(|s| s == &entry.name);
                                 let label = if entry.is_dir {
-                                    format!("📁  {}", entry.name)
+                                    format!("▸  {}", entry.name)
                                 } else {
                                     format!("📄  {}", entry.name)
                                 };
@@ -3489,7 +3501,7 @@ impl eframe::App for EditorApp {
                                 if !entry.is_dir {
                                     continue;
                                 }
-                                let label = format!("📁  {}", entry.name);
+                                let label = format!("▸  {}", entry.name);
                                 let resp = ui.selectable_label(false, label);
                                 if resp.clicked() {
                                     let new_dir = current_dir.join(&entry.name);
@@ -3802,7 +3814,7 @@ impl eframe::App for EditorApp {
                     ui.add_space(8.0);
 
                     ui.label(
-                        egui::RichText::new("⚠️ 警告")
+                        egui::RichText::new("⚠ 警告")
                             .size(20.0)
                             .color(egui::Color32::from_rgb(255, 200, 100)),
                     );
@@ -3932,7 +3944,7 @@ impl eframe::App for EditorApp {
                 let abs_path = if self.build.output_dir.is_absolute() {
                     self.build.output_dir.clone()
                 } else {
-                    self.work_dir.join(&self.build.output_dir)
+                    self.project_root().join(&self.build.output_dir)
                 };
                 open_path_in_file_manager(&abs_path);
             }
@@ -4063,7 +4075,7 @@ impl eframe::App for EditorApp {
                             ui.add_space(8.0);
 
                             ui.label(
-                                egui::RichText::new("⚠️ 系统未检测到 Rust/Cargo")
+                                egui::RichText::new("⚠ 系统未检测到 Rust/Cargo")
                                     .size(18.0)
                                     .color(egui::Color32::from_rgb(255, 180, 80)),
                             );
@@ -4135,7 +4147,7 @@ impl eframe::App for EditorApp {
                 .show(ctx, |ui| {
                     ui.add_space(8.0);
                     ui.label(
-                        egui::RichText::new("⚠️ 作者提示")
+                        egui::RichText::new("⚠ 作者提示")
                             .size(18.0)
                             .color(egui::Color32::from_rgb(255, 200, 100)),
                     );
@@ -4161,7 +4173,10 @@ impl eframe::App for EditorApp {
                 });
 
             if dismiss {
-                self.dismissed_warnings.dismiss(&self.work_dir);
+                // 用 project_dir 作为忽略键，而非 work_dir——后者会被 open_file_path
+                // 覆盖为 scripts/ 子目录，导致下次打开项目时 key 不匹配、警告重复弹出。
+                let key = self.project_dir.as_deref().unwrap_or(&self.work_dir);
+                self.dismissed_warnings.dismiss(key);
             }
             if close {
                 self.show_project_warning = false;
