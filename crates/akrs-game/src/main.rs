@@ -22,7 +22,8 @@ fn load_script_and_config() -> (String, ProjectConfig, PathBuf) {
     let args: Vec<String> = std::env::args().collect();
 
     let mut project_dir = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
-    let mut script_path = project_dir.join(DEFAULT_SCRIPT);
+    // 显式指定的剧本路径（--script），优先级最高，高于 project.json 的 main_script。
+    let mut explicit_script: Option<PathBuf> = None;
 
     // 解析命令行参数
     let mut i = 1;
@@ -35,8 +36,17 @@ fn load_script_and_config() -> (String, ProjectConfig, PathBuf) {
                     continue;
                 }
             }
+            "--script" | "-s" => {
+                // 显式剧本路径：编辑器预览时传入，确保运行的就是用户当前编辑的文件。
+                if i + 1 < args.len() {
+                    explicit_script = Some(PathBuf::from(&args[i + 1]));
+                    i += 2;
+                    continue;
+                }
+            }
             other => {
-                script_path = PathBuf::from(other);
+                // 兼容旧用法：裸位置参数当作剧本路径。
+                explicit_script = Some(PathBuf::from(other));
             }
         }
         i += 1;
@@ -45,14 +55,17 @@ fn load_script_and_config() -> (String, ProjectConfig, PathBuf) {
     // 加载项目配置
     let config = ProjectConfig::load(&project_dir);
 
-    // 如果没有指定脚本路径，使用项目配置中的主剧本
-    if args.len() <= 1 || (args.len() == 3 && (args[1] == "--project" || args[1] == "-p")) {
-        script_path = project_dir.join(&config.main_script);
-        // 如果主剧本不存在，尝试默认路径
-        if !script_path.exists() {
-            script_path = project_dir.join(DEFAULT_SCRIPT);
+    // 确定最终剧本路径，优先级：--script 显式参数 > project.json main_script > demo 回退
+    let script_path = if let Some(explicit) = explicit_script.clone() {
+        explicit
+    } else {
+        let candidate = project_dir.join(&config.main_script);
+        if candidate.exists() {
+            candidate
+        } else {
+            project_dir.join(DEFAULT_SCRIPT)
         }
-    }
+    };
 
     // 切换到项目目录，使资源路径正确解析
     let _ = std::env::set_current_dir(&project_dir);

@@ -300,6 +300,8 @@ pub struct EditorApp {
     rpy_import_warnings: Vec<String>,
     /// 是否显示项目警告弹窗（打开项目时若作者留有警告且未被本地忽略则置 true）。
     show_project_warning: bool,
+    /// 是否显示「请先保存再预览」提示弹窗（点预览时若当前文件未存档则置 true）。
+    show_save_reminder: bool,
     /// 本地「不再显示」的项目警告忽略列表（持久化到编辑器数据目录）。
     dismissed_warnings: DismissedWarnings,
 }
@@ -514,6 +516,7 @@ impl Default for EditorApp {
             rpy_import_target: PathBuf::new(),
             rpy_import_warnings: Vec::new(),
             show_project_warning: false,
+            show_save_reminder: false,
             dismissed_warnings,
         };
         app.refresh_file_list();
@@ -730,6 +733,16 @@ impl EditorApp {
                 self.file_name_input = name.clone();
                 self.status = format!("已保存 {}", name);
                 self.refresh_file_list();
+                // main_script 一致性检查：若保存的文件名与 project.json 的
+                // main_script 不一致，状态栏追加提示（非阻断）。
+                // 直接 `cargo run -p akrs-game`（不带 --script）会按 main_script
+                // 加载剧本，可能跑到别的文件而非用户当前编辑的文件。
+                if self.project_loaded && name != self.project_config.main_script {
+                    self.status.push_str(&format!(
+                        " ｜ 提示：当前文件不是 project.json 的 main_script（{}），直接启动游戏将运行 {}；编辑器预览不受影响",
+                        self.project_config.main_script, self.project_config.main_script
+                    ));
+                }
             }
             Err(e) => {
                 self.status = format!("保存失败：{} - {}", name, e);
@@ -1098,16 +1111,30 @@ impl EditorApp {
             return;
         }
 
-        // 先保存当前文件
-        if self.current_file.is_some() {
-            self.save_file();
+        // 未存档的新建文件无法预览：没有文件路径可传给游戏。
+        if self.current_file.is_none() {
+            self.show_save_reminder = true;
+            return;
         }
+
+        // 先保存当前文件，确保预览运行的是最新内容。
+        self.save_file();
+
+        // 把当前编辑的文件路径作为 --script 参数传给游戏，
+        // 确保运行的就是用户当前编辑的文件（而非 project.json 的 main_script 或 demo 回退）。
+        let script_path = match &self.current_file {
+            Some(p) => p.clone(),
+            None => return,
+        };
 
         match Command::new("cargo")
             .arg("run")
             .arg("--release")
             .arg("-p")
             .arg("akrs-game")
+            .arg("--")
+            .arg("--script")
+            .arg(&script_path)
             .current_dir(&self.work_dir)
             .stdout(Stdio::inherit())
             .stderr(Stdio::inherit())
@@ -1115,7 +1142,7 @@ impl EditorApp {
         {
             Ok(child) => {
                 self.game_process = Some(child);
-                self.status = "游戏预览已启动（独立窗口）".to_string();
+                self.status = format!("游戏预览已启动（{}）", script_path.display());
             }
             Err(e) => {
                 self.status = format!("启动预览失败: {}", e);
@@ -4124,6 +4151,30 @@ impl eframe::App for EditorApp {
             if close {
                 self.show_project_warning = false;
             }
+        }
+
+        // ---- 「请先保存再预览」提示弹窗 --------------------------------------
+        if self.show_save_reminder {
+            egui::Window::new("无法预览")
+                .collapsible(false)
+                .resizable(false)
+                .default_width(380.0)
+                .anchor(egui::Align2::CENTER_CENTER, egui::Vec2::ZERO)
+                .show(ctx, |ui| {
+                    ui.add_space(8.0);
+                    ui.label(
+                        egui::RichText::new("当前文件尚未保存到磁盘，无法预览。")
+                            .size(16.0),
+                    );
+                    ui.add_space(6.0);
+                    ui.label("请先按 Ctrl+S 保存文件（或用左栏文件名输入框命名后保存），再点击预览。");
+                    ui.add_space(12.0);
+                    ui.horizontal(|ui| {
+                        if ui.button("知道了").clicked() {
+                            self.show_save_reminder = false;
+                        }
+                    });
+                });
         }
     }
 }

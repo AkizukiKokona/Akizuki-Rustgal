@@ -6,7 +6,7 @@
 
 [![License](https://img.shields.io/badge/license-MIT-blue.svg)](#许可证)
 [![Rust](https://img.shields.io/badge/rust-1.96+-orange.svg)](https://www.rust-lang.org)
-[![Version](https://img.shields.io/badge/version-1.0.66-success.svg)](#)
+[![Version](https://img.shields.io/badge/version-1.0.67-success.svg)](#)
 [![Platform](https://img.shields.io/badge/platform-Windows%20%7C%20Linux%20%7C%20macOS-lightgrey.svg)](#下载与安装)
 [![PRs Welcome](https://img.shields.io/badge/PRs-welcome-brightgreen.svg)](#贡献)
 
@@ -117,6 +117,7 @@ Akizuki\*Rustgal 是一个从零开始、**100% 纯 Rust** 实现的视觉小说
 - **快读按钮禁用态** — 无快存时 HUD「快读」按钮变为灰色低透明态且点击无操作（不再误触回标题），避免玩家在无快存情况下点快读导致意外退出游戏。
 - **项目警告提示** — 项目可在 `project.json` 的 `warning` 字段（编辑器「项目设置」内可编辑）留一段作者提示文字（彩蛋/版权声明等）。用编辑器打开本项目时自动弹出小窗显示该文字，玩家可点「确定」仅本次关闭，或点「不再显示」永久忽略（仅本地生效，存于编辑器数据目录 `dismissed_warnings.json`，按项目规范化路径记录，不随项目分发）。本仓库 demo 即带一条版权声明作为示例。
 - **弹窗防截断** — 编辑器中内容较多的弹出窗口（项目设置 / 快捷键帮助 / Cargo 安装引导 / 项目警告）内容统一包入竖向滚动区，窗口高度受限不超过主窗口，内容超出时在窗内滚动而非被截断；项目设置窗口改为可缩放。彻底解决小窗口下表单底部按钮被顶出可视区的问题。
+- **预览精确运行当前剧本** — 编辑器点「预览游戏」时把当前编辑的文件路径以 `--script` 参数显式传给游戏，确保预览运行的就是用户当前编辑的剧本，而非 `project.json` 的 `main_script` 或内置 demo 回退（修复了「保存后预览却打开内置 demo」的问题）。游戏入口 `akrs-game` 新增 `--script`/`-s` 参数，剧本加载优先级为 `--script` 显式参数 > `project.json` main_script > `scripts/demo.akrs` 回退。未保存到磁盘的新建文件点预览时弹「请先保存再预览」提示；保存时若文件名与 main_script 不一致，状态栏追加非阻断提示。
 
 ## 快速开始
 
@@ -271,7 +272,9 @@ akrs-game      游戏启动器：读取剧本并启动图形界面
 
 ### 游戏预览
 
-点击工具栏「预览游戏」按钮，编辑器会自动保存当前脚本并通过 `cargo run --release -p akrs-game` 启动独立游戏窗口。预览窗口与编辑器互不阻塞，可一边编辑一边预览。子进程的标准输出/错误直接透传到终端，便于调试崩溃和日志。
+点击工具栏「预览游戏」按钮，编辑器会自动保存当前脚本并通过 `cargo run --release -p akrs-game -- --script <当前文件路径>` 启动独立游戏窗口。预览窗口与编辑器互不阻塞，可一边编辑一边预览。子进程的标准输出/错误直接透传到终端，便于调试崩溃和日志。
+
+预览时编辑器会把当前编辑的文件路径作为 `--script` 参数显式传给游戏，确保运行的就是用户当前编辑的剧本（而非 `project.json` 的 `main_script` 或内置 demo 回退）。若当前文件尚未保存到磁盘（新建未命名文件），点预览会弹出「请先保存再预览」提示而非启动游戏。此外，保存文件时若文件名与 `project.json` 的 `main_script` 不一致，状态栏会追加非阻断提示，提醒直接 `cargo run` 启动游戏会跑到别的文件。
 
 ### 三端打包
 
