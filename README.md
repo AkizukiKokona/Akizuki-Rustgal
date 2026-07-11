@@ -5,7 +5,7 @@
 **纯 Rust 打造的视觉小说引擎 — 编译时检查、自定义 DSL、跨平台运行**
 
 [![License](https://img.shields.io/badge/license-MIT-blue.svg)](#许可证)
-[![Rust](https://img.shields.io/badge/rust-1.96+-orange.svg)](https://www.rust-lang.org)
+[![Rust](https://img.shields.io/badge/rust-1.92+-orange.svg)](https://www.rust-lang.org)
 [![Version](https://img.shields.io/badge/version-1.0.63-success.svg)](#)
 [![Platform](https://img.shields.io/badge/platform-Windows%20%7C%20Linux%20%7C%20macOS-lightgrey.svg)](#下载与安装)
 [![PRs Not Recommended](https://img.shields.io/badge/PRs-not%20recommended-yellow.svg)](#贡献)
@@ -21,7 +21,7 @@
 对比 Ren'Py（Python 运行时）、KiriKiri/KAG（TJS 解释器）等主流视觉小说引擎，Akizuki\*Rustgal 凭借纯 Rust + 自定义 DSL 实现了以下独有能力：
 
 - **编译时剧本纠错** — 未定义跳转、重复节名、缺失资源、舞台角色超限在 `cargo build` 阶段即报错，无需运行即可发现（Ren'Py / KiriKiri 均为运行时检查）
-- **内置可视化编辑器** — egui 驱动的 GUI 编辑器：语法高亮 + 立绘/背景/音乐实时预览 + 便携查找替换插入，告别纯文本编辑（Ren'Py 仅 Launcher 文本编辑，KiriKiri 依赖外部编辑器）
+- **内置可视化编辑器** — iced 驱动的 GUI 编辑器：语法高亮 + 立绘/背景/音乐实时预览 + 便携查找替换插入，告别纯文本编辑（Ren'Py 仅 Launcher 文本编辑，KiriKiri 依赖外部编辑器）
 - **对照翻译模式** — 编辑器内原文-译文并排，原文只读、译文实时写入；翻译文件以原文为 key，仅改动的行需重译（Ren'Py 用哈希 ID 翻译块，与脚本结构耦合）
 - **过程宏编译期嵌入** — `.akrs` 脚本通过过程宏在编译时嵌入 Rust 代码，类型检查延伸至剧本层（其他引擎均为运行时解析）
 - **满血 Rust 零运行时** — 无 Python、无 TJS、无 GC 停顿，单二进制分发，帧率稳定可预测
@@ -34,7 +34,7 @@
 Compared to Ren'Py (Python runtime) and KiriKiri/KAG (TJS interpreter), Akizuki\*Rustgal leverages pure Rust plus a custom DSL to deliver capabilities no other VN engine offers:
 
 - **Compile-time script checking** — Undefined jumps, duplicate section names, missing assets, and stage character overflow are caught at `cargo build` time, before the game ever runs (Ren'Py and KiriKiri only detect these at runtime)
-- **Built-in visual editor** — An egui-powered GUI editor with syntax highlighting, live sprite/background/music preview, and find-and-replace insertion — no more plain-text editing (Ren'Py ships only a launcher text editor; KiriKiri relies on external editors)
+- **Built-in visual editor** — An iced-powered GUI editor with syntax highlighting, live sprite/background/music preview, and find-and-replace insertion — no more plain-text editing (Ren'Py ships only a launcher text editor; KiriKiri relies on external editors)
 - **Side-by-side translation mode** — The editor shows original and translation columns; the original is read-only and the translation writes back live. Translation files key on the original text, so only edited lines need retranslation (Ren'Py uses hash-ID translate blocks coupled to script structure)
 - **Compile-time script embedding via proc macros** — `.akrs` scripts are embedded into Rust code at compile time via procedural macros, extending type checking into the script layer (other engines parse scripts at runtime)
 - **Full Rust, zero runtime** — No Python, no TJS, no GC pauses; a single binary ships with stable, predictable frame rates
@@ -49,7 +49,7 @@ Compared to Ren'Py (Python runtime) and KiriKiri/KAG (TJS interpreter), Akizuki\
 Ren'Py（Python ランタイム）や KiriKiri/KAG（TJS インタプリタ）などの主要ノベルエンジンと比較し、Akizuki\*Rustgal は純 Rust + カスタム DSL により他にない機能を実現しています：
 
 - **コンパイル時スクリプト検査** — 未定義ジャンプ、重複セクション名、欠落アセット、ステージキャラ超過は `cargo build` 段階で検出され、実行せずに問題を発見（Ren'Py / KiriKiri は実行時検査のみ）
-- **内蔵ビジュアルエディタ** — egui 駆動の GUI エディタ。シンタックスハイライト + 立絵/背景/音楽のライブプレビュー + 検索置換挿入。プレーンテキスト編集から解放（Ren'Py はランチャーのテキストエディタのみ、KiriKiri は外部エディタ依存）
+- **内蔵ビジュアルエディタ** — iced 駆動の GUI エディタ。シンタックスハイライト + 立絵/背景/音楽のライブプレビュー + 検索置換挿入。プレーンテキスト編集から解放（Ren'Py はランチャーのテキストエディタのみ、KiriKiri は外部エディタ依存）
 - **対照翻訳モード** — エディタ内で原文-訳文を並列表示。原文は読み取り専用、訳文はリアルタイム反映。翻訳ファイルは原文をキーとするため、変更した行のみ再翻訳（Ren'Py はハッシュ ID 翻訳ブロックでスクリプト構造と結合）
 - **プロシージャルマクロによるコンパイル時埋め込み** — `.akrs` スクリプトはプロシージャルマクロでコンパイル時に Rust コードへ埋め込まれ、型検査がスクリプト層まで及ぶ（他エンジンは実行時解析）
 - **完全 Rust・ランタイムゼロ** — Python なし、TJS なし、GC 停止なし。シングルバイナリで配布、安定した予測可能なフレームレート
@@ -64,7 +64,7 @@ Ren'Py（Python ランタイム）や KiriKiri/KAG（TJS インタプリタ）�
 相較於 Ren'Py（Python 執行時期）與 KiriKiri/KAG（TJS 直譯器）等主流視覺小說引擎，Akizuki\*Rustgal 藉由純 Rust + 自訂 DSL 實現了以下獨有能力：
 
 - **編譯時劇本檢查** — 未定義跳轉、重複章節名、缺失資源、舞台角色超限在 `cargo build` 階段即報錯，無需執行即可發現（Ren'Py / KiriKiri 皆為執行時期檢查）
-- **內建視覺化編輯器** — egui 驅動的 GUI 編輯器：語法高亮 + 立繪/背景/音樂即時預覽 + 查找取代插入，告別純文字編輯（Ren'Py 僅 Launcher 文字編輯器，KiriKiri 依賴外部編輯器）
+- **內建視覺化編輯器** — iced 驅動的 GUI 編輯器：語法高亮 + 立繪/背景/音樂即時預覽 + 查找取代插入，告別純文字編輯（Ren'Py 僅 Launcher 文字編輯器，KiriKiri 依賴外部編輯器）
 - **對照翻譯模式** — 編輯器內原文-譯文並排，原文唯讀、譯文即時寫入；翻譯檔案以原文為鍵，僅改動的行需重譯（Ren'Py 使用雜湊 ID 翻譯區塊，與腳本結構耦合）
 - **過程巨集編譯期嵌入** — `.akrs` 腳本透過過程巨集在編譯時嵌入 Rust 程式碼，型別檢查延伸至劇本層（其他引擎皆為執行時期解析）
 - **滿血 Rust 零執行時期** — 無 Python、無 TJS、無 GC 停頓，單一二進位散布，幀率穩定可預測
@@ -95,7 +95,7 @@ Akizuki\*Rustgal 是一个从零开始、**100% 纯 Rust** 实现的视觉小说
 - **UI 页面切换动画** — 标题 / 设置 / 存档 / 读档等页面切换均带 0.5 秒淡入淡出过渡（淡出 + 淡入合计 0.5 秒）；设置内标签页切换为即时切换不加过渡；确认对话框、备注编辑等模态弹窗带 0.2 秒内容淡入，避免瞬间弹出
 - **多分辨率自适应** — 所有立绘位置使用百分比坐标（0.0–1.0），在 1080p / 1440p / 4K 下布局比例一致
 - **高 DPI 适配** — 启用 `high_dpi` 渲染模式，UI 缩放按逻辑像素计算，在 125% / 150% / 200% 等 DPI 倍率下控件不再溢出堆叠，高 DPI 屏幕文字自动更清晰
-- **可视化编辑器** — 基于 egui 的剧本编辑器，支持语法高亮、立绘预览、实时调参
+- **可视化编辑器** — 基于 iced 的剧本编辑器，支持语法高亮、立绘预览、实时调参
 - **存档系统** — 多槽位存档/读档，支持崩溃恢复；快速存档使用独立不可见槽位，不覆盖手动存档；读档/崩溃恢复时完整还原背景、立绘、音乐等场景状态（含过渡中途存档：存档时把待应用的过渡变更一并写入快照，读档后清空残留过渡状态，避免立绘"下不去"）；存档页每个槽位显示 16:9 长方形场景缩略图（与游戏画面比例一致，按场景快照重绘背景与立绘，contain 模式完整显示不裁切），空槽位或旧存档显示「无预览」占位文字；支持玩家自定义备注（Enter 确认 / Esc 取消 / Backspace 删除）
 - **热重载** — 修改剧本后自动重新编译，无需重启游戏
 - **快进模式** — 支持仅文本快进和包含语音快进两种模式
@@ -128,7 +128,7 @@ Akizuki\*Rustgal 是一个从零开始、**100% 纯 Rust** 实现的视觉小说
 ### 从源码构建
 
 ```bash
-# 克隆仓库（含 macroquad 补丁子模块）
+# 克隆仓库
 git clone https://github.com/AkizukiKokona/Akizuki-Rustgal.git
 cd Akizuki-Rustgal
 
@@ -148,7 +148,7 @@ cargo run --release -p akrs-game
 cargo run --release -p akrs-editor
 ```
 
-> **Rust 版本要求**：1.96.1+（使用 Rust 2024 Edition）
+> **Rust 版本要求**：1.92.0+（使用 Rust 2024 Edition）
 >
 > **Linux 额外依赖**：`libxcb-render-util0-dev libxcb-shape0-dev libxcb-xfixes0-dev libxcb-xkb-dev libasound2-dev`
 >
@@ -212,8 +212,8 @@ akrs translate init scripts/demo.akrs ja-JP > assets/scripts/languages/ja-JP.jso
 akrs-core      DSL 核心：词法分析 → 语法解析 → AST → 类型检查 → 虚拟机
 akrs-macros    过程宏：编译时将 .akrs 脚本嵌入 Rust 代码
 akrs-runtime   运行时引擎：场景状态、过渡动画、存档、热重载、设置
-akrs-render    渲染层：基于 macroquad 的 2D 渲染器
-akrs-editor    可视化编辑器：基于 egui 的剧本编辑与预览工具
+akrs-render    渲染层：基于 wgpu/winit 的 2D 渲染器
+akrs-editor    可视化编辑器：基于 iced 的剧本编辑与预览工具
 akrs-pack      打包工具：将游戏资源打包为可分发包
 akrs-cli       命令行工具：检查、运行、打包
 akrs-game      游戏启动器：读取剧本并启动图形界面
@@ -225,12 +225,15 @@ akrs-game      游戏启动器：读取剧本并启动图形界面
 
 | 依赖 | 用途 |
 |------|------|
-| [**macroquad**](https://github.com/not-fl3/macroquad) | 跨平台 2D 游戏引擎，提供渲染、输入、音频、窗口管理（本项目使用本地补丁版本） |
-| [**egui**](https://github.com/emilk/egui) / eframe | 即时模式 GUI 框架，用于编辑器界面 |
+| [**wgpu**](https://github.com/gfx-rs/wgpu) | 跨平台图形 API 抽象层，提供 Vulkan/DX12/Metal/GL 后端渲染 |
+| [**winit**](https://github.com/rust-windowing/winit) | 跨平台窗口管理与事件系统 |
+| [**iced**](https://github.com/iced-rs/iced) | 跨平台 GUI 框架，用于编辑器界面 |
 | [**serde**](https://github.com/serde-rs/serde) / serde_json | 序列化框架，用于存档和设置持久化 |
 | [**syn**](https://github.com/dtolnay/syn) / quote / proc-macro2 | 过程宏工具链，用于编译时脚本嵌入 |
 | [**notify**](https://github.com/notify-rs/notify) | 文件系统监听，用于热重载 |
 | [**codespan-reporting**](https://github.com/brendanzab/codespan) | 编译错误诊断信息格式化 |
+| [**cosmic-text**](https://github.com/pop-os/cosmic-text) | 文本排版引擎，提供文字 shaping/layout/raster |
+| [**kira**](https://github.com/tesselode/kira) | 音频引擎，提供播放控制与混音 |
 
 ## 文档
 
@@ -313,7 +316,6 @@ curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
 ├── assets/              游戏资源（背景、立绘、字体、图标）
 ├── scripts/             示例剧本
 ├── docs/                文档
-├── patches/macroquad/   macroquad 本地补丁
 ├── .github/workflows/   CI/CD 流水线（开发构建 + 编辑器构建 + 发行版构建）
 └── Cargo.toml           Workspace 根配置
 ```

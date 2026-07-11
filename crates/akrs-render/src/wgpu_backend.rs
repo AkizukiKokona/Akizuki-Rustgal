@@ -706,7 +706,7 @@ pub fn init_graphics(window: &Window) -> (wgpu::Surface<'_>, wgpu::TextureFormat
             last_err.unwrap_or_default()
         )
     };
-    let mut surface = surface.expect("surface must exist when adapter exists");
+    let surface = surface.expect("surface must exist when adapter exists");
     let format = format.expect("format must exist when adapter exists");
 
     let (device, queue) = pollster::block_on(adapter.request_device(
