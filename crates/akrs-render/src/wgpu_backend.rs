@@ -637,9 +637,17 @@ fn create_texture_inner(
 /// 把渲染状态存入 thread_local，返回（surface, 物理宽, 物理高）。
 /// `surface` 借用 `window`，调用方须保证 window 存活期 ≥ surface。
 pub fn init_graphics(window: &Window) -> (wgpu::Surface<'_>, wgpu::TextureFormat) {
-    log::info!("[DEBUG-TEMP] init_graphics: 创建 wgpu Instance (backends=all)");
+    // Windows：优先 DX12（最稳定，无 overlay 层干扰），排除 GL（WGL present 在
+    // 某些驱动下只渲染部分区域导致白屏+底部黑边）和 Vulkan（RTSS/Steam/Epic
+    // overlay 层可能导致 surface 呈现异常）。
+    // 其他平台：用 all() 让 wgpu 自行选择（macOS→Metal，Linux→Vulkan）。
+    #[cfg(target_os = "windows")]
+    let backends = wgpu::Backends::DX12;
+    #[cfg(not(target_os = "windows"))]
+    let backends = wgpu::Backends::all();
+    log::info!("[DEBUG-TEMP] init_graphics: 创建 wgpu Instance (backends={:?})", backends);
     let instance = wgpu::Instance::new(wgpu::InstanceDescriptor {
-        backends: wgpu::Backends::all(),
+        backends,
         ..Default::default()
     });
     let surface = instance
