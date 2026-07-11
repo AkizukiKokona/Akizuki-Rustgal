@@ -24,6 +24,7 @@
 mod assets;
 mod platform;
 mod renderer;
+mod ui_widgets;
 
 pub mod audio;
 pub mod text;

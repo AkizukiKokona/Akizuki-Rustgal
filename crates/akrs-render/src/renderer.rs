@@ -376,7 +376,7 @@ fn load_font_with_fallback() -> (Option<Font>, Option<Font>) {
 /// fallback font (set via `set_fallback_font`) is used instead.  If neither
 /// font can render a character it is replaced with a white-square placeholder
 /// (U+25A1) so the player sees a visible box rather than an empty gap.
-fn draw_text_f(text: &str, x: f32, y: f32, font_size: f32, color: Color, font: &Option<Font>) {
+pub(crate) fn draw_text_f(text: &str, x: f32, y: f32, font_size: f32, color: Color, font: &Option<Font>) {
     let size = font_size as u16;
     let fb = get_fallback_font();
 
@@ -420,7 +420,7 @@ fn draw_text_f(text: &str, x: f32, y: f32, font_size: f32, color: Color, font: &
     }
 }
 
-fn measure_text_f(text: &str, font: &Option<Font>, font_size: u16, font_scale: f32) -> TextDimensions {
+pub(crate) fn measure_text_f(text: &str, font: &Option<Font>, font_size: u16, font_scale: f32) -> TextDimensions {
     let fb = get_fallback_font();
     let primary_ok = can_render(text, *font, font_size);
     let fallback_ok = can_render(text, fb, font_size);
@@ -1071,17 +1071,12 @@ pub fn run(mut engine: Engine, project_config: &ProjectConfig) {
     let mut hud_hidden = false;
     // HUD 控制按钮组的自动显隐状态：默认隐藏（下沉），鼠标悬停触发区域时上浮。
     let mut hud_visibility = HudVisibility::new();
-    // Which slider (if any) is currently being dragged in the settings menu.
-    // The value is (tab, index).
-    let mut dragging_slider: Option<(SettingsTab, usize)> = None;
-    // Whether the resolution dropdown in the settings menu is expanded.
-    let mut dropdown_open: bool = false;
-    // Whether the skip mode dropdown in the settings menu is expanded.
-    let mut skip_dropdown_open: bool = false;
-    // Whether the UI language dropdown in the settings menu is expanded.
-    let mut ui_lang_dropdown_open: bool = false;
-    // Whether the script language dropdown in the settings menu is expanded.
-    let mut lang_dropdown_open: bool = false;
+    // 任务4：立即模式 UI 组件共享状态。合并原 4 个下拉 bool
+    // （dropdown_open / skip_dropdown_open / ui_lang_dropdown_open /
+    // lang_dropdown_open）为 `open_dropdown: Option<DropdownId>`，并改用
+    // `dragging_slider: Option<SliderId>` 取代 `Option<(SettingsTab, usize)>`。
+    // 由 draw_slider / draw_dropdown / draw_text_input 跨帧记忆交互状态。
+    let mut widgets_state = crate::ui_widgets::UiWidgetsState::default();
     // 当前激活的设置标签页。
     let mut settings_active_tab: SettingsTab = SettingsTab::Text;
     // Current page index for the save / load menus (grid paging).
@@ -1665,6 +1660,31 @@ pub fn run(mut engine: Engine, project_config: &ProjectConfig) {
         // draw call and the interaction handler below.
         let settings_layout = compute_settings_layout(sw, sh, scale);
 
+        // 任务4：每帧重置立即模式 UI 组件的瞬态标志，并按当前 UI 模式设定
+        // 可交互性与聚焦的文本输入（后者驱动 IME 启用）。设置菜单作为确认对话框
+        // 的底层背景绘制时（ui_mode == ConfirmDialog）interactable 为 false，
+        // 控件只绘制不响应输入，避免与上层对话框争抢同一帧的鼠标事件。
+        widgets_state.begin_frame();
+        widgets_state.interactable = ui_mode == UiMode::SettingsMenu && !ui_transition.active;
+        widgets_state.focused_text = if !ui_transition.active {
+            if ui_mode == UiMode::NoteEditDialog {
+                Some(crate::ui_widgets::TextInputId::NoteEdit)
+            } else if ui_mode == UiMode::SettingsMenu {
+                color_edit_active.map(|f| crate::ui_widgets::TextInputId::ColorHex(f.index()))
+            } else {
+                None
+            }
+        } else {
+            None
+        };
+        // 任务4：IME 输入法启用——仅当某文本输入聚焦时允许 IME，否则关闭。
+        // winit 0.29 需显式 set_ime_allowed(true) 才会向窗口派发 Ime 事件；
+        // window 由 run() 持有，可直接调用。每帧按聚焦状态同步。
+        window.set_ime_allowed(widgets_state.focused_text.is_some());
+        // 任务4：draw_note_edit_dialog 内的 draw_text_input 返回的输入事件，
+        // 用于在主循环消费 Enter（确认保存）。每帧初值 None，由绘制阶段填入。
+        let mut note_input_event = crate::ui_widgets::TextInputEvent::None;
+
         if ui_mode == UiMode::CrashScreen {
             // 蓝屏错误界面：全屏蓝底白字，优先级最高，覆盖一切。
             draw_crash_screen(&engine, &mut buttons, sw, sh, &font, scale, crash_fade);
@@ -1687,7 +1707,7 @@ pub fn run(mut engine: Engine, project_config: &ProjectConfig) {
                 settings_active_tab = SettingsTab::Text;
             }
             // 设置菜单内部绘制背景和所有控件
-            draw_settings_menu(&mut engine, &settings_layout, &font, dropdown_open, skip_dropdown_open, ui_lang_dropdown_open, lang_dropdown_open, settings_active_tab, scale, &about_icon_texture, project_config, color_edit_active, &color_hex_buffer);
+            draw_settings_menu(&mut engine, &settings_layout, &font, &mut widgets_state, settings_active_tab, scale, &about_icon_texture, project_config, &mut color_edit_active, &mut color_hex_buffer);
         } else if ui_mode == UiMode::ConfirmDialog {
             // 确认对话框：先绘制底层界面（保持上下文可见），再叠加 8% 黑色 + 对话框。
             // confirm_return_mode 记录了确认对话框返回后应恢复的模式，据此绘制底层。
@@ -1696,7 +1716,7 @@ pub fn run(mut engine: Engine, project_config: &ProjectConfig) {
                     if settings_snapshot.is_none() {
                         settings_snapshot = Some(engine.settings().clone());
                     }
-                    draw_settings_menu(&mut engine, &settings_layout, &font, dropdown_open, skip_dropdown_open, ui_lang_dropdown_open, lang_dropdown_open, settings_active_tab, scale, &about_icon_texture, project_config, color_edit_active, &color_hex_buffer);
+                    draw_settings_menu(&mut engine, &settings_layout, &font, &mut widgets_state, settings_active_tab, scale, &about_icon_texture, project_config, &mut color_edit_active, &mut color_hex_buffer);
                 }
                 UiMode::Normal => {
                     if engine.phase() == EnginePhase::Title {
@@ -1731,7 +1751,7 @@ pub fn run(mut engine: Engine, project_config: &ProjectConfig) {
             draw_rectangle(0.0, 0.0, sw, sh, Color::new(0.0, 0.0, 0.0, 0.40));
             // 居中备注编辑弹窗。buttons 在上面已注册了存档页的按钮，
             // 弹窗按钮在此函数内追加到 buttons 末尾。
-            draw_note_edit_dialog(&engine, &mut buttons, sw, sh, &font, scale, &note_edit_buffer, note_edit_slot, dialog_fade);
+            note_input_event = draw_note_edit_dialog(&engine, &mut buttons, sw, sh, &font, scale, &mut note_edit_buffer, note_edit_slot, dialog_fade, &mut widgets_state);
         } else if ui_mode != UiMode::Normal {
             // Save/Load menus: full-screen opaque background + full-screen grid.
             draw_rectangle(0.0, 0.0, sw, sh, Color::new(0.05, 0.05, 0.1, 1.0));
@@ -1926,8 +1946,7 @@ pub fn run(mut engine: Engine, project_config: &ProjectConfig) {
                 }
             } else if ui_mode == UiMode::SettingsMenu {
                 if let Some((target, pending)) = handle_settings_interaction(
-                    &mut engine, &settings_layout, &mut dragging_slider, &mut dropdown_open,
-                    &mut skip_dropdown_open, &mut ui_lang_dropdown_open, &mut lang_dropdown_open, &mut settings_active_tab, scale,
+                    &mut engine, &settings_layout, &mut widgets_state, &mut settings_active_tab, scale,
                     &settings_snapshot, &mut settings_prev_mode,
                     project_config, &mut color_edit_active, &mut color_hex_buffer,
                 ) {
@@ -2181,7 +2200,7 @@ pub fn run(mut engine: Engine, project_config: &ProjectConfig) {
                     color_edit_active = None;
                 } else {
                 // 设置菜单按 Esc：检测是否有未应用的更改
-                dragging_slider = None;
+                widgets_state.dragging_slider = None;
                 let has_changes = if let Some(snapshot) = settings_snapshot.clone() {
                     let current = engine.settings();
                     current.text_speed != snapshot.text_speed
@@ -2235,69 +2254,24 @@ pub fn run(mut engine: Engine, project_config: &ProjectConfig) {
             }
         }
 
-        // 备注编辑弹窗的键盘输入：收集字符、Backspace 删除、Enter 确认。
-        // Esc 已在上面处理。此处仅处理 NoteEditDialog 模式。
-        if ui_mode == UiMode::NoteEditDialog && !ui_transition.active {
-            // Backspace：删除最后一个字符。
-            if is_key_pressed(KeyCode::Backspace) {
-                note_edit_buffer.pop();
-            }
-            // Enter：确认保存（与点击「确认」按钮等价）。
-            if is_key_pressed(KeyCode::Enter) {
-                if let Some(slot) = note_edit_slot.take() {
-                    if let Err(e) = engine.saves().set_note(slot, &note_edit_buffer) {
-                        eprintln!("[Error] 保存备注失败: {}", e);
-                    }
-                }
-                note_edit_buffer.clear();
-                ui_mode = note_return_mode;
-            }
-            // 字符输入：收集本帧所有按键字符。限制备注最大 60 字符。
-            while let Some(c) = get_char_pressed() {
-                if c.is_control() {
-                    continue;
-                }
-                let cur_len = note_edit_buffer.chars().count();
-                if cur_len < 60 {
-                    note_edit_buffer.push(c);
+        // 任务4：备注编辑弹窗的字符 / Backspace / IME 输入已由 draw_text_input
+        // （在 draw_note_edit_dialog 内调用）统一处理。此处仅消费其返回的 Enter
+        // 事件，等价于点击「确认」按钮：写回备注并返回存档页。Esc 已在上面处理。
+        if ui_mode == UiMode::NoteEditDialog && !ui_transition.active
+            && note_input_event == crate::ui_widgets::TextInputEvent::Enter
+        {
+            if let Some(slot) = note_edit_slot.take() {
+                if let Err(e) = engine.saves().set_note(slot, &note_edit_buffer) {
+                    eprintln!("[Error] 保存备注失败: {}", e);
                 }
             }
+            note_edit_buffer.clear();
+            ui_mode = note_return_mode;
         }
 
-        // 配色标签页十六进制输入：Backspace 删除、Enter 提交、字符收集 + 实时套用。
-        // Esc 已在上面处理（仅结束编辑而不退出菜单）。仅在用户实际修改缓冲区时
-        // 才尝试解析套用，避免激活主题色字段时把 None 误转为 Some。
-        if ui_mode == UiMode::SettingsMenu && color_edit_active.is_some() && !ui_transition.active {
-            let mut modified = false;
-            if is_key_pressed(KeyCode::Backspace) {
-                color_hex_buffer.pop();
-                modified = true;
-            }
-            if is_key_pressed(KeyCode::Enter) {
-                color_edit_active = None;
-            }
-            // 仅接受十六进制字符与 '#'，最长 9（#RRGGBBAA）
-            while let Some(c) = get_char_pressed() {
-                if c.is_control() {
-                    continue;
-                }
-                if !(c.is_ascii_hexdigit() || c == '#') {
-                    continue;
-                }
-                let cur = color_hex_buffer.chars().count();
-                if cur < 9 {
-                    color_hex_buffer.push(c);
-                    modified = true;
-                }
-            }
-            if modified {
-                if let Some(field) = color_edit_active {
-                    if let Some(c) = parse_hex_color(&color_hex_buffer) {
-                        field.set(engine.settings_mut(), c);
-                    }
-                }
-            }
-        }
+        // 任务4：配色标签页十六进制输入（字符 / Backspace / Enter / IME commit +
+        // 实时套用 + Enter 失焦）已由 draw_text_input（在 draw_color_tab 内调用）
+        // 统一处理。Esc 失焦仍由上面的设置菜单 Esc 分支处理。
 
         // Draw UI transition overlay (black fade) on top of everything.
         if ui_transition.active {
@@ -3041,10 +3015,11 @@ fn draw_note_edit_dialog(
     sh: f32,
     font: &Option<Font>,
     scale: f32,
-    buffer: &str,
+    buffer: &mut String,
     slot: Option<usize>,
     fade: f32,
-) {
+    ws: &mut crate::ui_widgets::UiWidgetsState,
+) -> crate::ui_widgets::TextInputEvent {
     let dialog_w = (560.0 * scale).min(sw - 80.0 * scale);
     let dialog_h = (240.0 * scale).min(sh - 80.0 * scale);
     let dialog_x = (sw - dialog_w) / 2.0;
@@ -3075,36 +3050,27 @@ fn draw_note_edit_dialog(
         font,
     );
 
-    // 输入框。
+    // 输入框（任务4：改用 draw_text_input 立即模式组件，统一处理字符 / Backspace /
+    // Enter / IME commit，并在光标处绘制 IME preedit 候选串）。弹窗显示时聚焦。
     let input_x = dialog_x + pad;
     let input_y = dialog_y + pad + title_size + 40.0 * scale;
     let input_w = dialog_w - 2.0 * pad;
     let input_h = 48.0 * scale;
-    draw_rectangle(input_x, input_y, input_w, input_h, Color::new(0.12, 0.14, 0.22, 1.0));
-    draw_rectangle_lines(input_x, input_y, input_w, input_h, 1.5 * scale, Color::new(0.4, 0.55, 0.8, 0.8));
-
-    // 输入框文本 + 光标。光标以闪烁的竖线表示，周期约 1s。
     let text_size = 20.0 * scale;
-    let text_pad = 10.0 * scale;
-    // 限制显示宽度，超出部分尾部截断（简单处理，不做滚动）。
-    let max_text_w = input_w - 2.0 * text_pad;
-    let display_text = fit_text(buffer, font, text_size, max_text_w - 8.0 * scale);
-    draw_text_f(
-        &display_text,
-        input_x + text_pad,
-        input_y + input_h / 2.0 + text_size / 2.5,
+    let active = ws.focused_text == Some(crate::ui_widgets::TextInputId::NoteEdit);
+    let note_event = crate::ui_widgets::draw_text_input(
+        active,
+        input_x, input_y, input_w, input_h,
         text_size,
-        Color::new(0.9, 0.92, 0.98, 1.0),
-        font,
+        Color::new(0.12, 0.14, 0.22, 1.0),
+        Color::new(0.4, 0.55, 0.8, 0.8),
+        10.0 * scale,
+        "",
+        buffer,
+        scale, font,
+        &|_| true,
+        200,
     );
-    // 光标：在显示文本末尾画一条竖线，每秒闪烁。
-    let cursor_blink = (get_time() * 2.0).floor() as i64 % 2 == 0;
-    if cursor_blink {
-        let cursor_x = input_x + text_pad
-            + measure_text_f(&display_text, font, text_size as u16, 1.0).width
-            + 2.0 * scale;
-        draw_rectangle(cursor_x, input_y + 10.0 * scale, 2.0 * scale, input_h - 20.0 * scale, WHITE);
-    }
 
     // 确认/取消按钮。
     let btn_w = 160.0 * scale;
@@ -3126,6 +3092,7 @@ fn draw_note_edit_dialog(
             Color::new(tp.r, tp.g, tp.b, 1.0 - fade)
         });
     }
+    note_event
 }
 
 /// Draw a confirmation dialog for returning to title or discarding settings.
@@ -4101,7 +4068,7 @@ fn draw_page_nav(
 
 /// Truncate `text` (appending an ellipsis) so it fits within `max_w` at the
 /// given font size.  Used to keep slot summaries inside their grid cells.
-fn fit_text(text: &str, font: &Option<Font>, font_size: f32, max_w: f32) -> String {
+pub(crate) fn fit_text(text: &str, font: &Option<Font>, font_size: f32, max_w: f32) -> String {
     if max_w <= 0.0 {
         return String::new();
     }
@@ -4223,11 +4190,11 @@ fn draw_tooltip(text: &str, mouse_x: f32, mouse_y: f32, sw: f32, sh: f32, font: 
 
 /// A simple axis-aligned rectangle used for settings control layout.
 #[derive(Clone, Copy, Default)]
-struct Rect4 {
-    x: f32,
-    y: f32,
-    w: f32,
-    h: f32,
+pub(crate) struct Rect4 {
+    pub(crate) x: f32,
+    pub(crate) y: f32,
+    pub(crate) w: f32,
+    pub(crate) h: f32,
 }
 
 /// Pre-computed geometry for every control in the settings menu.
@@ -4551,8 +4518,7 @@ fn compute_settings_layout(sw: f32, sh: f32, scale: f32) -> SettingsLayout {
 /// - [仅主题色行]「项目默认 / 自定义」切换按钮
 /// - 十六进制输入框（点击激活文本输入，支持 #RRGGBB / #RRGGBBAA）
 /// - 12 色调色板预设（点击直接套用）
-fn draw_color_tab(engine: &Engine, layout: &SettingsLayout, font: &Option<Font>, scale: f32, project_config: &ProjectConfig, color_edit_active: Option<ColorField>, color_hex_buffer: &str) {
-    let settings = engine.settings();
+fn draw_color_tab(engine: &mut Engine, layout: &SettingsLayout, font: &Option<Font>, scale: f32, project_config: &ProjectConfig, color_edit_active: &mut Option<ColorField>, color_hex_buffer: &mut String, ws: &mut crate::ui_widgets::UiWidgetsState) {
     let label_size = 34.0 * scale;
     let hint_size = 24.0 * scale;
     let hex_text_size = 24.0 * scale;
@@ -4563,20 +4529,22 @@ fn draw_color_tab(engine: &Engine, layout: &SettingsLayout, font: &Option<Font>,
         Color::new(0.6, 0.75, 0.95, 0.95), font);
 
     let fields = [ColorField::ThemePrimary, ColorField::ThemeSecondary, ColorField::ThemeDialogue, ColorField::ReadText, ColorField::UnreadText];
+    // 用 owned String 断开 engine.t_ui 的不可变借用，使循环内可 engine.settings_mut()
+    // 实时套用 hex 输入（draw_text_input 返回 Modified 时写回设置）。
     let label_keys = [
-        engine.t_ui("settings.color.theme_primary"),
-        engine.t_ui("settings.color.theme_secondary"),
-        engine.t_ui("settings.color.theme_dialogue"),
-        engine.t_ui("settings.color.read_text"),
-        engine.t_ui("settings.color.unread_text"),
+        engine.t_ui("settings.color.theme_primary").to_string(),
+        engine.t_ui("settings.color.theme_secondary").to_string(),
+        engine.t_ui("settings.color.theme_dialogue").to_string(),
+        engine.t_ui("settings.color.read_text").to_string(),
+        engine.t_ui("settings.color.unread_text").to_string(),
     ];
 
     for (i, field) in fields.iter().enumerate() {
         let mid = layout.color_row_mids[i];
-        let val = field.value(settings, project_config);
+        let val = field.value(engine.settings(), project_config);
 
         // 标签
-        draw_text_f(label_keys[i], layout.label_x, mid + 8.0 * scale, label_size, WHITE, font);
+        draw_text_f(&label_keys[i], layout.label_x, mid + 8.0 * scale, label_size, WHITE, font);
 
         // 大色块
         let swatch = layout.color_swatch_rects[i];
@@ -4587,7 +4555,7 @@ fn draw_color_tab(engine: &Engine, layout: &SettingsLayout, font: &Option<Font>,
         // 主题色行：「项目默认 / 自定义」按钮
         if field.is_theme() {
             let btn = layout.color_default_btn_rects[i];
-            let custom = field.is_custom(settings);
+            let custom = field.is_custom(engine.settings());
             let (btn_label, btn_bg, btn_fg) = if custom {
                 (engine.t_ui("settings.color.use_custom"), Color::new(0.30, 0.55, 0.85, 0.9), Color::new(0.95, 0.98, 1.0, 1.0))
             } else {
@@ -4600,31 +4568,38 @@ fn draw_color_tab(engine: &Engine, layout: &SettingsLayout, font: &Option<Font>,
                 btn_text_size, btn_fg, font);
         }
 
-        // 十六进制输入框
+        // 十六进制输入框（任务4：改用 draw_text_input 立即模式组件，统一处理
+        // 字符 / Backspace / Enter / IME commit + preedit 绘制）。激活时实时解析
+        // 套用（Modified），Enter 失焦（清 color_edit_active）。
         let hex = layout.color_hex_rects[i];
-        let active = color_edit_active == Some(*field);
+        // active 由 ws.focused_text 决定（主循环每帧从 color_edit_active 同步），
+        // 与 draw_note_edit_dialog 一致采用立即模式聚焦状态作为唯一来源。
+        let active = ws.focused_text == Some(crate::ui_widgets::TextInputId::ColorHex(field.index()));
         let hex_bg = if active { Color::new(0.16, 0.24, 0.40, 1.0) } else { Color::new(0.12, 0.18, 0.32, 0.95) };
         let hex_border = if active { Color::new(0.7, 0.85, 1.0, 1.0) } else { Color::new(0.45, 0.7, 0.95, 0.8) };
-        draw_rectangle(hex.x, hex.y, hex.w, hex.h, hex_bg);
-        draw_rectangle_lines(hex.x, hex.y, hex.w, hex.h, 1.5 * scale, hex_border);
-        // 框内文本：激活时显示输入缓冲区，否则显示当前色值
-        let display = if active {
-            color_hex_buffer.to_string()
-        } else {
-            hex_string_from_color(val)
-        };
-        draw_text_f(&display, hex.x + 10.0 * scale, hex.y + hex.h / 2.0 + 8.0 * scale,
-            hex_text_size, WHITE, font);
-        // 激活时画光标（闪烁竖线）
-        if active {
-            let tw = measure_text_f(&display, font, hex_text_size as u16, 1.0).width;
-            let cx = hex.x + 10.0 * scale + tw + 2.0 * scale;
-            let cy = hex.y + 6.0 * scale;
-            let ch = hex.h - 12.0 * scale;
-            // 用 floor(get_time()*2) 取整做 0.5Hz 闪烁
-            if (get_time().floor() as i64) % 2 == 0 {
-                draw_rectangle(cx, cy, 2.0 * scale, ch, WHITE);
+        let inactive_display = hex_string_from_color(val);
+        let event = crate::ui_widgets::draw_text_input(
+            active,
+            hex.x, hex.y, hex.w, hex.h,
+            hex_text_size,
+            hex_bg, hex_border,
+            6.0 * scale,
+            &inactive_display,
+            color_hex_buffer,
+            scale, font,
+            &|c| c.is_ascii_hexdigit() || c == '#',
+            9,
+        );
+        match event {
+            crate::ui_widgets::TextInputEvent::Modified => {
+                if let Some(c) = parse_hex_color(color_hex_buffer) {
+                    field.set(engine.settings_mut(), c);
+                }
             }
+            crate::ui_widgets::TextInputEvent::Enter => {
+                *color_edit_active = None;
+            }
+            crate::ui_widgets::TextInputEvent::None => {}
         }
 
         // 调色板预设
@@ -4863,7 +4838,7 @@ fn draw_about_tab(engine: &Engine, layout: &SettingsLayout, font: &Option<Font>,
 /// Draw the interactive full-screen settings menu. Reads live values from the
 /// engine so dragging a slider is reflected immediately.  The dropdown list
 /// is drawn last (via `draw_dropdown_list`) so it floats above the back button.
-fn draw_settings_menu(engine: &mut Engine, layout: &SettingsLayout, font: &Option<Font>, dropdown_open: bool, skip_dropdown_open: bool, ui_lang_dropdown_open: bool, lang_dropdown_open: bool, active_tab: SettingsTab, scale: f32, icon_texture: &Option<Texture2D>, project_config: &ProjectConfig, color_edit_active: Option<ColorField>, color_hex_buffer: &str) {
+fn draw_settings_menu(engine: &mut Engine, layout: &SettingsLayout, font: &Option<Font>, ws: &mut crate::ui_widgets::UiWidgetsState, active_tab: SettingsTab, scale: f32, icon_texture: &Option<Texture2D>, project_config: &ProjectConfig, color_edit_active: &mut Option<ColorField>, color_hex_buffer: &mut String) {
     // 天蓝色背景。任务4：圆角化设置面板。
     let panel_radius = 12.0 * scale;
     draw_rectangle_rounded(layout.panel_x, layout.panel_y, layout.panel_w, layout.panel_h, panel_radius,
@@ -4931,17 +4906,21 @@ fn draw_settings_menu(engine: &mut Engine, layout: &SettingsLayout, font: &Optio
         layout.tab_rects[7].x + layout.tab_rects[7].w - layout.tab_rects[0].x, 1.5 * scale,
         Color::new(0.45, 0.7, 0.95, 0.6));
 
-    let settings = engine.settings();
+    // 任务4：不再持有 settings 的不可变借用——滑块/下拉框改用立即模式组件
+    // draw_slider / draw_dropdown，需在绘制过程中写回设置（engine.settings_mut()），
+    // 故各字段按需读取，避免长生命周期借用与可变写回冲突。
     let label_size = 34.0 * scale;
     let value_size = 31.0 * scale;
 
     match active_tab {
         SettingsTab::Text => {
-            // 文本速度
+            // 文本速度（0..999 字/秒）
             draw_text_f(engine.t_ui("settings.text_speed"), layout.label_x, layout.text_row_mid + 8.0 * scale, label_size, WHITE, font);
-            draw_slider_track(layout.text_slider_track, settings.text_speed / 999.0, scale);
+            let v = engine.settings().text_speed;
+            let new_v = crate::ui_widgets::draw_slider(ws, crate::ui_widgets::SliderId::TextSpeed, layout.text_slider_track, layout.text_slider_hit, 0.0, 999.0, v, scale);
+            engine.settings_mut().text_speed = new_v.round();
             draw_text_f(
-                &format!("{:.0} 字/秒", settings.text_speed),
+                &format!("{:.0} 字/秒", engine.settings().text_speed),
                 layout.value_x,
                 layout.text_row_mid + 8.0 * scale,
                 value_size,
@@ -4950,12 +4929,14 @@ fn draw_settings_menu(engine: &mut Engine, layout: &SettingsLayout, font: &Optio
             );
             // 自动播放开关
             draw_text_f(engine.t_ui("settings.auto_play"), layout.label_x, layout.auto_play_row_mids[0] + 8.0 * scale, label_size, WHITE, font);
-            draw_toggle(layout.auto_play_toggle, settings.auto_play, font, scale);
+            draw_toggle(layout.auto_play_toggle, engine.settings().auto_play, font, scale);
             // 有语音间隔（0.0 - 5.0 秒）
             draw_text_f(engine.t_ui("settings.auto_play_delay_with_voice"), layout.label_x, layout.auto_play_row_mids[1] + 8.0 * scale, label_size, WHITE, font);
-            draw_slider_track(layout.auto_play_slider_tracks[0], settings.auto_play_delay_with_voice / 5.0, scale);
+            let v = engine.settings().auto_play_delay_with_voice;
+            let new_v = crate::ui_widgets::draw_slider(ws, crate::ui_widgets::SliderId::AutoPlayDelayWithVoice, layout.auto_play_slider_tracks[0], layout.auto_play_slider_hits[0], 0.0, 5.0, v, scale);
+            engine.settings_mut().auto_play_delay_with_voice = (new_v * 10.0).round() / 10.0;
             draw_text_f(
-                &format!("{:.1} 秒", settings.auto_play_delay_with_voice),
+                &format!("{:.1} 秒", engine.settings().auto_play_delay_with_voice),
                 layout.value_x,
                 layout.auto_play_row_mids[1] + 8.0 * scale,
                 value_size,
@@ -4964,9 +4945,11 @@ fn draw_settings_menu(engine: &mut Engine, layout: &SettingsLayout, font: &Optio
             );
             // 无语音间隔（0.0 - 5.0 秒）
             draw_text_f(engine.t_ui("settings.auto_play_delay_without_voice"), layout.label_x, layout.auto_play_row_mids[2] + 8.0 * scale, label_size, WHITE, font);
-            draw_slider_track(layout.auto_play_slider_tracks[1], settings.auto_play_delay_without_voice / 5.0, scale);
+            let v = engine.settings().auto_play_delay_without_voice;
+            let new_v = crate::ui_widgets::draw_slider(ws, crate::ui_widgets::SliderId::AutoPlayDelayWithoutVoice, layout.auto_play_slider_tracks[1], layout.auto_play_slider_hits[1], 0.0, 5.0, v, scale);
+            engine.settings_mut().auto_play_delay_without_voice = (new_v * 10.0).round() / 10.0;
             draw_text_f(
-                &format!("{:.1} 秒", settings.auto_play_delay_without_voice),
+                &format!("{:.1} 秒", engine.settings().auto_play_delay_without_voice),
                 layout.value_x,
                 layout.auto_play_row_mids[2] + 8.0 * scale,
                 value_size,
@@ -4975,33 +4958,39 @@ fn draw_settings_menu(engine: &mut Engine, layout: &SettingsLayout, font: &Optio
             );
         }
         SettingsTab::Audio => {
-            // BGM 音量
+            // BGM 音量（0..1）
             draw_text_f(engine.t_ui("settings.bgm_volume"), layout.label_x, layout.audio_row_mids[0] + 8.0 * scale, label_size, WHITE, font);
-            draw_slider_track(layout.audio_slider_tracks[0], settings.bgm_volume, scale);
+            let v = engine.settings().bgm_volume;
+            let new_v = crate::ui_widgets::draw_slider(ws, crate::ui_widgets::SliderId::BgmVolume, layout.audio_slider_tracks[0], layout.audio_slider_hits[0], 0.0, 1.0, v, scale);
+            engine.settings_mut().bgm_volume = new_v;
             draw_text_f(
-                &format!("{:.0}%", settings.bgm_volume * 100.0),
+                &format!("{:.0}%", engine.settings().bgm_volume * 100.0),
                 layout.value_x,
                 layout.audio_row_mids[0] + 8.0 * scale,
                 value_size,
                 WHITE,
                 font,
             );
-            // 音效音量
+            // 音效音量（0..1）
             draw_text_f(engine.t_ui("settings.sfx_volume"), layout.label_x, layout.audio_row_mids[1] + 8.0 * scale, label_size, WHITE, font);
-            draw_slider_track(layout.audio_slider_tracks[1], settings.sfx_volume, scale);
+            let v = engine.settings().sfx_volume;
+            let new_v = crate::ui_widgets::draw_slider(ws, crate::ui_widgets::SliderId::SfxVolume, layout.audio_slider_tracks[1], layout.audio_slider_hits[1], 0.0, 1.0, v, scale);
+            engine.settings_mut().sfx_volume = new_v;
             draw_text_f(
-                &format!("{:.0}%", settings.sfx_volume * 100.0),
+                &format!("{:.0}%", engine.settings().sfx_volume * 100.0),
                 layout.value_x,
                 layout.audio_row_mids[1] + 8.0 * scale,
                 value_size,
                 WHITE,
                 font,
             );
-            // 语音音量
+            // 语音音量（0..1）
             draw_text_f(engine.t_ui("settings.voice_volume"), layout.label_x, layout.audio_row_mids[2] + 8.0 * scale, label_size, WHITE, font);
-            draw_slider_track(layout.audio_slider_tracks[2], settings.voice_volume, scale);
+            let v = engine.settings().voice_volume;
+            let new_v = crate::ui_widgets::draw_slider(ws, crate::ui_widgets::SliderId::VoiceVolume, layout.audio_slider_tracks[2], layout.audio_slider_hits[2], 0.0, 1.0, v, scale);
+            engine.settings_mut().voice_volume = new_v;
             draw_text_f(
-                &format!("{:.0}%", settings.voice_volume * 100.0),
+                &format!("{:.0}%", engine.settings().voice_volume * 100.0),
                 layout.value_x,
                 layout.audio_row_mids[2] + 8.0 * scale,
                 value_size,
@@ -5012,46 +5001,25 @@ fn draw_settings_menu(engine: &mut Engine, layout: &SettingsLayout, font: &Optio
         SettingsTab::Display => {
             // 自动恢复
             draw_text_f(engine.t_ui("settings.auto_recovery"), layout.label_x, layout.display_row_mids[0] + 8.0 * scale, label_size, WHITE, font);
-            draw_toggle(layout.display_toggles[0], settings.auto_recovery, font, scale);
+            draw_toggle(layout.display_toggles[0], engine.settings().auto_recovery, font, scale);
             // 全屏模式
             draw_text_f(engine.t_ui("settings.fullscreen"), layout.label_x, layout.display_row_mids[1] + 8.0 * scale, label_size, WHITE, font);
-            draw_toggle(layout.display_toggles[1], settings.fullscreen, font, scale);
-            // 分辨率下拉
+            draw_toggle(layout.display_toggles[1], engine.settings().fullscreen, font, scale);
+            // 分辨率 / UI 语言 / 剧本语言下拉：折叠框 + 展开列表 + 开合/选择交互
+            // 统一由本函数末尾的 draw_dropdown 绘制并处理（在按钮之后，保证列表 z-order 在最上层）。
             draw_text_f(engine.t_ui("settings.resolution"), layout.label_x, layout.display_row_mids[2] + 8.0 * scale, label_size, WHITE, font);
-            draw_dropdown_box_resolution(layout.display_dropdown, settings.resolution, font, dropdown_open, scale);
-            // UI 语言下拉
             draw_text_f(engine.t_ui("settings.ui_language"), layout.label_x, layout.display_row_mids[3] + 8.0 * scale, label_size, WHITE, font);
-            let ui_lang_label = if settings.ui_language.is_empty() {
-                // 空表示「跟随剧本语言」
-                format!("{} ({})", engine.t_ui("language.follow_script"), engine.settings().effective_ui_language())
-            } else {
-                let display = engine.available_languages()
-                    .iter()
-                    .find(|(c, _)| *c == settings.ui_language)
-                    .map(|(_, n)| n.clone())
-                    .unwrap_or_else(|| settings.ui_language.clone());
-                format!("{} ({})", display, settings.ui_language)
-            };
-            draw_dropdown_box_language(layout.ui_language_dropdown, &settings.ui_language, &ui_lang_label, font, ui_lang_dropdown_open, scale);
-            // 剧本语言下拉
             draw_text_f(engine.t_ui("settings.script_language"), layout.label_x, layout.display_row_mids[4] + 8.0 * scale, label_size, WHITE, font);
-            let script_lang_label = if engine.translator().language().is_empty() {
-                engine.t_ui("language.original").to_string()
-            } else {
-                format!("{} ({})", engine.translator().display_name(), engine.translator().language())
-            };
-            draw_dropdown_box_language(layout.language_dropdown, &settings.language, &script_lang_label, font, lang_dropdown_open, scale);
         }
         SettingsTab::Skip => {
             // 允许跳过未读文本
             draw_text_f(engine.t_ui("settings.skip_unread"), layout.label_x, layout.skip_row_mids[0] + 8.0 * scale, label_size, WHITE, font);
-            draw_toggle(layout.skip_toggle, settings.skip_unread, font, scale);
-            // 快进模式下拉
+            draw_toggle(layout.skip_toggle, engine.settings().skip_unread, font, scale);
+            // 快进模式下拉：由本函数末尾 draw_dropdown 统一绘制并处理。
             draw_text_f(engine.t_ui("settings.skip_mode"), layout.label_x, layout.skip_row_mids[1] + 8.0 * scale, label_size, WHITE, font);
-            draw_dropdown_box_skip_mode(engine, layout.skip_dropdown, settings.skip_mode, font, skip_dropdown_open, scale);
         }
         SettingsTab::Color => {
-            draw_color_tab(engine, layout, font, scale, project_config, color_edit_active, color_hex_buffer);
+            draw_color_tab(engine, layout, font, scale, project_config, color_edit_active, color_hex_buffer, ws);
         }
         SettingsTab::Developer => {
             draw_developer_tab(engine, layout, font, scale);
@@ -5089,36 +5057,101 @@ fn draw_settings_menu(engine: &mut Engine, layout: &SettingsLayout, font: &Optio
         scale,
     );
 
-    // Draw the expanded dropdown lists LAST so they are rendered above every other
-    // control (including the buttons) — fixes the z-order issue.
-    if dropdown_open && active_tab == SettingsTab::Display {
-        draw_dropdown_list_resolution(layout.display_dropdown, settings.resolution, font, scale);
-    }
-    if ui_lang_dropdown_open && active_tab == SettingsTab::Display {
+    // 任务4：下拉框（折叠框 + 展开列表 + 开合/选择交互）统一由 draw_dropdown
+    // 立即模式组件处理。在按钮之后绘制，使展开的列表浮于所有控件之上（与原
+    // z-order 一致）。draw_dropdown 内部依 ws.open_dropdown 记忆当前展开项，
+    // 同一时间至多一个下拉展开（取代原 4 个独立 bool）。
+    if active_tab == SettingsTab::Display {
+        // 分辨率
+        let resolution = engine.settings().resolution;
+        let presets = Settings::resolution_presets();
+        let options: Vec<String> = presets.iter().map(|(w, h)| format!("{}x{}", w, h)).collect();
+        let selected = presets.iter().position(|p| *p == resolution).unwrap_or(0);
+        let box_label = format!("{}x{}", resolution.0, resolution.1);
+        if let Some(idx) = crate::ui_widgets::draw_dropdown(
+            ws, crate::ui_widgets::DropdownId::Resolution, layout.display_dropdown,
+            &box_label, &options, selected, scale, font,
+        ) {
+            if let Some(&(w, h)) = presets.get(idx) {
+                engine.settings_mut().resolution = (w, h);
+            }
+        }
+        // UI 语言（首项为「原文」=空串，跟随剧本语言）
         let available = engine.available_languages();
-        draw_dropdown_list_language(layout.ui_language_dropdown, &available, &settings.ui_language, font, scale);
+        let mut ui_options: Vec<String> = vec![engine.t_ui("language.original").to_string()];
+        let mut ui_codes: Vec<String> = vec![String::new()];
+        for (code, name) in available.iter() {
+            ui_options.push(format!("{} ({})", name, code));
+            ui_codes.push(code.clone());
+        }
+        let ui_language = engine.settings().ui_language.clone();
+        let ui_selected = ui_codes.iter().position(|c| *c == ui_language).unwrap_or(0);
+        let ui_box_label = if ui_language.is_empty() {
+            format!("{} ({})", engine.t_ui("language.follow_script"), engine.settings().effective_ui_language())
+        } else {
+            let display = available.iter()
+                .find(|(c, _)| *c == ui_language)
+                .map(|(_, n)| n.clone())
+                .unwrap_or_else(|| ui_language.clone());
+            format!("{} ({})", display, ui_language)
+        };
+        if let Some(idx) = crate::ui_widgets::draw_dropdown(
+            ws, crate::ui_widgets::DropdownId::UiLanguage, layout.ui_language_dropdown,
+            &ui_box_label, &ui_options, ui_selected, scale, font,
+        ) {
+            if let Some(code) = ui_codes.get(idx) {
+                engine.settings_mut().ui_language = code.clone();
+                engine.reload_ui_language();
+            }
+        }
+        // 剧本语言（首项为「原文」=空串）
+        let mut script_options: Vec<String> = vec![engine.t_ui("language.original").to_string()];
+        let mut script_codes: Vec<String> = vec![String::new()];
+        for (code, name) in available.iter() {
+            script_options.push(format!("{} ({})", name, code));
+            script_codes.push(code.clone());
+        }
+        let language = engine.settings().language.clone();
+        let script_selected = script_codes.iter().position(|c| *c == language).unwrap_or(0);
+        let script_box_label = if engine.translator().language().is_empty() {
+            engine.t_ui("language.original").to_string()
+        } else {
+            format!("{} ({})", engine.translator().display_name(), engine.translator().language())
+        };
+        if let Some(idx) = crate::ui_widgets::draw_dropdown(
+            ws, crate::ui_widgets::DropdownId::ScriptLanguage, layout.language_dropdown,
+            &script_box_label, &script_options, script_selected, scale, font,
+        ) {
+            if let Some(code) = script_codes.get(idx) {
+                engine.settings_mut().language = code.clone();
+                engine.reload_language();
+                // 若 UI 语言设为「跟随剧本语言」，同步重载 UI 翻译
+                if engine.settings().ui_language.is_empty() {
+                    engine.reload_ui_language();
+                }
+            }
+        }
+    } else if active_tab == SettingsTab::Skip {
+        let mode = engine.settings().skip_mode;
+        let options = [SkipMode::TextOnly, SkipMode::WithVoice];
+        let labels: Vec<String> = options.iter().map(|m| match m {
+            SkipMode::TextOnly => engine.t_ui("skip_mode.text_only").to_string(),
+            SkipMode::WithVoice => engine.t_ui("skip_mode.with_voice").to_string(),
+        }).collect();
+        let selected = options.iter().position(|m| *m == mode).unwrap_or(0);
+        let box_label = match mode {
+            SkipMode::TextOnly => engine.t_ui("skip_mode.text_only"),
+            SkipMode::WithVoice => engine.t_ui("skip_mode.with_voice"),
+        }.to_string();
+        if let Some(idx) = crate::ui_widgets::draw_dropdown(
+            ws, crate::ui_widgets::DropdownId::SkipMode, layout.skip_dropdown,
+            &box_label, &labels, selected, scale, font,
+        ) {
+            if let Some(&m) = options.get(idx) {
+                engine.settings_mut().skip_mode = m;
+            }
+        }
     }
-    if lang_dropdown_open && active_tab == SettingsTab::Display {
-        let available = engine.available_languages();
-        draw_dropdown_list_language(layout.language_dropdown, &available, &settings.language, font, scale);
-    }
-    if skip_dropdown_open && active_tab == SettingsTab::Skip {
-        draw_dropdown_list_skip_mode(engine, layout.skip_dropdown, settings.skip_mode, font, scale);
-    }
-}
-
-/// Draw a horizontal slider track with a filled portion and a knob. `fraction`
-/// is clamped to 0.0-1.0.  The knob radius is scaled by `scale`.
-fn draw_slider_track(track: Rect4, fraction: f32, scale: f32) {
-    let f = fraction.clamp(0.0, 1.0);
-    // Track background.
-    draw_rectangle(track.x, track.y, track.w, track.h, Color::new(0.2, 0.2, 0.3, 0.8));
-    // Filled portion.
-    draw_rectangle(track.x, track.y, track.w * f, track.h, Color::new(0.36, 0.61, 0.84, 0.9));
-    // Knob.
-    let knob_x = track.x + track.w * f;
-    let knob_y = track.y + track.h / 2.0;
-    draw_circle(knob_x, knob_y, 9.0 * scale, Color::new(0.8, 0.9, 1.0, 1.0));
 }
 
 /// Draw an on/off toggle switch.
@@ -5143,142 +5176,6 @@ fn draw_toggle(r: Rect4, on: bool, font: &Option<Font>, scale: f32) {
     draw_text_f(label, r.x + (r.w - tw) / 2.0, r.y + r.h / 2.0 + 6.0 * scale, label_size, fg, font);
 }
 
-/// Draw only the collapsed current-value box of the resolution dropdown.  The
-/// expanded list is drawn separately by `draw_dropdown_list_resolution` so it can be
-/// rendered on top of all other controls.
-fn draw_dropdown_box_resolution(r: Rect4, resolution: (u32, u32), font: &Option<Font>, open: bool, scale: f32) {
-    draw_rectangle_rounded(r.x, r.y, r.w, r.h, 6.0 * scale, Color::new(0.15, 0.25, 0.45, 0.9));
-    draw_rectangle_lines_rounded(r.x, r.y, r.w, r.h, 6.0 * scale, 1.5 * scale, Color::new(0.45, 0.7, 0.95, 0.8));
-    let label = format!("{}x{}", resolution.0, resolution.1);
-    let label_size = 20.0 * scale;
-    draw_text_f(&label, r.x + 12.0 * scale, r.y + r.h / 2.0 + 7.0 * scale, label_size, WHITE, font);
-    // Dropdown arrow.
-    let arrow = if open { "v" } else { ">" };
-    let arrow_size = 18.0 * scale;
-    draw_text_f(
-        arrow,
-        r.x + r.w - 24.0 * scale,
-        r.y + r.h / 2.0 + 7.0 * scale,
-        arrow_size,
-        Color::new(0.5, 0.75, 1.0, 0.9),
-        font,
-    );
-}
-
-/// Draw the expanded options list of the resolution dropdown, rendered below
-/// the current-value box.  Call this after every other control so the list
-/// appears on top (correct z-order).
-fn draw_dropdown_list_resolution(r: Rect4, resolution: (u32, u32), font: &Option<Font>, scale: f32) {
-    let item_h = 32.0 * scale;
-    let presets = Settings::resolution_presets();
-    let list_h = item_h * presets.len() as f32;
-    // List background.
-    draw_rectangle_rounded(r.x, r.y + r.h, r.w, list_h, 6.0 * scale, Color::new(0.12, 0.2, 0.35, 0.97));
-    draw_rectangle_lines_rounded(r.x, r.y + r.h, r.w, list_h, 6.0 * scale, 1.0 * scale, Color::new(0.45, 0.7, 0.95, 0.6));
-    let item_size = 18.0 * scale;
-    for (i, (w, h)) in presets.iter().enumerate() {
-        let iy = r.y + r.h + i as f32 * item_h;
-        let item_label = format!("{}x{}", w, h);
-        let is_selected = (*w, *h) == resolution;
-        let color = if is_selected {
-            Color::new(0.5, 0.75, 1.0, 0.95)
-        } else {
-            WHITE
-        };
-        draw_text_f(&item_label, r.x + 12.0 * scale, iy + item_h / 2.0 + 6.0 * scale, item_size, color, font);
-    }
-}
-
-/// 语言下拉菜单的折叠框。
-/// `current_lang` 为空字符串表示「原文/跟随」。
-/// `display_label` 是折叠框里显示的文本（已由调用方拼好）。
-fn draw_dropdown_box_language(r: Rect4, current_lang: &str, display_label: &str, font: &Option<Font>, open: bool, scale: f32) {
-    let _ = current_lang;
-    draw_rectangle_rounded(r.x, r.y, r.w, r.h, 6.0 * scale, Color::new(0.15, 0.25, 0.45, 0.9));
-    draw_rectangle_lines_rounded(r.x, r.y, r.w, r.h, 6.0 * scale, 1.5 * scale, Color::new(0.45, 0.7, 0.95, 0.8));
-    let label_size = 20.0 * scale;
-    draw_text_f(display_label, r.x + 12.0 * scale, r.y + r.h / 2.0 + 7.0 * scale, label_size, WHITE, font);
-    let arrow = if open { "v" } else { ">" };
-    let arrow_size = 18.0 * scale;
-    draw_text_f(
-        arrow,
-        r.x + r.w - 24.0 * scale,
-        r.y + r.h / 2.0 + 7.0 * scale,
-        arrow_size,
-        Color::new(0.5, 0.75, 1.0, 0.9),
-        font,
-    );
-}
-
-/// 语言下拉菜单的展开列表。
-/// `available` 是可选语言列表 (code, display_name)。
-/// `current_lang` 用于高亮当前选中项。
-fn draw_dropdown_list_language(r: Rect4, available: &[(String, String)], current_lang: &str, font: &Option<Font>, scale: f32) {
-    let item_h = 32.0 * scale;
-    let mut options: Vec<(String, String)> = Vec::new();
-    options.push(("".to_string(), "原文".to_string()));
-    for (code, name) in available {
-        options.push((code.clone(), format!("{} ({})", name, code)));
-    }
-    let list_h = item_h * options.len() as f32;
-    draw_rectangle_rounded(r.x, r.y + r.h, r.w, list_h, 6.0 * scale, Color::new(0.12, 0.2, 0.35, 0.97));
-    draw_rectangle_lines_rounded(r.x, r.y + r.h, r.w, list_h, 6.0 * scale, 1.0 * scale, Color::new(0.45, 0.7, 0.95, 0.6));
-    let item_size = 18.0 * scale;
-    for (i, (code, label)) in options.iter().enumerate() {
-        let iy = r.y + r.h + i as f32 * item_h;
-        let is_selected = *code == current_lang;
-        let color = if is_selected {
-            Color::new(0.5, 0.75, 1.0, 0.95)
-        } else {
-            WHITE
-        };
-        draw_text_f(label, r.x + 12.0 * scale, iy + item_h / 2.0 + 6.0 * scale, item_size, color, font);
-    }
-}
-
-/// 快进模式下拉菜单的折叠框。
-fn draw_dropdown_box_skip_mode(engine: &Engine, r: Rect4, mode: SkipMode, font: &Option<Font>, open: bool, scale: f32) {
-    draw_rectangle_rounded(r.x, r.y, r.w, r.h, 6.0 * scale, Color::new(0.15, 0.25, 0.45, 0.9));
-    draw_rectangle_lines_rounded(r.x, r.y, r.w, r.h, 6.0 * scale, 1.5 * scale, Color::new(0.45, 0.7, 0.95, 0.8));
-    let label = match mode {
-        SkipMode::TextOnly => engine.t_ui("skip_mode.text_only"),
-        SkipMode::WithVoice => engine.t_ui("skip_mode.with_voice"),
-    };
-    let label_size = 20.0 * scale;
-    draw_text_f(label, r.x + 12.0 * scale, r.y + r.h / 2.0 + 7.0 * scale, label_size, WHITE, font);
-    let arrow = if open { "v" } else { ">" };
-    let arrow_size = 18.0 * scale;
-    draw_text_f(
-        arrow,
-        r.x + r.w - 24.0 * scale,
-        r.y + r.h / 2.0 + 7.0 * scale,
-        arrow_size,
-        Color::new(0.5, 0.75, 1.0, 0.9),
-        font,
-    );
-}
-
-/// 快进模式下拉菜单的展开列表。
-fn draw_dropdown_list_skip_mode(engine: &Engine, r: Rect4, mode: SkipMode, font: &Option<Font>, scale: f32) {
-    let item_h = 32.0 * scale;
-    let options = [SkipMode::TextOnly, SkipMode::WithVoice];
-    let labels = [engine.t_ui("skip_mode.text_only"), engine.t_ui("skip_mode.with_voice")];
-    let list_h = item_h * options.len() as f32;
-    draw_rectangle_rounded(r.x, r.y + r.h, r.w, list_h, 6.0 * scale, Color::new(0.12, 0.2, 0.35, 0.97));
-    draw_rectangle_lines_rounded(r.x, r.y + r.h, r.w, list_h, 6.0 * scale, 1.0 * scale, Color::new(0.45, 0.7, 0.95, 0.6));
-    let item_size = 18.0 * scale;
-    for (i, opt) in options.iter().enumerate() {
-        let iy = r.y + r.h + i as f32 * item_h;
-        let is_selected = *opt == mode;
-        let color = if is_selected {
-            Color::new(0.5, 0.75, 1.0, 0.95)
-        } else {
-            WHITE
-        };
-        draw_text_f(labels[i], r.x + 12.0 * scale, iy + item_h / 2.0 + 6.0 * scale, item_size, color, font);
-    }
-}
-
 /// Handle all mouse interaction for the settings menu: slider dragging,
 /// toggle clicking, dropdown cycling, tab switching, and the back button.
 ///
@@ -5288,13 +5185,9 @@ fn draw_dropdown_list_skip_mode(engine: &Engine, r: Rect4, mode: SkipMode, font:
 fn handle_settings_interaction(
     engine: &mut Engine,
     layout: &SettingsLayout,
-    dragging_slider: &mut Option<(SettingsTab, usize)>,
-    dropdown_open: &mut bool,
-    skip_dropdown_open: &mut bool,
-    ui_lang_dropdown_open: &mut bool,
-    lang_dropdown_open: &mut bool,
+    ws: &mut crate::ui_widgets::UiWidgetsState,
     active_tab: &mut SettingsTab,
-    scale: f32,
+    _scale: f32,
     settings_snapshot: &Option<Settings>,
     _settings_prev_mode: &mut UiMode,
     project_config: &ProjectConfig,
@@ -5302,33 +5195,11 @@ fn handle_settings_interaction(
     color_hex_buffer: &mut String,
 ) -> Option<(UiMode, PendingUiAction)> {
     let (mx, my) = mouse_position();
-    let down = is_mouse_button_down(MouseButton::Left);
     let pressed = is_mouse_button_pressed(MouseButton::Left);
-    let released = is_mouse_button_released(MouseButton::Left);
 
-    // Continue dragging an already-grabbed slider while the button is held.
-    if let Some((tab, i)) = *dragging_slider
-        && down
-    {
-        let track_opt = match (tab, i) {
-            (SettingsTab::Text, 0) => Some(layout.text_slider_track),
-            (SettingsTab::Text, 1) => Some(layout.auto_play_slider_tracks[0]),
-            (SettingsTab::Text, 2) => Some(layout.auto_play_slider_tracks[1]),
-            (SettingsTab::Audio, 0) => Some(layout.audio_slider_tracks[0]),
-            (SettingsTab::Audio, 1) => Some(layout.audio_slider_tracks[1]),
-            (SettingsTab::Audio, 2) => Some(layout.audio_slider_tracks[2]),
-            _ => None,
-        };
-        if let Some(track) = track_opt {
-            update_slider_value(engine, tab, i, mx, track);
-        }
-    }
-
-    // Release ends any drag.
-    if released {
-        *dragging_slider = None;
-    }
-
+    // 任务4：滑块拖拽与下拉框开合/选择已由 draw_slider / draw_dropdown 立即模式
+    // 组件在绘制阶段处理（命中即写回设置并置 ws.click_consumed）。本函数仅处理
+    // 其余点击：标签页切换、开关、配色页色块/调色板/hex 激活、开发者页、应用/取消。
     // A fresh press starts a new interaction.
     if pressed {
         // 若正在编辑颜色十六进制，且本次点击不在当前激活的 hex 输入框内，
@@ -5339,16 +5210,18 @@ fn handle_settings_interaction(
                 *color_edit_active = None;
             }
         }
+        // 若本帧点击已被立即模式组件（滑块/下拉）消费，跳过其余点击判定，
+        // 复刻原集中式 handler「命中即 return」的语义，避免同一次点击被多个控件响应。
+        if ws.click_consumed {
+            return None;
+        }
 
         // 先检查标签页点击（8 个标签：文本/音频/画面/快进/配色/开发者/帮助/关于）
         let tab_tabs = [SettingsTab::Text, SettingsTab::Audio, SettingsTab::Display, SettingsTab::Skip, SettingsTab::Color, SettingsTab::Developer, SettingsTab::Help, SettingsTab::About];
         for (i, tab) in tab_tabs.iter().enumerate() {
             if point_in_rect(mx, my, layout.tab_rects[i]) {
                 *active_tab = *tab;
-                *dropdown_open = false;
-                *skip_dropdown_open = false;
-                *ui_lang_dropdown_open = false;
-                *lang_dropdown_open = false;
+                ws.open_dropdown = None;
                 return None;
             }
         }
@@ -5356,40 +5229,15 @@ fn handle_settings_interaction(
         // 根据当前标签页处理控件
         match *active_tab {
             SettingsTab::Text => {
-                // 文本速度滑块
-                if point_in_rect(mx, my, layout.text_slider_hit) {
-                    *dragging_slider = Some((SettingsTab::Text, 0));
-                    update_slider_value(engine, SettingsTab::Text, 0, mx, layout.text_slider_track);
-                    return None;
-                }
-                // 自动播放开关
+                // 自动播放开关（滑块已由 draw_slider 立即模式组件处理）
                 if point_in_rect(mx, my, layout.auto_play_toggle) {
                     let settings = engine.settings_mut();
                     settings.auto_play = !settings.auto_play;
                     return None;
                 }
-                // 有语音间隔滑块
-                if point_in_rect(mx, my, layout.auto_play_slider_hits[0]) {
-                    *dragging_slider = Some((SettingsTab::Text, 1));
-                    update_slider_value(engine, SettingsTab::Text, 1, mx, layout.auto_play_slider_tracks[0]);
-                    return None;
-                }
-                // 无语音间隔滑块
-                if point_in_rect(mx, my, layout.auto_play_slider_hits[1]) {
-                    *dragging_slider = Some((SettingsTab::Text, 2));
-                    update_slider_value(engine, SettingsTab::Text, 2, mx, layout.auto_play_slider_tracks[1]);
-                    return None;
-                }
             }
             SettingsTab::Audio => {
-                // BGM、SFX、Voice 滑块
-                for i in 0..3 {
-                    if point_in_rect(mx, my, layout.audio_slider_hits[i]) {
-                        *dragging_slider = Some((SettingsTab::Audio, i));
-                        update_slider_value(engine, SettingsTab::Audio, i, mx, layout.audio_slider_tracks[i]);
-                        return None;
-                    }
-                }
+                // 滑块已由 draw_slider 立即模式组件处理，本页无其它可点击控件
             }
             SettingsTab::Display => {
                 // 开关（auto_recovery、fullscreen 共 2 个；debug_terminal 已移至开发者页）
@@ -5404,153 +5252,14 @@ fn handle_settings_interaction(
                         return None;
                     }
                 }
-                // 分辨率下拉
-                if point_in_rect(mx, my, layout.display_dropdown) {
-                    *dropdown_open = !*dropdown_open;
-                    *ui_lang_dropdown_open = false;
-                    *lang_dropdown_open = false;
-                    return None;
-                }
-                if *dropdown_open {
-                    let item_h = 32.0 * scale;
-                    let presets = Settings::resolution_presets();
-                    let mut hit = false;
-                    for (i, (pw, ph)) in presets.iter().enumerate() {
-                        let item_y = layout.display_dropdown.y + layout.display_dropdown.h + i as f32 * item_h;
-                        let item_rect = Rect4 {
-                            x: layout.display_dropdown.x,
-                            y: item_y,
-                            w: layout.display_dropdown.w,
-                            h: item_h,
-                        };
-                        if point_in_rect(mx, my, item_rect) {
-                            engine.settings_mut().resolution = (*pw, *ph);
-                            *dropdown_open = false;
-                            hit = true;
-                            break;
-                        }
-                    }
-                    if hit {
-                        return None;
-                    }
-                    // Clicked outside the list: close it.
-                    *dropdown_open = false;
-                    return None;
-                }
-                // UI 语言下拉
-                if point_in_rect(mx, my, layout.ui_language_dropdown) {
-                    *ui_lang_dropdown_open = !*ui_lang_dropdown_open;
-                    *dropdown_open = false;
-                    *lang_dropdown_open = false;
-                    return None;
-                }
-                if *ui_lang_dropdown_open {
-                    let item_h = 32.0 * scale;
-                    let available = engine.available_languages();
-                    let mut options: Vec<(String, String)> = Vec::new();
-                    options.push(("".to_string(), "原文".to_string()));
-                    for (code, name) in &available {
-                        options.push((code.clone(), format!("{} ({})", name, code)));
-                    }
-                    let mut hit = false;
-                    for (i, (code, _)) in options.iter().enumerate() {
-                        let item_y = layout.ui_language_dropdown.y + layout.ui_language_dropdown.h + i as f32 * item_h;
-                        let item_rect = Rect4 {
-                            x: layout.ui_language_dropdown.x,
-                            y: item_y,
-                            w: layout.ui_language_dropdown.w,
-                            h: item_h,
-                        };
-                        if point_in_rect(mx, my, item_rect) {
-                            engine.settings_mut().ui_language = code.clone();
-                            engine.reload_ui_language();
-                            *ui_lang_dropdown_open = false;
-                            hit = true;
-                            break;
-                        }
-                    }
-                    if hit {
-                        return None;
-                    }
-                    // Clicked outside the list: close it.
-                    *ui_lang_dropdown_open = false;
-                    return None;
-                }
-                // 剧本语言下拉
-                if point_in_rect(mx, my, layout.language_dropdown) {
-                    *lang_dropdown_open = !*lang_dropdown_open;
-                    *dropdown_open = false;
-                    *ui_lang_dropdown_open = false;
-                    return None;
-                }
-                if *lang_dropdown_open {
-                    let item_h = 32.0 * scale;
-                    let available = engine.available_languages();
-                    let mut options: Vec<(String, String)> = Vec::new();
-                    options.push(("".to_string(), "原文".to_string()));
-                    for (code, name) in &available {
-                        options.push((code.clone(), format!("{} ({})", name, code)));
-                    }
-                    let mut hit = false;
-                    for (i, (code, _)) in options.iter().enumerate() {
-                        let item_y = layout.language_dropdown.y + layout.language_dropdown.h + i as f32 * item_h;
-                        let item_rect = Rect4 {
-                            x: layout.language_dropdown.x,
-                            y: item_y,
-                            w: layout.language_dropdown.w,
-                            h: item_h,
-                        };
-                        if point_in_rect(mx, my, item_rect) {
-                            engine.settings_mut().language = code.clone();
-                            engine.reload_language();
-                            // 若 UI 语言设为「跟随剧本语言」，同步重载 UI 翻译
-                            if engine.settings().ui_language.is_empty() {
-                                engine.reload_ui_language();
-                            }
-                            *lang_dropdown_open = false;
-                            hit = true;
-                            break;
-                        }
-                    }
-                    if hit {
-                        return None;
-                    }
-                    // Clicked outside the list: close it.
-                    *lang_dropdown_open = false;
-                    return None;
-                }
+                // 下拉框（分辨率 / UI 语言 / 剧本语言）已由 draw_dropdown 立即模式
+                // 组件在绘制阶段处理开合与选择，此处无需再判定。
             }
             SettingsTab::Skip => {
-                // 允许跳过未读开关
+                // 允许跳过未读开关（快进模式下拉已由 draw_dropdown 立即模式组件处理）
                 if point_in_rect(mx, my, layout.skip_toggle) {
                     let settings = engine.settings_mut();
                     settings.skip_unread = !settings.skip_unread;
-                    return None;
-                }
-                // 快进模式下拉
-                if point_in_rect(mx, my, layout.skip_dropdown) {
-                    *skip_dropdown_open = !*skip_dropdown_open;
-                    return None;
-                }
-                if *skip_dropdown_open {
-                    let item_h = 32.0 * scale;
-                    let options = [SkipMode::TextOnly, SkipMode::WithVoice];
-                    for (i, opt) in options.iter().enumerate() {
-                        let item_y = layout.skip_dropdown.y + layout.skip_dropdown.h + i as f32 * item_h;
-                        let item_rect = Rect4 {
-                            x: layout.skip_dropdown.x,
-                            y: item_y,
-                            w: layout.skip_dropdown.w,
-                            h: item_h,
-                        };
-                        if point_in_rect(mx, my, item_rect) {
-                            engine.settings_mut().skip_mode = *opt;
-                            *skip_dropdown_open = false;
-                            return None;
-                        }
-                    }
-                    // Clicked outside the list: close it.
-                    *skip_dropdown_open = false;
                     return None;
                 }
             }
@@ -5619,12 +5328,10 @@ fn handle_settings_interaction(
 
         // 应用按钮：保存设置并返回
         if point_in_rect(mx, my, layout.apply_btn) {
-            *dragging_slider = None;
             return Some((UiMode::Normal, PendingUiAction::ApplySettings));
         }
         // 取消按钮：检测是否有更改，若有则显示确认对话框
         if point_in_rect(mx, my, layout.cancel_btn) {
-            *dragging_slider = None;
             // 检测设置是否有更改
             let has_changes = if let Some(snapshot) = settings_snapshot {
                 let current = engine.settings();
@@ -5661,26 +5368,6 @@ fn handle_settings_interaction(
         }
     }
     None
-}
-
-/// Update a slider's value from the mouse X position, clamped to the track.
-fn update_slider_value(engine: &mut Engine, tab: SettingsTab, index: usize, mx: f32, track: Rect4) {
-    let t = if track.w > 0.0 {
-        ((mx - track.x) / track.w).clamp(0.0, 1.0)
-    } else {
-        0.0
-    };
-    let settings = engine.settings_mut();
-    match (tab, index) {
-        (SettingsTab::Text, 0) => settings.text_speed = (t * 999.0).round(),
-        // 自动播放间隔：0.0 - 5.0 秒，按 0.1 秒精度取整
-        (SettingsTab::Text, 1) => settings.auto_play_delay_with_voice = (t * 5.0 * 10.0).round() / 10.0,
-        (SettingsTab::Text, 2) => settings.auto_play_delay_without_voice = (t * 5.0 * 10.0).round() / 10.0,
-        (SettingsTab::Audio, 0) => settings.bgm_volume = t,
-        (SettingsTab::Audio, 1) => settings.sfx_volume = t,
-        (SettingsTab::Audio, 2) => settings.voice_volume = t,
-        _ => {}
-    }
 }
 
 /// Cycle the resolution setting to the next preset in `Settings::resolution_presets()`.

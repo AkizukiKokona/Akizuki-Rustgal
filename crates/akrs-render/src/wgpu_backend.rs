@@ -212,6 +212,13 @@ struct Backend {
     mouse_wheel_delta: (f32, f32),
     keys_pressed: HashSet<KeyCode>,
     char_queue: Vec<char>,
+    // —— IME 输入法状态 ——
+    // 当前预编辑（preedit）文本及其光标范围；持久状态，由 Ime::Preedit 写入，
+    // 由 Ime::Commit / Ime::Disabled / 空字符串 Preedit 清空。每帧不清空。
+    ime_preedit: Option<(String, Option<(usize, usize)>)>,
+    // 已确认（commit）的 IME 文本队列；每帧 begin_frame 清空（与 char_queue 一致），
+    // 由文本输入组件通过 `take_ime_commit` 逐串取出。
+    ime_commit_queue: Vec<String>,
     quit_requested: bool,
     // —— 启动时刻（get_time 用）——
     start_time: Instant,
@@ -399,6 +406,8 @@ impl Backend {
             mouse_wheel_delta: (0.0, 0.0),
             keys_pressed: HashSet::new(),
             char_queue: Vec::new(),
+            ime_preedit: None,
+            ime_commit_queue: Vec::new(),
             quit_requested: false,
             start_time: Instant::now(),
             pending_fullscreen: None,
@@ -482,6 +491,9 @@ impl Backend {
         self.mouse_wheel_delta = (0.0, 0.0);
         self.keys_pressed.clear();
         self.char_queue.clear();
+        // IME commit 队列每帧清空（与 char_queue 同语义：pump_events 在 begin_frame 之后填充）。
+        // ime_preedit 为持久状态，不清空——由 Ime 事件自身维护。
+        self.ime_commit_queue.clear();
         self.draw_cmds.clear();
         self.vertices.clear();
         self.clear_color = BLACK.to_wgpu();
@@ -769,11 +781,31 @@ pub fn handle_event(event: Event<()>) {
                     }
                 }
                 WindowEvent::Ime(ime) => {
-                    if let winit::event::Ime::Commit(s) = ime {
-                        for c in s.chars() {
-                            if !c.is_control() {
-                                be.char_queue.push(c);
+                    // winit 0.29 的 Ime 事件四变体：Enabled / Preedit / Commit / Disabled。
+                    // IME 必须先经 `Window::set_ime_allowed(true)` 启用才会发送这些事件
+                    // （由 renderer 主循环根据文本输入聚焦状态切换）。
+                    match ime {
+                        winit::event::Ime::Enabled => {
+                            // IME 会话开始：无状态需要记录（preedit 仍为空）。
+                        }
+                        winit::event::Ime::Preedit(s, cursor) => {
+                            // 预编辑文本：空字符串表示 preedit 结束，清空状态。
+                            if s.is_empty() {
+                                be.ime_preedit = None;
+                            } else {
+                                be.ime_preedit = Some((s, cursor));
                             }
+                        }
+                        winit::event::Ime::Commit(s) => {
+                            // 确认文本：清空 preedit，整串入 commit 队列。
+                            // 不再拆字符推入 char_queue——避免与非 IME 文本输入双计。
+                            // 文本输入组件通过 `take_ime_commit` 读取整串。
+                            be.ime_preedit = None;
+                            be.ime_commit_queue.push(s);
+                        }
+                        winit::event::Ime::Disabled => {
+                            // IME 会话结束：清空 preedit。
+                            be.ime_preedit = None;
                         }
                     }
                 }
@@ -1152,6 +1184,31 @@ pub fn is_key_pressed(key: KeyCode) -> bool {
 pub fn get_char_pressed() -> Option<char> {
     BACKEND.with(|b| b.borrow_mut().as_mut().and_then(|be| be.char_queue.pop()))
 }
+
+/// 取当前 IME 预编辑（preedit）文本及其光标范围（无则 None）。
+/// preedit 为持久状态：在 Ime::Preedit 之间持续可用，由 Ime::Commit/Disabled 清空。
+/// 文本输入组件聚焦时据此在光标处绘制候选串（带下划线）。
+pub fn ime_preedit() -> Option<(String, Option<(usize, usize)>)> {
+    BACKEND.with(|b| {
+        b.borrow().as_ref().and_then(|be| {
+            be.ime_preedit.as_ref().map(|(s, c)| (s.clone(), *c))
+        })
+    })
+}
+
+/// 取出一条已确认的 IME 文本（FIFO）。文本输入组件在聚焦时循环调用直至返回 None。
+/// 与 `get_char_pressed` 同语义：取出即从队列移除。
+pub fn take_ime_commit() -> Option<String> {
+    BACKEND.with(|b| {
+        b.borrow_mut().as_mut().and_then(|be| {
+            if be.ime_commit_queue.is_empty() {
+                None
+            } else {
+                Some(be.ime_commit_queue.remove(0))
+            }
+        })
+    })
+}
 pub fn is_quit_requested() -> bool {
     BACKEND.with(|b| b.borrow().as_ref().map_or(false, |be| be.quit_requested))
 }
@@ -1190,11 +1247,11 @@ pub mod prelude {
     pub use super::{
         draw_circle, draw_line, draw_rectangle, draw_rectangle_lines,
         draw_rectangle_lines_rounded, draw_rectangle_rounded, draw_texture_ex,
-        get_char_pressed, get_frame_time, get_time, is_key_pressed,
+        get_char_pressed, get_frame_time, get_time, ime_preedit, is_key_pressed,
         is_mouse_button_down, is_mouse_button_pressed, is_mouse_button_released,
         is_quit_requested, mouse_position, mouse_wheel, prevent_quit,
         request_new_screen_size, screen_height, screen_width, set_fullscreen,
-        dpi_scale, vec2,
+        take_ime_commit, dpi_scale, vec2,
         clear_background, Color, DrawTextureParams, FilterMode, Rect, Texture2D,
         Vec2, BLACK, BLUE, GREEN, RED, TRANSPARENT, WHITE,
     };

@@ -12,8 +12,9 @@
 
 - [x] **音频**：重写 audio.rs 封装层（86d356b）。SoundKind 三轨路由 + BGM 流式 + crossfade，settings 三轨音量生效。
 - [x] **文本**：text.rs 改用 cosmic-text Buffer/Layout（86d356b）。shaping/bidi/kerning/字符级回退，签名全兼容。
-- [ ] **游戏内 UI**：渐进嵌入 iced 0.13 作运行时 UI。先迁控件型 UI（设置/存档/标题/目录选择器），保留对话框/立绘/打字机自绘。iced 0.13 共享 wgpu 22 无冲突，但 retained/immediate 混合需分层渲染。
-- [ ] **编辑器 UI**：引入 iced_aw 扩展（menu/modal/sidebar/number_input/color_picker 替代部分手写弹窗）+ iced_glyphon 做构建日志终端。维持 iced 0.13。
+- [x] **游戏内 UI**：自写组件化改进完成。新增 ui_widgets.rs（draw_slider/draw_dropdown/draw_text_input 三个可复用组件），4 个下拉 bool 合并为 open_dropdown:Option<DropdownId>，删除 8 个冗余助手函数；补 IME 输入法（wgpu_backend 接 winit Ime 事件，文本输入聚焦时 set_ime_allowed + preedit 下划线显示 + commit 插入）。保留立即模式架构。
+  - 注：原方案"嵌入 iced 作运行时 UI"经调研确认不可行——iced_wgpu 0.13.5 锁 wgpu 0.19，与 akrs-render 的 wgpu 22 类型不兼容无法共享 device。用户决策改走自写组件化。
+- [x] **编辑器 UI**：引入 iced_aw 0.10 扩展（74f6eb7）。Card 统一 11 个弹窗卡片 + Tabs 重构右栏预览标签页。
 
 ## 工具链约束（勿破）
 
