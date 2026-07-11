@@ -433,9 +433,16 @@ impl BlueprintState {
         }
     }
 
-    /// 估算节点尺寸（固定宽度，高度随行数自适应）。
+    /// 估算节点尺寸（宽度随最长行自适应，高度随行数自适应）。
     fn node_size(text: &str) -> egui::Vec2 {
-        let width = 200.0;
+        // 估算每字符宽度：中文约 12px，ASCII 约 7px。
+        let char_width = |c: char| if c.is_ascii() { 7.0 } else { 12.0 };
+        let max_line_w = text
+            .lines()
+            .map(|line| line.chars().map(char_width).sum::<f32>())
+            .fold(0.0f32, f32::max);
+        // 宽度 = 正文最大行宽 + 左右内边距，限制在 [200, 420]。
+        let width = (max_line_w + 24.0).clamp(200.0, 420.0);
         let header_h = 22.0;
         let line_count = text.lines().count().max(1);
         let body_h = (line_count as f32 * 15.0 + 12.0).max(36.0);
@@ -2295,8 +2302,24 @@ impl EditorApp {
                 egui::FontId::proportional(12.0),
                 egui::Color32::WHITE,
             );
-            // 正文（截断显示前几行）
-            let preview: String = node.text.lines().take(4).collect::<Vec<_>>().join("\n");
+            // 正文（截断显示前几行，超长行用省略号截断避免溢出节点边界）
+            let body_max_w = size.x - 16.0; // 左右各 8px 内边距
+            let char_w_approx = 7.0; // monospace 11px 的 ASCII 字符宽近似
+            let max_chars = (body_max_w / char_w_approx).floor() as usize;
+            let preview: String = node
+                .text
+                .lines()
+                .take(6)
+                .map(|line| {
+                    if line.chars().count() > max_chars {
+                        let truncated: String = line.chars().take(max_chars.saturating_sub(1)).collect();
+                        format!("{}…", truncated)
+                    } else {
+                        line.to_string()
+                    }
+                })
+                .collect::<Vec<_>>()
+                .join("\n");
             clipped.text(
                 egui::pos2(screen_pos.x + 8.0, screen_pos.y + 26.0),
                 egui::Align2::LEFT_TOP,
@@ -3725,6 +3748,8 @@ impl eframe::App for EditorApp {
             ins2: bool,
             ins3: bool,
             ins4: bool,
+            toggle_blueprint: bool,
+            toggle_translation: bool,
         }
         let sc = ctx.input(|i| {
             let mut f = ShortcutFlags::default();
@@ -3739,6 +3764,8 @@ impl eframe::App for EditorApp {
                         egui::Key::S => f.save = true,
                         egui::Key::R => f.run = true,
                         egui::Key::H => f.help = true,
+                        egui::Key::B => f.toggle_blueprint = true,
+                        egui::Key::T => f.toggle_translation = true,
                         egui::Key::Num1 => f.ins1 = true,
                         egui::Key::Num2 => f.ins2 = true,
                         egui::Key::Num3 => f.ins3 = true,
@@ -3787,6 +3814,22 @@ impl eframe::App for EditorApp {
         if sc.help {
             self.show_shortcuts = true;
         }
+        // Ctrl+B：切换蓝图模式
+        if sc.toggle_blueprint {
+            // 翻译模式下不允许直接进蓝图（避免互相打架），先退出翻译。
+            if self.translation_mode {
+                self.toggle_translation_mode();
+            }
+            self.toggle_blueprint_mode();
+        }
+        // Ctrl+T：切换对照翻译模式
+        if sc.toggle_translation {
+            // 蓝图模式下不允许直接进翻译，先退出蓝图。
+            if self.blueprint_mode {
+                self.toggle_blueprint_mode();
+            }
+            self.toggle_translation_mode();
+        }
 
         if let Some(engine) = self.engine.as_mut() {
             let _ = engine.update(dt);
@@ -3824,30 +3867,30 @@ impl eframe::App for EditorApp {
                     self.show_project_settings = true;
                 }
                 ui.separator();
-                if ui.button("新建 (Ctrl+N)").clicked() {
+                if ui.button("新建").on_hover_text("快捷键：Ctrl+N").clicked() {
                     self.new_file();
                 }
-                if ui.button("打开 (Ctrl+O)").clicked() {
+                if ui.button("打开").on_hover_text("快捷键：Ctrl+O").clicked() {
                     self.open_file_picker(FilePickerMode::Open);
                 }
-                if ui.button("保存 (Ctrl+S)").clicked() {
+                if ui.button("保存").on_hover_text("快捷键：Ctrl+S").clicked() {
                     self.save_file();
                 }
                 ui.separator();
                 // 快速插入语法按钮（收进下拉菜单，节省工具栏空间）
                 // 蓝图模式下点击直接添加节点到画布；文本模式下追加到脚本末尾。
-                let insert_label = if self.blueprint_mode { "插入节点 ▾" } else { "插入语法 ▾" };
+                let insert_label = if self.blueprint_mode { "插入节点" } else { "插入语法" };
                 ui.menu_button(insert_label, |ui| {
                     let insert_buttons = [
-                        ("立绘上场  (+)", "+ 角色", "立绘上场（0.5秒淡入）(Ctrl+1)"),
-                        ("立绘下场  (-)", "- 角色", "立绘下场（0.5秒淡出）(Ctrl+2)"),
-                        ("差分更换  (~)", "+ 角色 (新pose) swap", "差分更换立绘（仅换pose，无过渡，位置/大小不变）"),
-                        ("章节  (#)", "# 章节", "章节标题 (Ctrl+3)"),
-                        ("背景  (@)", "@bg 背景", "背景指令 (Ctrl+4)"),
-                        ("选择分支  (?)", "? 选项", "选择分支"),
-                        ("变量  ($)", "$变量", "变量操作"),
-                        ("结局声明  (E)", "ending \"true_end\" epilogue \"scripts/epilogue.akrs\" button \"尾声之后\"", "隐藏结局声明（彩蛋：定义尾声剧本与按钮文本）"),
-                        ("解锁结局  (U)", "unlock \"true_end\"", "解锁隐藏结局标记（执行后主页显示尾声按钮）"),
+                        ("立绘上场", "+ 角色", "立绘上场（0.5秒淡入）(Ctrl+1)"),
+                        ("立绘下场", "- 角色", "立绘下场（0.5秒淡出）(Ctrl+2)"),
+                        ("差分更换立绘", "+ 角色 (新pose) swap", "差分更换立绘（仅换pose，无过渡，位置/大小不变）"),
+                        ("章节标题", "# 章节", "章节标题 (Ctrl+3)"),
+                        ("背景指令", "@bg 背景", "背景指令 (Ctrl+4)"),
+                        ("选择分支", "? 选项", "选择分支"),
+                        ("变量操作", "$变量", "变量操作"),
+                        ("结局声明", "ending \"true_end\" epilogue \"scripts/epilogue.akrs\" button \"尾声之后\"", "隐藏结局声明（彩蛋：定义尾声剧本与按钮文本）"),
+                        ("解锁结局", "unlock \"true_end\"", "解锁隐藏结局标记（执行后主页显示尾声按钮）"),
                     ];
                     for (label, syntax, tooltip) in &insert_buttons {
                         if ui.button(*label).on_hover_text(*tooltip).clicked() {
@@ -3865,7 +3908,7 @@ impl eframe::App for EditorApp {
                     }
                 });
                 ui.separator();
-                if ui.button("运行 (Ctrl+R)").clicked() {
+                if ui.button("运行").on_hover_text("快捷键：Ctrl+R").clicked() {
                     self.run_script();
                 }
                 if self.engine.is_some() {
@@ -3907,22 +3950,22 @@ impl eframe::App for EditorApp {
                 }
                 ui.separator();
                 if self.translation_mode {
-                    if ui.button("退出对照翻译").clicked() {
+                    if ui.button("退出对照翻译").on_hover_text("快捷键：Ctrl+T").clicked() {
                         self.toggle_translation_mode();
                     }
                 } else {
-                    if ui.button("对照翻译").clicked() {
+                    if ui.button("对照翻译").on_hover_text("快捷键：Ctrl+T").clicked() {
                         self.toggle_translation_mode();
                     }
                 }
                 ui.separator();
                 // 蓝图模式切换按钮（在工具栏右上方，便于在文本模式与可视化节点模式间切换）
                 if self.blueprint_mode {
-                    if ui.button("退出蓝图模式").clicked() {
+                    if ui.button("退出蓝图模式").on_hover_text("快捷键：Ctrl+B").clicked() {
                         self.toggle_blueprint_mode();
                     }
                 } else {
-                    if ui.button("蓝图模式").clicked() {
+                    if ui.button("蓝图模式").on_hover_text("快捷键：Ctrl+B").clicked() {
                         self.toggle_blueprint_mode();
                     }
                 }
