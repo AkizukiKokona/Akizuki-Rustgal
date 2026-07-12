@@ -1139,9 +1139,17 @@ pub fn run(mut engine: Engine, project_config: &ProjectConfig) {
     }
 
     let mut assets = AssetManager::new();
-    // 预加载关于页头像（kokona.png，位于项目根目录），加载失败时为 None，关于页画占位框。
+    // 预加载关于页图片：sync_logo=true 用 kokona.png（项目根目录）；
+    // 否则用 about.image（相对 assets/ 目录，如 about/logo.png）；
+    // 两者都未命中则为 None，关于页画占位框。
     // 路径 ../kokona.png 相对 assets/ 基目录解析为项目根目录的 kokona.png。
-    let about_icon_texture = assets.get_texture(AssetKind::Title, "../kokona.png");
+    let about_icon_texture = if project_config.about.sync_logo {
+        assets.get_texture(AssetKind::Title, "../kokona.png")
+    } else if !project_config.about.image.is_empty() {
+        assets.get_texture(AssetKind::Title, &project_config.about.image)
+    } else {
+        None
+    };
     // Load Chinese font for proper CJK text rendering, with system-font fallback.
     let (font, fallback_font) = load_font_with_fallback();
     set_fallback_font(fallback_font);
@@ -4922,9 +4930,14 @@ fn draw_help_tab(engine: &Engine, layout: &SettingsLayout, font: &Option<Font>, 
     let _ = col_func_w;
 }
 
-/// 绘制「关于」选项卡：图标 + 5 行文字，整体占屏幕 50% 居中。
+/// 绘制「关于」选项卡：图标 + 多行文字，整体占屏幕 50% 居中。
 ///
-/// 布局：
+/// 文本行、颜色、图片均可通过 `project_config.about` 配置：
+/// - 图片：`sync_logo=true` 用 `kokona.png`；否则用 `about.image`（相对 `assets/`）。
+/// - 文本：`about.lines` 非空则用它（空字符串行自动填版本号），否则回退翻译表默认 5 行。
+/// - 颜色：第 1 行 `bold_color`（粗体），第 2、3 行 `normal_color`，第 4 行及以后 `accent_color`。
+///
+/// 布局（默认 5 行）：
 /// ```text
 /// ┌──────────────────────────────────┐
 /// │  ┌──────┐                        │
@@ -4936,8 +4949,15 @@ fn draw_help_tab(engine: &Engine, layout: &SettingsLayout, font: &Option<Font>, 
 /// │           最喜欢心夏麻麻了喵       │  ← 第 5 行
 /// └──────────────────────────────────┘
 /// ```
-/// 图标高度 ≈ 3 行文字高度。5 行文字全部左对齐。
-fn draw_about_tab(engine: &Engine, layout: &SettingsLayout, font: &Option<Font>, scale: f32, icon_texture: &Option<Texture2D>) {
+/// 图标高度 ≈ min(3 行, 实际行数) 行文字高度。所有文字左对齐。
+fn draw_about_tab(
+    engine: &Engine,
+    layout: &SettingsLayout,
+    font: &Option<Font>,
+    scale: f32,
+    icon_texture: &Option<Texture2D>,
+    project_config: &ProjectConfig,
+) {
     let sw = layout.panel_w;
     let sh = layout.panel_h;
 
@@ -4949,21 +4969,60 @@ fn draw_about_tab(engine: &Engine, layout: &SettingsLayout, font: &Option<Font>,
     let block_w = sw * 0.5;
     let block_x = (sw - block_w) / 2.0;
 
-    // 图标高度 = 3 行文字高度
-    let icon_h = line_h * 3.0;
+    // 版本号取自 Cargo.toml 的 CARGO_PKG_VERSION（SemVer 形如 "1.0.40"）：
+    //   - 主次版本 = major.minor（如 "1.0"）
+    //   - build 号 = patch 段数字，按四位数补零显示（如 40 → "0040"）
+    //     该值与 build.rs 注入的 BUILD_NUMBER（commit 数 + 37）保持一致。
+    // 显示格式：版本 1.0(Build 0040)。
+    // 注：SemVer 不允许 patch 段有前导零，故 Cargo.toml 写 "1.0.40"，
+    // 显示时再补零为 "0040"。
+    let pkg_ver = env!("CARGO_PKG_VERSION");
+    let (ver_main, build_num) = match pkg_ver.rsplit_once('.') {
+        Some((head, patch)) => (head, patch.parse::<u64>().unwrap_or(0)),
+        None => (pkg_ver, 0),
+    };
+    let version_str = format!("{} {}({} {:04})",
+        engine.t_ui("about.version_label"),
+        ver_main,
+        engine.t_ui("about.build_label"),
+        build_num);
+
+    // 构建显示行：about.lines 非空则用它（空字符串行自动填版本号），
+    // 否则回退翻译表默认 5 行（about.name / about.subtitle / 版本 / about.line4 / about.line5）。
+    let cfg_lines = &project_config.about.lines;
+    let display_lines: Vec<String> = if !cfg_lines.is_empty() {
+        cfg_lines.iter().map(|l| {
+            if l.is_empty() { version_str.clone() } else { l.clone() }
+        }).collect()
+    } else {
+        vec![
+            engine.t_ui("about.name").to_string(),
+            engine.t_ui("about.subtitle").to_string(),
+            version_str.clone(),
+            engine.t_ui("about.line4").to_string(),
+            engine.t_ui("about.line5").to_string(),
+        ]
+    };
+
+    // 图标高度 = min(3 行, 实际行数) 行文字高度
+    let icon_lines = display_lines.len().min(3);
+    let icon_h = line_h * icon_lines as f32;
     let icon_w = icon_h; // 正方形图标
     let icon_x = block_x;
     let gap = 40.0 * scale;
     let text_x = icon_x + icon_w + gap;
 
-    // 前三行与图标顶部对齐；后两行在图标下方
+    // 第 1 行 baseline；后续行依次加 line_h。图标顶部与第一行顶部对齐。
     let line1_y = layout.content_top + 20.0 * scale + text_size; // baseline
-    let line2_y = line1_y + line_h;
-    let line3_y = line2_y + line_h;
-    let line4_y = line3_y + line_h;
-    let line5_y = line4_y + line_h;
+    let icon_y = line1_y - text_size;
 
-    let icon_y = line1_y - text_size; // 图标顶部与第一行顶部对齐
+    // 颜色：[u8;4] → macroquad f32 颜色（0.0-1.0）
+    let to_color = |c: [u8; 4]| Color::new(
+        c[0] as f32 / 255.0, c[1] as f32 / 255.0, c[2] as f32 / 255.0, c[3] as f32 / 255.0,
+    );
+    let bold_color = to_color(project_config.about.bold_color);
+    let normal_color = to_color(project_config.about.normal_color);
+    let accent_color = to_color(project_config.about.accent_color);
 
     // ── 绘制图标 ──
     if let Some(tex) = icon_texture {
@@ -4987,50 +5046,27 @@ fn draw_about_tab(engine: &Engine, layout: &SettingsLayout, font: &Option<Font>,
             Color::new(0.5, 0.6, 0.75, 0.6));
     }
 
-    // ── 第 1 行：Akizuki*Rustgal（粗体）──
-    // 字体系统仅加载单一字重，通过多次微小偏移绘制模拟加粗效果。
-    let name = engine.t_ui("about.name");
-    let bold_color = Color::new(1.0, 0.95, 0.6, 1.0);
+    // ── 绘制文本行 ──
+    // 第 1 行粗体（字体系统仅单一字重，通过多次微小偏移模拟加粗）；
+    // 颜色分组：第 1 行 bold_color；第 2、3 行 normal_color；第 4 行及以后 accent_color（字号×0.9）。
     let bold_off = 1.5 * scale;
-    for (dx, dy) in [(0.0, 0.0), (bold_off, 0.0), (-bold_off, 0.0), (0.0, bold_off), (0.0, -bold_off)] {
-        draw_text_f(name, text_x + dx, line1_y + dy, text_size, bold_color, font);
+    for (i, text) in display_lines.iter().enumerate() {
+        let y = line1_y + (i as f32) * line_h;
+        let (color, size, bold) = if i == 0 {
+            (bold_color, text_size, true)
+        } else if i < 3 {
+            (normal_color, text_size, false)
+        } else {
+            (accent_color, text_size * 0.9, false)
+        };
+        if bold {
+            for (dx, dy) in [(0.0, 0.0), (bold_off, 0.0), (-bold_off, 0.0), (0.0, bold_off), (0.0, -bold_off)] {
+                draw_text_f(text, text_x + dx, y + dy, size, color, font);
+            }
+        } else {
+            draw_text_f(text, text_x, y, size, color, font);
+        }
     }
-
-    // ── 第 2 行：简单好用的视觉小说引擎 ──
-    let subtitle = engine.t_ui("about.subtitle");
-    draw_text_f(subtitle, text_x, line2_y, text_size,
-        Color::new(0.8, 0.85, 0.95, 1.0), font);
-
-    // ── 第 3 行：版本 1.0(Build 0040) ──
-    // 版本号取自 Cargo.toml 的 CARGO_PKG_VERSION（SemVer 形如 "1.0.40"）：
-    //   - 主次版本 = major.minor（如 "1.0"）
-    //   - build 号 = patch 段数字，按四位数补零显示（如 40 → "0040"）
-    //     该值与 build.rs 注入的 BUILD_NUMBER（commit 数 + 37）保持一致。
-    // 显示格式：版本 1.0(Build 0040)。
-    // 注：SemVer 不允许 patch 段有前导零，故 Cargo.toml 写 "1.0.40"，
-    // 显示时再补零为 "0040"。
-    let pkg_ver = env!("CARGO_PKG_VERSION");
-    let (ver_main, build_num) = match pkg_ver.rsplit_once('.') {
-        Some((head, patch)) => (head, patch.parse::<u64>().unwrap_or(0)),
-        None => (pkg_ver, 0),
-    };
-    let build_str = format!("{} {}({} {:04})",
-        engine.t_ui("about.version_label"),
-        ver_main,
-        engine.t_ui("about.build_label"),
-        build_num);
-    draw_text_f(&build_str, text_x, line3_y, text_size,
-        Color::new(0.7, 0.8, 0.95, 1.0), font);
-
-    // ── 第 4 行：心夏麻麻可爱喵（不再与图标对齐）──
-    let line4 = engine.t_ui("about.line4");
-    draw_text_f(line4, text_x, line4_y, text_size * 0.9,
-        Color::new(0.9, 0.7, 0.8, 1.0), font);
-
-    // ── 第 5 行：最喜欢心夏麻麻了喵 ──
-    let line5 = engine.t_ui("about.line5");
-    draw_text_f(line5, text_x, line5_y, text_size * 0.9,
-        Color::new(0.9, 0.7, 0.8, 1.0), font);
 
     // 消除未使用变量警告
     let _ = sh;
@@ -5229,7 +5265,7 @@ fn draw_settings_menu(engine: &mut Engine, layout: &SettingsLayout, font: &Optio
             draw_help_tab(engine, layout, font, scale);
         }
         SettingsTab::About => {
-            draw_about_tab(engine, layout, font, scale, icon_texture);
+            draw_about_tab(engine, layout, font, scale, icon_texture, project_config);
         }
     }
 

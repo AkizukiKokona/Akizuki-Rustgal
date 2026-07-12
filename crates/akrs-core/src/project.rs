@@ -68,6 +68,63 @@ pub struct ProjectConfig {
     /// 留空则不弹出。玩家可在弹窗里选「不再显示」（仅本地生效，存于编辑器数据目录）。
     #[serde(default)]
     pub warning: String,
+    /// 关于页配置（图片、文本、颜色）。
+    #[serde(default)]
+    pub about: AboutConfig,
+}
+
+/// 游戏关于页配置（图片、文本、颜色）。
+/// 所有字段带 `#[serde(default)]`，旧项目文件缺失时回退默认值。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AboutConfig {
+    /// 关于页图片路径（相对 `assets/` 目录，如 `about/logo.png`）。
+    /// 留空时若 `sync_logo=true` 则用 `kokona.png`，否则画占位框。
+    #[serde(default)]
+    pub image: String,
+    /// 是否自动同步 logo（用 `kokona.png` 作为关于页图片），默认 true。
+    #[serde(default = "default_about_sync_logo")]
+    pub sync_logo: bool,
+    /// 关于页显示的文本行（每行一个字符串）。
+    /// 第 1 行粗体显示，其余正常。留空则回退默认 5 行。
+    #[serde(default = "default_about_lines")]
+    pub lines: Vec<String>,
+    /// 关于页文本颜色 `[R, G, B, A]`（0-255）。
+    /// 第 1 行（粗体）颜色。
+    #[serde(default = "default_about_bold_color")]
+    pub bold_color: [u8; 4],
+    /// 其余行颜色。
+    #[serde(default = "default_about_normal_color")]
+    pub normal_color: [u8; 4],
+    /// 第 4、5 行（如有）颜色。
+    #[serde(default = "default_about_accent_color")]
+    pub accent_color: [u8; 4],
+}
+
+fn default_about_sync_logo() -> bool { true }
+fn default_about_lines() -> Vec<String> {
+    vec![
+        "Akizuki*Rustgal".to_string(),
+        "简单好用的视觉小说引擎".to_string(),
+        String::new(), // 版本行留空，运行时自动填充版本号
+        "心夏麻麻可爱喵".to_string(),
+        "最喜欢心夏麻麻了喵".to_string(),
+    ]
+}
+fn default_about_bold_color() -> [u8; 4] { [255, 242, 153, 255] }   // 浅黄
+fn default_about_normal_color() -> [u8; 4] { [204, 217, 242, 255] } // 浅蓝灰
+fn default_about_accent_color() -> [u8; 4] { [230, 179, 204, 255] } // 粉色
+
+impl Default for AboutConfig {
+    fn default() -> Self {
+        Self {
+            image: String::new(),
+            sync_logo: true,
+            lines: default_about_lines(),
+            bold_color: default_about_bold_color(),
+            normal_color: default_about_normal_color(),
+            accent_color: default_about_accent_color(),
+        }
+    }
 }
 
 /// 游戏主题配色：RGBA 通道均为 0–255。
@@ -148,6 +205,7 @@ impl Default for ProjectConfig {
             title_music: String::new(),
             theme: ThemeColors::default(),
             warning: String::new(),
+            about: AboutConfig::default(),
         }
     }
 }

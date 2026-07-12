@@ -16,8 +16,8 @@ members = [
 ]
 
 [workspace.package]
-# patch 段与编辑器关于页 BUILD_NUMBER 保持一致（本轮 0094 → 0095）。
-version = "1.0.95"
+# patch 段与编辑器关于页 BUILD_NUMBER 保持一致（本轮 0095 → 0096）。
+version = "1.0.96"
 edition = "2024"
 license = "MIT"
 authors = ["Akizuki*Rustgal Team"]

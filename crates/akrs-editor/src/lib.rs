@@ -7394,6 +7394,64 @@ impl eframe::App for EditorApp {
                     ui.separator();
                     ui.add_space(12.0);
 
+                    ui.heading("关于页配置");
+                    ui.add_space(8.0);
+                    ui.label("自定义游戏内关于页的图片、文本和颜色。图片放在 assets/about/ 目录下。");
+
+                    ui.add_space(8.0);
+                    ui.checkbox(&mut self.project_config.about.sync_logo, "自动同步 logo（用 kokona.png 作为关于页图片）");
+
+                    ui.add_space(4.0);
+                    ui.horizontal(|ui| {
+                        ui.label("图片路径：");
+                        ui.add_enabled(
+                            !self.project_config.about.sync_logo,
+                            egui::TextEdit::singleline(&mut self.project_config.about.image)
+                                .hint_text("相对 assets/ 的路径，如 about/logo.png"),
+                        );
+                    });
+
+                    ui.add_space(8.0);
+                    ui.label("文本行（每行一条，第1行粗体显示，留空则回退默认）：");
+                    let mut lines_clone = self.project_config.about.lines.clone();
+                    for (i, line) in lines_clone.iter_mut().enumerate() {
+                        ui.horizontal(|ui| {
+                            ui.label(format!("第{}行：", i + 1));
+                            ui.add_sized(
+                                [ui.available_width(), 28.0],
+                                egui::TextEdit::singleline(line),
+                            );
+                        });
+                    }
+                    self.project_config.about.lines = lines_clone;
+
+                    ui.horizontal(|ui| {
+                        if ui.button("添加一行").clicked() {
+                            self.project_config.about.lines.push(String::new());
+                        }
+                        if ui.button("删除最后一行").clicked() && self.project_config.about.lines.len() > 1 {
+                            self.project_config.about.lines.pop();
+                        }
+                    });
+
+                    ui.add_space(8.0);
+                    ui.label("颜色配置：");
+                    let edit_color = |ui: &mut egui::Ui, label: &str, color: &mut [u8; 4]| {
+                        ui.horizontal(|ui| {
+                            ui.label(label);
+                            let mut c = egui::Color32::from_rgba_unmultiplied(color[0], color[1], color[2], color[3]);
+                            egui::color_picker::color_edit_button_srgba(ui, &mut c, egui::color_picker::Alpha::BlendOrAdditive);
+                            *color = c.to_array();
+                        });
+                    };
+                    edit_color(ui, "粗体行颜色（第1行）：", &mut self.project_config.about.bold_color);
+                    edit_color(ui, "正常行颜色：", &mut self.project_config.about.normal_color);
+                    edit_color(ui, "强调行颜色（后两行）：", &mut self.project_config.about.accent_color);
+
+                    ui.add_space(16.0);
+                    ui.separator();
+                    ui.add_space(12.0);
+
                     ui.heading("项目警告");
                     ui.add_space(8.0);
                     ui.label(
