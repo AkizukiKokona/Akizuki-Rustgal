@@ -229,6 +229,7 @@ enum NodeKind {
     Command,
     Direction,
     Choice,
+    ChoiceOption,
     Flow,
     Visit,
     Return,
@@ -282,6 +283,10 @@ struct BlueprintState {
     context_menu_pos: Option<egui::Pos2>,
     /// 正在编辑文本的节点 ID（双击触发，就地编辑）。
     editing_node: Option<usize>,
+    /// 注释是否折叠隐藏到下一个非注释积木中（true=折叠，false=独立显示）。
+    collapse_comments: bool,
+    /// 画布缩放系数（1.0 = 100%）。
+    zoom: f32,
 }
 
 impl Default for BlueprintState {
@@ -300,6 +305,8 @@ impl Default for BlueprintState {
             connecting_pos: egui::Pos2::ZERO,
             context_menu_pos: None,
             editing_node: None,
+            collapse_comments: true,
+            zoom: 1.0,
         }
     }
 }
@@ -374,6 +381,8 @@ impl BlueprintState {
             NodeKind::Command
         } else if t.starts_with('?') {
             NodeKind::Choice
+        } else if t.starts_with('|') {
+            NodeKind::ChoiceOption
         } else if t.starts_with("->") {
             NodeKind::Flow
         } else if t.starts_with("=>") {
@@ -408,6 +417,7 @@ impl BlueprintState {
             NodeKind::Command => egui::Color32::from_rgb(200, 140, 50),
             NodeKind::Direction => egui::Color32::from_rgb(150, 80, 200),
             NodeKind::Choice => egui::Color32::from_rgb(200, 180, 50),
+            NodeKind::ChoiceOption => egui::Color32::from_rgb(220, 200, 80),
             NodeKind::Flow => egui::Color32::from_rgb(50, 180, 200),
             NodeKind::Visit => egui::Color32::from_rgb(80, 150, 200),
             NodeKind::Return => egui::Color32::from_rgb(120, 120, 130),
@@ -448,6 +458,7 @@ impl BlueprintState {
                 }
             }
             NodeKind::Choice => "选择".to_string(),
+            NodeKind::ChoiceOption => "选项".to_string(),
             NodeKind::Flow => "跳转".to_string(),
             NodeKind::Visit => "访问".to_string(),
             NodeKind::Return => "返回".to_string(),
@@ -487,21 +498,17 @@ impl BlueprintState {
 
         // 先生成所有节点（位置暂为默认），同时建立顺序连线。
         let mut prev_id: Option<usize> = None;
-        let mut prev_kind: Option<NodeKind> = None;
         for line in text.lines() {
             if line.trim().is_empty() {
                 continue;
             }
             let kind = Self::detect_kind(line);
             let id = self.add_node(kind, egui::Pos2::ZERO, line.to_string());
-            // 与上一个节点顺序连线（跨章节不连）。
+            // 与上一个节点顺序连线（含章节节点→本章第一个积木，保持流程连贯）。
             if let Some(prev) = prev_id {
-                if prev_kind != Some(NodeKind::Section) {
-                    self.links.push(BlueprintLink { from: prev, to: id });
-                }
+                self.links.push(BlueprintLink { from: prev, to: id });
             }
             prev_id = Some(id);
-            prev_kind = Some(kind);
         }
         // 生成完毕后统一整理布局。
         self.auto_layout();
@@ -578,6 +585,9 @@ impl BlueprintState {
         }
         // 整理策略：按章节分组分列，每列宽度取该列最宽节点自适应，
         // 避免宽节点与相邻列重叠（"该堆叠的堆叠"——同列紧凑、列间不重叠）。
+        // 折叠注释时跳过注释节点（它们隐藏到下一个非注释积木中，不占布局位置）。
+        let collapse = self.collapse_comments;
+        let skip = |n: &BlueprintNode| collapse && n.kind == NodeKind::Comment;
         let max_rows = 6usize; // 每列最多 6 个节点，超过则换列
         let gap = 24.0; // 同列节点之间的垂直间距
         let col_gap = 40.0; // 列之间的水平间距
@@ -591,13 +601,18 @@ impl BlueprintState {
             .map(|n| Self::node_size(&n.text))
             .collect();
 
-        // 确定每个节点所属的列号。
+        // 确定每个节点所属的列号（跳过注释）。
         // 章节节点开始新的一列；同一列超过 max_rows 个也换列。
         let mut col_of: Vec<usize> = vec![0; self.nodes.len()];
         let mut cur_col = 0usize;
         let mut row_in_col = 0usize;
+        let mut any_placed = false;
         for (i, node) in self.nodes.iter().enumerate() {
-            if node.kind == NodeKind::Section && i > 0 {
+            if skip(node) {
+                col_of[i] = cur_col; // 注释归到当前列（不显示，位置无意义）
+                continue;
+            }
+            if node.kind == NodeKind::Section && any_placed {
                 cur_col += 1;
                 row_in_col = 0;
             }
@@ -607,12 +622,16 @@ impl BlueprintState {
             }
             col_of[i] = cur_col;
             row_in_col += 1;
+            any_placed = true;
         }
         let num_cols = cur_col + 1;
 
-        // 计算每列最宽节点宽度（下限 200，避免列过窄）。
+        // 计算每列最宽节点宽度（下限 200，避免列过窄）。跳过注释。
         let mut col_widths = vec![200.0f32; num_cols];
         for (i, size) in sizes.iter().enumerate() {
+            if skip(&self.nodes[i]) {
+                continue;
+            }
             let c = col_of[i];
             if size.x > col_widths[c] {
                 col_widths[c] = size.x;
@@ -627,9 +646,12 @@ impl BlueprintState {
             x += w + col_gap;
         }
 
-        // 第二遍：放置节点，同列内 y 坐标按实际高度累加。
+        // 第二遍：放置节点，同列内 y 坐标按实际高度累加。跳过注释（不占垂直空间）。
         let mut col_y = vec![top_margin; num_cols];
         for (i, node) in self.nodes.iter_mut().enumerate() {
+            if skip(node) {
+                continue;
+            }
             let c = col_of[i];
             node.pos = egui::pos2(col_x[c], col_y[c]);
             col_y[c] += sizes[i].y + gap;
@@ -640,6 +662,10 @@ impl BlueprintState {
     fn node_at(&self, canvas_pos: egui::Pos2) -> Option<usize> {
         // 从后往前测试（后绘制的在上层）。
         for node in self.nodes.iter().rev() {
+            // 折叠注释时不参与命中。
+            if self.collapse_comments && node.kind == NodeKind::Comment {
+                continue;
+            }
             let size = Self::node_size(&node.text);
             let rect = egui::Rect::from_min_size(node.pos, size);
             if rect.contains(canvas_pos) {
@@ -653,6 +679,9 @@ impl BlueprintState {
     fn output_pin_at(&self, canvas_pos: egui::Pos2) -> Option<usize> {
         let r = 8.0; // 引脚命中半径
         for node in &self.nodes {
+            if self.collapse_comments && node.kind == NodeKind::Comment {
+                continue;
+            }
             let size = Self::node_size(&node.text);
             let rect = egui::Rect::from_min_size(node.pos, size);
             let pin = egui::pos2(rect.center().x, rect.bottom());
@@ -667,6 +696,9 @@ impl BlueprintState {
     fn input_pin_at(&self, canvas_pos: egui::Pos2) -> Option<usize> {
         let r = 8.0;
         for node in &self.nodes {
+            if self.collapse_comments && node.kind == NodeKind::Comment {
+                continue;
+            }
             let size = Self::node_size(&node.text);
             let rect = egui::Rect::from_min_size(node.pos, size);
             let pin = egui::pos2(rect.center().x, rect.top());
@@ -675,6 +707,82 @@ impl BlueprintState {
             }
         }
         None
+    }
+
+    /// 返回指定节点的入线来源节点 ID（取第一条）。
+    fn incoming(&self, id: usize) -> Option<usize> {
+        self.links.iter().find(|l| l.to == id).map(|l| l.from)
+    }
+
+    /// 返回指定节点的出线目标节点 ID（取第一条）。
+    fn outgoing(&self, id: usize) -> Option<usize> {
+        self.links.iter().find(|l| l.from == id).map(|l| l.to)
+    }
+
+    /// 折叠注释时，把一个节点（可能是注释）解析为它对应的非注释"来源"节点：
+    /// 若该节点本身非注释则返回它；否则沿入线回溯到最近的非注释节点。
+    fn resolve_from(&self, id: usize) -> Option<usize> {
+        let mut cur = id;
+        let mut guard = 0usize;
+        loop {
+            if guard > self.nodes.len() + 1 {
+                return None;
+            }
+            guard += 1;
+            let kind = self.nodes.iter().find(|n| n.id == cur).map(|n| n.kind);
+            match kind {
+                Some(NodeKind::Comment) => {
+                    cur = self.incoming(cur)?;
+                }
+                _ => return Some(cur),
+            }
+        }
+    }
+
+    /// 折叠注释时，把一个节点（可能是注释）解析为它对应的非注释"去向"节点：
+    /// 若该节点本身非注释则返回它；否则沿出线前进到最近的非注释节点。
+    fn resolve_to(&self, id: usize) -> Option<usize> {
+        let mut cur = id;
+        let mut guard = 0usize;
+        loop {
+            if guard > self.nodes.len() + 1 {
+                return None;
+            }
+            guard += 1;
+            let kind = self.nodes.iter().find(|n| n.id == cur).map(|n| n.kind);
+            match kind {
+                Some(NodeKind::Comment) => {
+                    cur = self.outgoing(cur)?;
+                }
+                _ => return Some(cur),
+            }
+        }
+    }
+
+    /// 返回折叠隐藏到指定非注释积木中的注释文本列表（按脚本顺序）。
+    /// 即：紧接在该积木之前、连续的注释行。默认隐藏逻辑——注释归到"下一句"积木。
+    fn comments_for_node(&self, id: usize) -> Vec<String> {
+        let mut out: Vec<String> = Vec::new();
+        let mut cur = match self.incoming(id) {
+            Some(p) => p,
+            None => return out,
+        };
+        loop {
+            let node = match self.nodes.iter().find(|n| n.id == cur) {
+                Some(n) => n,
+                None => break,
+            };
+            if node.kind != NodeKind::Comment {
+                break;
+            }
+            out.push(node.text.clone());
+            cur = match self.incoming(cur) {
+                Some(p) => p,
+                None => break,
+            };
+        }
+        out.reverse();
+        out
     }
 }
 
@@ -853,6 +961,16 @@ pub struct EditorApp {
     blueprint: BlueprintState,
     /// 已在蓝图模式下做过首次自动布局整理的文件列表（持久化）。
     blueprint_layout_done: BlueprintLayoutDone,
+    /// 正在从积木面板拖拽的模板索引（拖拽添加积木用）。
+    drag_template: Option<usize>,
+    /// 缩放百分比输入缓冲（右下角缩放控件用）。
+    zoom_input: String,
+    /// 上次保存/加载时的内容快照，用于判断是否有未保存修改。
+    saved_content: String,
+    /// 是否正在等待退出确认对话框（点叉退出且有未保存修改时置 true）。
+    pending_exit: bool,
+    /// 用户已在对话框确认退出（保存或放弃），on_close_event 据此放行关闭。
+    force_close: bool,
 }
 
 /// 可翻译行的类型。
@@ -1071,6 +1189,11 @@ impl Default for EditorApp {
             blueprint_mode: false,
             blueprint: BlueprintState::default(),
             blueprint_layout_done: BlueprintLayoutDone::load(),
+            drag_template: None,
+            zoom_input: "100".to_string(),
+            saved_content: String::new(),
+            pending_exit: false,
+            force_close: false,
         };
         app.refresh_file_list();
         app
@@ -1117,6 +1240,7 @@ impl EditorApp {
     /// 从最小模板新建（未保存的）脚本。
     fn new_file(&mut self) {
         self.editor_content = NEW_TEMPLATE.to_string();
+        self.saved_content = self.editor_content.clone();
         self.current_file = None;
         self.file_name_input = "untitled.akrs".to_string();
         self.engine = None;
@@ -1181,6 +1305,7 @@ impl EditorApp {
                     .map(|n| n.to_string_lossy().into_owned())
                     .unwrap_or_else(|| "unknown.akrs".to_string());
                 self.editor_content = content;
+                self.saved_content = self.editor_content.clone();
                 self.current_file = Some(path.to_path_buf());
                 self.file_name_input = name.clone();
                 // 如果文件在 work_dir 下，刷新文件列表并切换工作目录到文件所在目录
@@ -1214,6 +1339,7 @@ impl EditorApp {
     /// 加载内置示例剧本。
     fn load_sample(&mut self) {
         self.editor_content = SAMPLE_SCRIPT.to_string();
+        self.saved_content = self.editor_content.clone();
         self.current_file = None;
         self.file_name_input = "sample.akrs".to_string();
         self.engine = None;
@@ -1230,6 +1356,7 @@ impl EditorApp {
             Ok(()) => {
                 self.current_file = Some(path);
                 self.file_name_input = name.clone();
+                self.saved_content = self.editor_content.clone();
                 self.status = format!("已保存 {}", name);
                 self.refresh_file_list();
                 // main_script 一致性检查：若保存的文件名与 project.json 的
@@ -1247,6 +1374,11 @@ impl EditorApp {
                 self.status = format!("保存失败：{} - {}", name, e);
             }
         }
+    }
+
+    /// 当前剧本是否有未保存的修改（与上次保存/加载的快照不一致）。
+    fn is_dirty(&self) -> bool {
+        self.editor_content != self.saved_content
     }
 
     // -- 项目管理 ---------------------------------------------------------
@@ -2145,9 +2277,12 @@ impl EditorApp {
             self.blueprint_mode = false;
             self.status = "已切换到文本模式".to_string();
         } else {
-            if !self.editor_content.trim().is_empty() {
-                self.blueprint.from_script(&self.editor_content);
+            // 未打开/新建剧本（内容为空）时不允许进入蓝图模式。
+            if self.editor_content.trim().is_empty() {
+                self.status = "请先打开或新建剧本再进入蓝图模式".to_string();
+                return;
             }
+            self.blueprint.from_script(&self.editor_content);
             // 首次进入该文件的蓝图模式时自动整理布局。
             if let Some(file_path) = &self.current_file {
                 if !self.blueprint_layout_done.is_done(file_path) {
@@ -2201,7 +2336,7 @@ impl EditorApp {
             ui.separator();
             ui.label(
                 egui::RichText::new("右键拖动=平移 | 左键拖动=移动 | 拖引脚=连线 | Del=删除")
-                    .small()
+                    .size(12.0)
                     .color(egui::Color32::from_rgb(150, 150, 160)),
             );
         });
@@ -2217,12 +2352,13 @@ impl EditorApp {
         );
         let painter = ui.painter();
         let pan = self.blueprint.pan;
+        let zoom = self.blueprint.zoom.max(0.2).min(3.0);
 
         // 背景
         painter.rect_filled(canvas_rect, 0.0, egui::Color32::from_rgb(18, 18, 26));
 
-        // 网格点
-        let grid_size = 40.0;
+        // 网格点（随缩放调整间距，下限避免过密）
+        let grid_size = (40.0 * zoom).max(8.0);
         let start_x = canvas_rect.left() + pan.x.rem_euclid(grid_size);
         let start_y = canvas_rect.top() + pan.y.rem_euclid(grid_size);
         let mut gx = start_x;
@@ -2257,9 +2393,10 @@ impl EditorApp {
             ui.input(|i| i.pointer.button_released(egui::PointerButton::Secondary));
         let delta = ui.input(|i| i.pointer.delta());
         let in_canvas = canvas_rect.contains(mouse_pos);
-        // 画布坐标 = 屏幕坐标 - 画布原点 - 平移偏移
+        // 画布逻辑坐标 = (屏幕坐标 - 画布原点 - 平移偏移) / 缩放
+        // 节点 pos/size 均为逻辑坐标，命中测试在此空间进行。
         // 注意：Pos2 - Pos2 = Vec2，需转回 Pos2 以匹配节点命中测试等接口。
-        let canvas_pos = (mouse_pos - canvas_rect.min - pan).to_pos2();
+        let canvas_pos = ((mouse_pos - canvas_rect.min - pan) / zoom).to_pos2();
 
         // ---- 处理交互（可变借用 self.blueprint）----
         {
@@ -2324,6 +2461,8 @@ impl EditorApp {
                     }
                     if bp.right_moved {
                         bp.pan += delta;
+                        // 右键拖动平移时显示拖拽光标
+                        ui.ctx().set_cursor_icon(egui::CursorIcon::Grabbing);
                     }
                 }
             }
@@ -2362,24 +2501,77 @@ impl EditorApp {
             }
         }
 
+        // ---- 拖拽放置（从积木面板拖出模板，在画布上释放即添加节点）----
+        if self.drag_template.is_some() {
+            ui.ctx().set_cursor_icon(egui::CursorIcon::Grabbing);
+            if let Some(idx) = self.drag_template {
+                let (label, _desc, template) = NODE_TEMPLATES[idx];
+                let kind = BlueprintState::detect_kind(template);
+                let color = BlueprintState::kind_color(kind);
+                // 浮动预览跟随光标，提示正在拖拽的积木
+                egui::Area::new(egui::Id::new("bp_drag_preview"))
+                    .order(egui::Order::Foreground)
+                    .fixed_pos(mouse_pos + egui::vec2(12.0, 12.0))
+                    .interactable(false)
+                    .show(ui.ctx(), |ui| {
+                        egui::Frame::group(ui.style())
+                            .fill(color)
+                            .inner_margin(egui::Margin::symmetric(8.0, 3.0))
+                            .show(ui, |ui| {
+                                ui.label(
+                                    egui::RichText::new(label)
+                                        .color(egui::Color32::WHITE)
+                                        .strong(),
+                                );
+                            });
+                    });
+                // 释放：在画布内添加节点，否则取消
+                if primary_released {
+                    if in_canvas {
+                        self.blueprint.add_node(kind, canvas_pos, template.to_string());
+                        self.status = format!("已添加节点：{}", label);
+                    }
+                    self.drag_template = None;
+                }
+            }
+        }
+
         // ---- 绘制连线 ----（不可变借用 self.blueprint + painter）
+        // 折叠注释时把经过注释的连线桥接为非注释节点之间的直连，避免视觉断开。
         let bp = &self.blueprint;
         let clipped = painter.with_clip_rect(canvas_rect);
+        let collapse = bp.collapse_comments;
+        // 桥接后的去重连线集合。
+        let mut drawn: std::collections::HashSet<(usize, usize)> = std::collections::HashSet::new();
         for link in &bp.links {
-            let from_node = bp.nodes.iter().find(|n| n.id == link.from);
-            let to_node = bp.nodes.iter().find(|n| n.id == link.to);
+            let (from_id, to_id) = if collapse {
+                match (bp.resolve_from(link.from), bp.resolve_to(link.to)) {
+                    (Some(f), Some(t)) => (f, t),
+                    _ => continue,
+                }
+            } else {
+                (link.from, link.to)
+            };
+            if from_id == to_id {
+                continue;
+            }
+            if !drawn.insert((from_id, to_id)) {
+                continue;
+            }
+            let from_node = bp.nodes.iter().find(|n| n.id == from_id);
+            let to_node = bp.nodes.iter().find(|n| n.id == to_id);
             if let (Some(from), Some(to)) = (from_node, to_node) {
-                let from_size = BlueprintState::node_size(&from.text);
-                let to_size = BlueprintState::node_size(&to.text);
+                let from_size = BlueprintState::node_size(&from.text) * zoom;
+                let to_size = BlueprintState::node_size(&to.text) * zoom;
                 let from_pin = egui::pos2(
-                    from.pos.x + from_size.x / 2.0 + pan.x + canvas_rect.min.x,
-                    from.pos.y + from_size.y + pan.y + canvas_rect.min.y,
+                    from.pos.x * zoom + from_size.x / 2.0 + pan.x + canvas_rect.min.x,
+                    from.pos.y * zoom + from_size.y + pan.y + canvas_rect.min.y,
                 );
                 let to_pin = egui::pos2(
-                    to.pos.x + to_size.x / 2.0 + pan.x + canvas_rect.min.x,
-                    to.pos.y + pan.y + canvas_rect.min.y,
+                    to.pos.x * zoom + to_size.x / 2.0 + pan.x + canvas_rect.min.x,
+                    to.pos.y * zoom + pan.y + canvas_rect.min.y,
                 );
-                let ctrl_off = ((to_pin.y - from_pin.y).abs() * 0.5).max(20.0);
+                let ctrl_off = ((to_pin.y - from_pin.y).abs() * 0.5).max(20.0 * zoom);
                 clipped.add(egui::epaint::CubicBezierShape {
                     points: [
                         from_pin,
@@ -2389,7 +2581,7 @@ impl EditorApp {
                     ],
                     closed: false,
                     fill: egui::Color32::TRANSPARENT,
-                    stroke: egui::Stroke::new(2.0, egui::Color32::from_rgb(120, 160, 220)),
+                    stroke: egui::Stroke::new(2.0 * zoom, egui::Color32::from_rgb(120, 160, 220)),
                 });
             }
         }
@@ -2397,16 +2589,16 @@ impl EditorApp {
         // 绘制正在拉出的连线
         if let Some(from_id) = bp.connecting_from {
             if let Some(from) = bp.nodes.iter().find(|n| n.id == from_id) {
-                let from_size = BlueprintState::node_size(&from.text);
+                let from_size = BlueprintState::node_size(&from.text) * zoom;
                 let from_pin = egui::pos2(
-                    from.pos.x + from_size.x / 2.0 + pan.x + canvas_rect.min.x,
-                    from.pos.y + from_size.y + pan.y + canvas_rect.min.y,
+                    from.pos.x * zoom + from_size.x / 2.0 + pan.x + canvas_rect.min.x,
+                    from.pos.y * zoom + from_size.y + pan.y + canvas_rect.min.y,
                 );
                 let to_pin = egui::pos2(
-                    bp.connecting_pos.x + pan.x + canvas_rect.min.x,
-                    bp.connecting_pos.y + pan.y + canvas_rect.min.y,
+                    bp.connecting_pos.x * zoom + pan.x + canvas_rect.min.x,
+                    bp.connecting_pos.y * zoom + pan.y + canvas_rect.min.y,
                 );
-                let ctrl_off = ((to_pin.y - from_pin.y).abs() * 0.5).max(20.0);
+                let ctrl_off = ((to_pin.y - from_pin.y).abs() * 0.5).max(20.0 * zoom);
                 clipped.add(egui::epaint::CubicBezierShape {
                     points: [
                         from_pin,
@@ -2416,34 +2608,39 @@ impl EditorApp {
                     ],
                     closed: false,
                     fill: egui::Color32::TRANSPARENT,
-                    stroke: egui::Stroke::new(2.0, egui::Color32::from_rgb(255, 200, 80)),
+                    stroke: egui::Stroke::new(2.0 * zoom, egui::Color32::from_rgb(255, 200, 80)),
                 });
             }
         }
 
         // ---- 绘制节点 ----
         for node in &bp.nodes {
-            let size = BlueprintState::node_size(&node.text);
+            // 折叠注释时不作为独立节点绘制（已隐藏到下一个非注释积木）。
+            if collapse && node.kind == NodeKind::Comment {
+                continue;
+            }
+            let size = BlueprintState::node_size(&node.text) * zoom;
             let screen_pos = egui::pos2(
-                node.pos.x + pan.x + canvas_rect.min.x,
-                node.pos.y + pan.y + canvas_rect.min.y,
+                node.pos.x * zoom + pan.x + canvas_rect.min.x,
+                node.pos.y * zoom + pan.y + canvas_rect.min.y,
             );
             let rect = egui::Rect::from_min_size(screen_pos, size);
             let header_color = BlueprintState::kind_color(node.kind);
             let is_selected = bp.selected == Some(node.id);
 
             // 节点背景
-            clipped.rect_filled(rect, 3.0, egui::Color32::from_rgb(38, 38, 48));
+            clipped.rect_filled(rect, 3.0 * zoom, egui::Color32::from_rgb(38, 38, 48));
             // 标题栏
+            let header_h = 22.0 * zoom;
             let header_rect =
-                egui::Rect::from_min_size(screen_pos, egui::Vec2::new(size.x, 22.0));
-            clipped.rect_filled(header_rect, 3.0, header_color);
+                egui::Rect::from_min_size(screen_pos, egui::Vec2::new(size.x, header_h));
+            clipped.rect_filled(header_rect, 3.0 * zoom, header_color);
             // 选中边框
             if is_selected {
                 clipped.rect_stroke(
                     rect,
-                    3.0,
-                    egui::Stroke::new(2.0, egui::Color32::from_rgb(255, 220, 80)),
+                    3.0 * zoom,
+                    egui::Stroke::new(2.0 * zoom, egui::Color32::from_rgb(255, 220, 80)),
                 );
             }
             // 标题文字
@@ -2452,14 +2649,41 @@ impl EditorApp {
                 header_rect.center(),
                 egui::Align2::CENTER_CENTER,
                 &label,
-                egui::FontId::proportional(12.0),
+                egui::FontId::proportional(12.0 * zoom),
                 egui::Color32::WHITE,
             );
+            // 折叠注释时：若该积木吸附了注释，在标题栏右侧绘制注释标记，并支持悬停查看。
+            if collapse {
+                let comments = bp.comments_for_node(node.id);
+                if !comments.is_empty() {
+                    let badge_text = format!("注{}", comments.len());
+                    let badge_pos = egui::pos2(header_rect.right() - 4.0 * zoom, header_rect.center().y);
+                    clipped.text(
+                        badge_pos,
+                        egui::Align2::RIGHT_CENTER,
+                        &badge_text,
+                        egui::FontId::proportional(10.0 * zoom),
+                        egui::Color32::from_rgb(255, 230, 120),
+                    );
+                    // 悬停显示注释全文（用不可见交互区域承载 tooltip）。
+                    let badge_rect = egui::Rect::from_min_size(
+                        egui::pos2(header_rect.right() - 40.0 * zoom, header_rect.top()),
+                        egui::Vec2::new(40.0 * zoom, header_h),
+                    );
+                    let tooltip = comments.join("\n");
+                    ui.interact(
+                        badge_rect,
+                        egui::Id::new(("bp_comment_badge", node.id)),
+                        egui::Sense::hover(),
+                    )
+                    .on_hover_text(&tooltip);
+                }
+            }
             // 正文：若该节点正在编辑则跳过（稍后用 TextEdit 覆盖），
             // 否则截断显示前几行，超长行用省略号截断。
             if bp.editing_node != Some(node.id) {
-                let body_max_w = size.x - 16.0; // 左右各 8px 内边距
-                let char_w_approx = 7.0; // monospace 11px 的 ASCII 字符宽近似
+                let body_max_w = size.x - 16.0 * zoom; // 左右各 8px 内边距
+                let char_w_approx = 7.0 * zoom; // monospace 11px 的 ASCII 字符宽近似
                 let max_chars = (body_max_w / char_w_approx).floor() as usize;
                 let preview: String = node
                     .text
@@ -2476,28 +2700,28 @@ impl EditorApp {
                     .collect::<Vec<_>>()
                     .join("\n");
                 clipped.text(
-                    egui::pos2(screen_pos.x + 8.0, screen_pos.y + 26.0),
+                    egui::pos2(screen_pos.x + 8.0 * zoom, screen_pos.y + 26.0 * zoom),
                     egui::Align2::LEFT_TOP,
                     &preview,
-                    egui::FontId::monospace(11.0),
+                    egui::FontId::monospace(11.0 * zoom),
                     egui::Color32::from_rgb(200, 210, 220),
                 );
             }
             // 输入引脚（顶部中心）
             let in_pin = egui::pos2(rect.center().x, rect.top());
-            clipped.circle_filled(in_pin, 5.0, egui::Color32::from_rgb(100, 180, 255));
+            clipped.circle_filled(in_pin, 5.0 * zoom, egui::Color32::from_rgb(100, 180, 255));
             clipped.circle_stroke(
                 in_pin,
-                5.0,
-                egui::Stroke::new(1.5, egui::Color32::from_rgb(60, 60, 80)),
+                5.0 * zoom,
+                egui::Stroke::new(1.5 * zoom, egui::Color32::from_rgb(60, 60, 80)),
             );
             // 输出引脚（底部中心）
             let out_pin = egui::pos2(rect.center().x, rect.bottom());
-            clipped.circle_filled(out_pin, 5.0, egui::Color32::from_rgb(255, 180, 100));
+            clipped.circle_filled(out_pin, 5.0 * zoom, egui::Color32::from_rgb(255, 180, 100));
             clipped.circle_stroke(
                 out_pin,
-                5.0,
-                egui::Stroke::new(1.5, egui::Color32::from_rgb(60, 60, 80)),
+                5.0 * zoom,
+                egui::Stroke::new(1.5 * zoom, egui::Color32::from_rgb(60, 60, 80)),
             );
         }
 
@@ -2506,7 +2730,7 @@ impl EditorApp {
             clipped.text(
                 canvas_rect.center(),
                 egui::Align2::CENTER_CENTER,
-                "右键点击空白处添加节点，或点击「从脚本导入」",
+                "从左侧拖拽积木到画布，或右键空白处添加节点，或「从脚本导入」",
                 egui::FontId::proportional(14.0),
                 egui::Color32::from_rgb(120, 130, 150),
             );
@@ -2517,14 +2741,14 @@ impl EditorApp {
         if let Some(edit_id) = self.blueprint.editing_node {
             // 找到节点位置和尺寸，在节点正文区域叠加 TextEdit。
             if let Some(node) = self.blueprint.nodes.iter().find(|n| n.id == edit_id) {
-                let size = BlueprintState::node_size(&node.text);
+                let size = BlueprintState::node_size(&node.text) * zoom;
                 let screen_pos = egui::pos2(
-                    node.pos.x + pan.x + canvas_rect.min.x,
-                    node.pos.y + pan.y + canvas_rect.min.y,
+                    node.pos.x * zoom + pan.x + canvas_rect.min.x,
+                    node.pos.y * zoom + pan.y + canvas_rect.min.y,
                 );
                 let body_rect = egui::Rect::from_min_size(
-                    egui::pos2(screen_pos.x + 4.0, screen_pos.y + 24.0),
-                    egui::Vec2::new(size.x - 8.0, size.y - 28.0),
+                    egui::pos2(screen_pos.x + 4.0 * zoom, screen_pos.y + 24.0 * zoom),
+                    egui::Vec2::new((size.x - 8.0 * zoom).max(20.0), (size.y - 28.0 * zoom).max(20.0)),
                 );
                 // 用 Area 在节点正文位置放置 TextEdit
                 let node_id_str = format!("bp_edit_{}", edit_id);
@@ -2539,7 +2763,7 @@ impl EditorApp {
                                 egui::TextEdit::multiline(&mut node.text)
                                     .desired_width(body_rect.width())
                                     .desired_rows(4)
-                                    .font(egui::FontId::monospace(11.0)),
+                                    .font(egui::FontId::monospace(11.0 * zoom)),
                             );
                             // 编辑后重新推断类型
                             if resp.changed() {
@@ -2565,27 +2789,23 @@ impl EditorApp {
             let mut close_menu = false;
             let pan_copy = self.blueprint.pan;
             let canvas_min = canvas_rect.min;
-            // 预计算菜单宽度（取所有"标签  描述"的最大宽度），确保文字不超出菜单。
+            // 预计算菜单宽度：标签与描述统一字体大小，估算最大行宽用于屏幕边界检测。
+            // 不强制 set_min_width，让菜单按内容自适应（避免"几个字却拉很长"）。
             let menu_width = {
-                let mut max_w = 200.0f32;
+                let mut max_w = 150.0f32;
                 for (label, desc, _) in NODE_TEMPLATES {
-                    let w = label.chars().count() as f32 * 13.0
-                        + desc.chars().count() as f32 * 9.0
-                        + 40.0; // 标签中文~13px，描述~9px，加间距和padding
+                    // 标签与描述均按 12px 估算（统一字号）。
+                    let w = (label.chars().count() + desc.chars().count()) as f32 * 12.0
+                        + 56.0; // 按钮内边距 + 间距 + 描述前留白
                     if w > max_w {
                         max_w = w;
                     }
                 }
-                // 加上"整理布局""从脚本导入"等按钮的宽度
-                let op_w = 130.0f32;
-                if op_w > max_w {
-                    max_w = op_w;
-                }
-                max_w.min(320.0) // 上限避免过宽
+                max_w.min(260.0) // 上限避免过宽
             };
             // 防止菜单超出屏幕底部：若菜单高度可能超出，把弹出位置往上挪。
-            // 估算菜单高度：每个条目约 24px，加标题和分隔符。
-            let estimated_height = (NODE_TEMPLATES.len() as f32 + 6.0) * 24.0;
+            // 估算菜单高度：每个条目约 22px，加标题、分隔符和操作按钮。
+            let estimated_height = (NODE_TEMPLATES.len() as f32 + 7.0) * 22.0;
             let screen_rect = ui.ctx().screen_rect();
             let adjusted_y = if menu_pos.y + estimated_height > screen_rect.bottom() {
                 (screen_rect.bottom() - estimated_height - 8.0).max(screen_rect.top() + 8.0)
@@ -2603,16 +2823,12 @@ impl EditorApp {
                 .fixed_pos(menu_pos_copy)
                 .show(ui.ctx(), |ui| {
                     egui::Frame::popup(ui.style()).show(ui, |ui| {
-                        ui.set_min_width(menu_width);
                         ui.label(egui::RichText::new("添加节点").strong());
                         ui.separator();
-                        // 节点模板列表：每行按钮(标签) + 灰色描述文字
+                        // 节点模板列表：每行按钮(标签) + 灰色描述文字，字号统一。
                         for (label, desc, template) in NODE_TEMPLATES {
                             ui.horizontal(|ui| {
-                                if ui.add(
-                                    egui::Button::new(*label)
-                                        .min_size(egui::Vec2::new(60.0, 0.0)),
-                                ).clicked() {
+                                if ui.button(*label).clicked() {
                                     let cpos = (menu_pos_copy - canvas_min - pan_copy).to_pos2();
                                     let text = template.to_string();
                                     let kind = BlueprintState::detect_kind(&text);
@@ -2621,8 +2837,7 @@ impl EditorApp {
                                 }
                                 ui.label(
                                     egui::RichText::new(*desc)
-                                        .small()
-                                        .color(egui::Color32::from_rgb(140, 145, 160)),
+                                        .color(egui::Color32::from_rgb(150, 155, 170)),
                                 );
                             });
                         }
@@ -2635,6 +2850,17 @@ impl EditorApp {
                         if ui.button("从脚本导入").clicked() {
                             self.blueprint.from_script(&self.editor_content);
                             self.status = "已从脚本导入蓝图".to_string();
+                            close_menu = true;
+                        }
+                        // 折叠/展开注释
+                        let comment_label = if self.blueprint.collapse_comments {
+                            "展开注释"
+                        } else {
+                            "折叠注释"
+                        };
+                        if ui.button(comment_label).clicked() {
+                            self.blueprint.collapse_comments = !self.blueprint.collapse_comments;
+                            self.blueprint.auto_layout();
                             close_menu = true;
                         }
                         if self.blueprint.selected.is_some() {
@@ -2658,11 +2884,71 @@ impl EditorApp {
             }
         }
 
+        // ---- 右下角缩放控制（靠近画布右下角才显示，类似游戏浮动按钮）----
+        let br = canvas_rect.right_bottom();
+        let near = mouse_pos.distance(br) < 150.0;
+        if near {
+            let show_pos = egui::pos2(br.x - 168.0, br.y - 38.0);
+            egui::Area::new(egui::Id::new("bp_zoom_ctrl"))
+                .order(egui::Order::Foreground)
+                .fixed_pos(show_pos)
+                .show(ui.ctx(), |ui| {
+                    egui::Frame::group(ui.style())
+                        .fill(egui::Color32::from_rgba_unmultiplied(30, 30, 40, 200))
+                        .stroke(egui::Stroke::new(1.0, egui::Color32::from_rgb(70, 70, 90)))
+                        .inner_margin(egui::Margin::symmetric(6.0, 3.0))
+                        .show(ui, |ui| {
+                            ui.horizontal(|ui| {
+                                if ui.button("−").clicked() {
+                                    self.blueprint.zoom =
+                                        ((self.blueprint.zoom - 0.1).max(0.2) * 10.0).round() / 10.0;
+                                }
+                                // 输入框未聚焦时，用当前缩放同步显示文本
+                                let input_id = egui::Id::new("bp_zoom_input");
+                                if !ui.ctx().memory(|m| m.has_focus(input_id)) {
+                                    self.zoom_input = format!(
+                                        "{}",
+                                        (self.blueprint.zoom * 100.0).round() as i32
+                                    );
+                                }
+                                let resp = ui.add(
+                                    egui::TextEdit::singleline(&mut self.zoom_input)
+                                        .desired_width(36.0)
+                                        .frame(false)
+                                        .id(input_id)
+                                        .hint_text("100"),
+                                );
+                                ui.label("%");
+                                if resp.lost_focus() {
+                                    let parsed = self
+                                        .zoom_input
+                                        .trim()
+                                        .trim_end_matches('%')
+                                        .parse::<f32>();
+                                    if let Ok(v) = parsed {
+                                        self.blueprint.zoom =
+                                            (v / 100.0).clamp(0.2, 3.0);
+                                    }
+                                    self.zoom_input = format!(
+                                        "{}",
+                                        (self.blueprint.zoom * 100.0).round() as i32
+                                    );
+                                }
+                                if ui.button("+").clicked() {
+                                    self.blueprint.zoom =
+                                        ((self.blueprint.zoom + 0.1).min(3.0) * 10.0).round()
+                                            / 10.0;
+                                }
+                            });
+                        });
+                });
+        }
+
         // ---- 底部操作提示栏 ----
         ui.separator();
         ui.label(
-            egui::RichText::new("双击节点编辑文本 ｜ 左键拖动移动 ｜ 右键拖动平移 ｜ 右键空白处添加节点 ｜ Delete 删除")
-                .small()
+            egui::RichText::new("双击节点编辑文本 ｜ 拖拽左侧积木添加 ｜ 左键拖动移动 ｜ 右键拖动平移 ｜ 右键空白处添加节点 ｜ Delete 删除")
+                .size(13.0)
                 .color(egui::Color32::from_rgb(120, 120, 140)),
         );
     }
@@ -2722,13 +3008,13 @@ impl EditorApp {
     /// 每个 `=>` 打开一个「拜访块」，其与匹配 `<=` 之间的内容缩进一级；
     /// 嵌套 `=>` 进一步缩进。配对基于文本顺序栈匹配（[`compute_flow_pairs`]），
     /// 不做块级语义分析。仅展示上述结构性行，对话/旁白/指令等不显示。
-    /// 渲染蓝图积木面板：显示可点击的节点模板列表，点击即添加节点到画布。
+    /// 渲染蓝图积木面板：显示可拖拽的节点模板列表，拖到画布释放即添加节点。
     /// 仅在蓝图模式下显示。面板可滚动以容纳所有模板。
     fn show_blocks_panel(&mut self, ui: &mut egui::Ui) {
-        ui.label("点击积木添加节点到画布：");
+        ui.label("拖拽积木到画布添加节点：");
         ui.add_space(4.0);
         egui::ScrollArea::vertical().show(ui, |ui| {
-            for (label, desc, template) in NODE_TEMPLATES {
+            for (idx, (label, desc, template)) in NODE_TEMPLATES.iter().enumerate() {
                 let kind = BlueprintState::detect_kind(template);
                 let color = BlueprintState::kind_color(kind);
                 let frame = egui::Frame::group(ui.style())
@@ -2764,10 +3050,18 @@ impl EditorApp {
                         });
                     });
                 });
-                if resp.response.interact(egui::Sense::click()).clicked() {
-                    let pos = self.blueprint.next_placement_pos();
-                    self.blueprint.add_node(kind, pos, template.to_string());
-                    self.status = format!("已添加节点：{}", label);
+                // 拖拽添加：用 Sense::drag 检测拖拽开始，记录模板索引，画布上释放即添加。
+                let drag_resp = resp.response.interact(egui::Sense::drag());
+                if drag_resp.drag_started() {
+                    self.drag_template = Some(idx);
+                }
+                // 拖拽中显示拖动光标
+                if drag_resp.dragged() {
+                    ui.ctx().set_cursor_icon(egui::CursorIcon::Grabbing);
+                }
+                // 拖拽中或悬停时提示用法（on_hover_text 消费所有权，放最后）
+                if drag_resp.hovered() || drag_resp.dragged() {
+                    drag_resp.on_hover_text("按住拖拽到画布释放");
                 }
             }
         });
@@ -4015,7 +4309,7 @@ impl EditorApp {
 }
 
 impl eframe::App for EditorApp {
-    fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+    fn update(&mut self, ctx: &egui::Context, frame: &mut eframe::Frame) {
         if !self.theme_applied {
             ctx.set_visuals(egui::Visuals::dark());
             self.theme_applied = true;
@@ -4257,12 +4551,20 @@ impl eframe::App for EditorApp {
                 }
                 ui.separator();
                 // 蓝图模式切换按钮（在工具栏右上方，便于在文本模式与可视化节点模式间切换）
+                // 未打开剧本时禁用（避免空画布无意义操作）。
+                let can_blueprint = !self.editor_content.trim().is_empty() || self.blueprint_mode;
                 if self.blueprint_mode {
                     if ui.button("退出蓝图模式").on_hover_text("快捷键：Ctrl+B").clicked() {
                         self.toggle_blueprint_mode();
                     }
                 } else {
-                    if ui.button("蓝图模式").on_hover_text("快捷键：Ctrl+B").clicked() {
+                    let btn = egui::Button::new("蓝图模式");
+                    let resp = if can_blueprint {
+                        ui.add(btn).on_hover_text("快捷键：Ctrl+B")
+                    } else {
+                        ui.add_enabled(false, btn).on_hover_text("请先打开或新建剧本")
+                    };
+                    if resp.clicked() {
                         self.toggle_blueprint_mode();
                     }
                 }
@@ -5458,6 +5760,56 @@ impl eframe::App for EditorApp {
             }
         }
 
+        // ---- 退出确认对话框（点叉退出且有未保存修改时弹出）------------------
+        if self.pending_exit {
+            let mut choice: Option<ExitChoice> = None;
+            egui::Window::new("确认退出")
+                .collapsible(false)
+                .resizable(false)
+                .default_width(420.0)
+                .anchor(egui::Align2::CENTER_CENTER, egui::Vec2::ZERO)
+                .show(ctx, |ui| {
+                    ui.add_space(8.0);
+                    ui.label(
+                        egui::RichText::new("当前剧本有未保存的修改，退出前是否保存？")
+                            .size(15.0),
+                    );
+                    ui.add_space(12.0);
+                    ui.horizontal(|ui| {
+                        if ui.button("保存").clicked() {
+                            choice = Some(ExitChoice::Save);
+                        }
+                        if ui.button("不保存").clicked() {
+                            choice = Some(ExitChoice::Discard);
+                        }
+                        if ui.button("取消").clicked() {
+                            choice = Some(ExitChoice::Cancel);
+                        }
+                    });
+                });
+            match choice {
+                Some(ExitChoice::Save) => {
+                    // 保存成功才退出；保存失败则保留对话框并提示
+                    self.save_file();
+                    if !self.is_dirty() {
+                        self.pending_exit = false;
+                        self.force_close = true;
+                        frame.close();
+                    }
+                }
+                Some(ExitChoice::Discard) => {
+                    self.pending_exit = false;
+                    self.force_close = true;
+                    frame.close();
+                }
+                Some(ExitChoice::Cancel) => {
+                    self.pending_exit = false;
+                    self.force_close = false;
+                }
+                None => {}
+            }
+        }
+
         // ---- 「请先保存再预览」提示弹窗 --------------------------------------
         if self.show_save_reminder {
             egui::Window::new("无法预览")
@@ -5482,6 +5834,29 @@ impl eframe::App for EditorApp {
                 });
         }
     }
+
+    /// 用户点击窗口关闭按钮时调用。返回 false 中止关闭以弹出确认对话框。
+    /// 首次点击叉且内容有未保存修改时：置 pending_exit=true 并返回 false（中止关闭），
+    /// 由 update 中的对话框处理用户选择，选择保存/不保存后置 force_close=true 并调用
+    /// frame.close() 触发再次调用本方法，此时 force_close=true 直接返回 true 完成关闭。
+    fn on_close_event(&mut self) -> bool {
+        if self.force_close {
+            return true;
+        }
+        if self.is_dirty() {
+            self.pending_exit = true;
+            false
+        } else {
+            true
+        }
+    }
+}
+
+/// 退出确认对话框的用户选择。
+enum ExitChoice {
+    Save,
+    Discard,
+    Cancel,
 }
 
 // ---------------------------------------------------------------------------

@@ -38,7 +38,7 @@ dependencies = [
 
 [[package]]
 name = "akrs-cli"
-version = "1.0.81"
+version = "1.0.82"
 dependencies = [
  "akrs-core",
  "akrs-macros",
@@ -48,7 +48,7 @@ dependencies = [
 
 [[package]]
 name = "akrs-core"
-version = "1.0.81"
+version = "1.0.82"
 dependencies = [
  "codespan-reporting",
  "serde",
@@ -57,7 +57,7 @@ dependencies = [
 
 [[package]]
 name = "akrs-editor"
-version = "1.0.81"
+version = "1.0.82"
 dependencies = [
  "akrs-core",
  "akrs-runtime",
@@ -69,7 +69,7 @@ dependencies = [
 
 [[package]]
 name = "akrs-game"
-version = "1.0.81"
+version = "1.0.82"
 dependencies = [
  "akrs-core",
  "akrs-render",
@@ -79,7 +79,7 @@ dependencies = [
 
 [[package]]
 name = "akrs-macros"
-version = "1.0.81"
+version = "1.0.82"
 dependencies = [
  "akrs-core",
  "proc-macro-error2",
@@ -92,11 +92,11 @@ dependencies = [
 
 [[package]]
 name = "akrs-pack"
-version = "1.0.81"
+version = "1.0.82"
 
 [[package]]
 name = "akrs-render"
-version = "1.0.81"
+version = "1.0.82"
 dependencies = [
  "akrs-core",
  "akrs-runtime",
@@ -106,7 +106,7 @@ dependencies = [
 
 [[package]]
 name = "akrs-runtime"
-version = "1.0.81"
+version = "1.0.82"
 dependencies = [
  "akrs-core",
  "notify",
