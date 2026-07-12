@@ -293,6 +293,8 @@ struct BlueprintState {
     touch_mode: bool,
     /// 触摸模式下空白处单指拖拽平移进行中（primary 按下在空白处时置 true）。
     touch_panning: bool,
+    /// 框选多选产生的节点 ID 集合（与 `selected` 并存，`selected` 用于单选高亮）。
+    selected_set: std::collections::HashSet<usize>,
 }
 
 impl Default for BlueprintState {
@@ -315,6 +317,7 @@ impl Default for BlueprintState {
             zoom: 1.0,
             touch_mode: false,
             touch_panning: false,
+            selected_set: std::collections::HashSet::new(),
         }
     }
 }
@@ -658,8 +661,8 @@ impl BlueprintState {
         }
     }
 
-    /// 估算节点尺寸：宽度随最长行自适应，高度随行数自适应（最多 4 行，超出裁剪）。
-    /// 单行节点保持单行高度，不被硬加大；多行节点按实际行数增高，上限 4 行。
+    /// 估算节点尺寸：宽度随最长行自适应，高度随软换行后行数自适应（最多 8 行）。
+    /// 单行节点保持单行高度；多行/超宽文本按软换行后的实际行数增高，上限 8 行。
     fn node_size(text: &str) -> egui::Vec2 {
         // 估算每字符宽度：中文约 12px，ASCII 约 7px。
         let char_width = |c: char| if c.is_ascii() { 7.0 } else { 12.0 };
@@ -670,8 +673,16 @@ impl BlueprintState {
         // 宽度 = 正文最大行宽 + 左右内边距，限制在 [200, 420]。
         let width = (max_line_w + 24.0).clamp(200.0, 420.0);
         let header_h = 22.0;
-        // 高度随行数自适应，上限 4 行（超出部分在绘制时裁剪）。
-        let line_count = text.lines().count().max(1).min(4);
+        // 估算软换行后的总行数：每行按可用宽度向上取整折算。
+        let avail_w = (width - 24.0).max(1.0);
+        let mut total_lines = 0usize;
+        for line in text.lines() {
+            let line_w: f32 = line.chars().map(char_width).sum();
+            let wrapped = ((line_w / avail_w).ceil() as usize).max(1);
+            total_lines += wrapped;
+        }
+        // 高度随行数自适应，上限 8 行（避免单个节点过高）。
+        let line_count = total_lines.max(1).min(8);
         let body_h = line_count as f32 * 15.0 + 12.0;
         egui::Vec2::new(width, header_h + body_h)
     }
@@ -686,7 +697,7 @@ impl BlueprintState {
         to_pin: egui::Pos2,   // 逻辑坐标
         skip_ids: &[usize],   // 排除的节点ID（源和目标节点本身）
     ) -> Vec<egui::Pos2> {
-        // 同列连线（x 差值很小）直接画直线，无需路由
+        // 同列连线（x 差值很小）直接画直线，保持逻辑顺序清晰
         if (from_pin.x - to_pin.x).abs() < 10.0 {
             return vec![from_pin, to_pin];
         }
@@ -713,46 +724,46 @@ impl BlueprintState {
         // 判断 y=channel_y 处的水平段 [x_min, x_max] 是否与任何障碍矩形相交
         let intersects_any = |channel_y: f32| -> bool {
             obstacles.iter().any(|r| {
-                x_min <= r.right()
-                    && x_max >= r.left()
-                    && channel_y >= r.top()
-                    && channel_y <= r.bottom()
+                x_min < r.right()
+                    && x_max > r.left()
+                    && channel_y > r.top()
+                    && channel_y < r.bottom()
             })
         };
 
-        // 收集候选通道 y 坐标（优先离 from/to 近的）
+        // 跨列连线优先走"源下方"通道（保持从上到下的逻辑顺序：章节A尾部→章节B头部）。
+        // 只有源下方通道被阻挡时才尝试其他通道，且按"离源下方近"到"远"排序。
+        // 这样跨列连线视觉上总是从源节点底部向下出发，再水平到目标列，再向上到目标，
+        // 保持首尾相连的逻辑顺序感，不会忽上忽下。
         let mut candidates: Vec<f32> = Vec::new();
-        candidates.push(from_pin.y + gap); // 源下方
-        candidates.push(to_pin.y - gap); // 目标上方
-        // 每个节点底部 + gap
+        // 优先级1：源下方（最符合"首尾相连"的视觉直觉）
+        candidates.push(from_pin.y + gap);
+        // 优先级2：目标上方（次选，当源下方被挡时）
+        candidates.push(to_pin.y - gap);
+        // 优先级3：所有节点之间的间隙（从源下方开始往下找）
         for r in &obstacles {
-            candidates.push(r.bottom() + gap);
+            let y = r.bottom() + gap;
+            if y > from_pin.y {
+                candidates.push(y);
+            }
         }
-        // 每个节点顶部 - gap
+        // 优先级4：所有节点之间的间隙（从源上方开始往上找，作为最后手段）
         for r in &obstacles {
-            candidates.push(r.top() - gap);
+            let y = r.top() - gap;
+            if y < from_pin.y {
+                candidates.push(y);
+            }
         }
 
-        // 选择第一个不与任何障碍相交的候选 y；找不到则退化为穿过节点最少的 y
+        // 选择第一个不与任何障碍相交的候选 y
         let channel_y = candidates
             .iter()
             .cloned()
             .find(|&y| !intersects_any(y))
-            .unwrap_or_else(|| {
-                candidates
-                    .iter()
-                    .cloned()
-                    .min_by_key(|&y| {
-                        let seg = egui::Rect::from_min_max(
-                            egui::pos2(x_min, y),
-                            egui::pos2(x_max, y),
-                        );
-                        obstacles.iter().filter(|r| r.intersects(seg)).count() as i32
-                    })
-                    .unwrap_or((from_pin.y + to_pin.y) / 2.0)
-            });
+            .unwrap_or(from_pin.y + gap); // 全部被挡时退化为源下方（允许穿过）
 
-        // 生成正交折线路径：源引脚 → 通道 → 目标引脚
+        // 生成正交折线路径：源引脚 → 向下到通道 → 水平到目标列 → 到目标引脚
+        // 保持"从源底部出发向下，再水平，再到目标"的流向，体现首尾相连的逻辑顺序
         vec![
             from_pin,
             egui::pos2(from_pin.x, channel_y),
@@ -1490,6 +1501,12 @@ pub struct EditorApp {
     bp_edit: BlueprintEditState,
     /// 当前 `bp_edit` 已初始化对应的节点 ID（用于检测切换编辑节点时重新解析）。
     bp_edit_id: Option<usize>,
+    /// 框选起点（画布逻辑坐标），非触摸模式下空白处左键拖拽时记录。
+    box_select_start: Option<egui::Pos2>,
+    /// 框选终点（画布逻辑坐标），随鼠标移动更新。
+    box_select_end: Option<egui::Pos2>,
+    /// 上一帧编辑面板的屏幕矩形，用于"点击面板内不退出编辑"判定。
+    bp_edit_panel_rect: Option<egui::Rect>,
     /// 已在蓝图模式下做过首次自动布局整理的文件列表（持久化）。
     blueprint_layout_done: BlueprintLayoutDone,
     /// 正在从积木面板拖拽的模板索引（拖拽添加积木用）。
@@ -1737,6 +1754,9 @@ impl Default for EditorApp {
             blueprint: BlueprintState::default(),
             bp_edit: BlueprintEditState::default(),
             bp_edit_id: None,
+            box_select_start: None,
+            box_select_end: None,
+            bp_edit_panel_rect: None,
             blueprint_layout_done: BlueprintLayoutDone::load(),
             drag_template: None,
             drag_syntax: None,
@@ -2984,19 +3004,20 @@ impl EditorApp {
 
     /// 通用文本兜底编辑器：对节点原始文本进行多行 TextEdit（保留原有编辑行为）。
     /// 用于章节/选择/选项/等待/结局/变量/注释等未提供填空式编辑器的节点类型。
+    /// 面板为固定尺寸 UI，字号固定 13.0（不随 zoom 缩放）。
     fn bp_edit_textedit_fallback(
         &mut self,
         ui: &mut egui::Ui,
         edit_id: usize,
         body_rect: egui::Rect,
-        zoom: f32,
+        _zoom: f32,
     ) {
         if let Some(node) = self.blueprint.nodes.iter_mut().find(|n| n.id == edit_id) {
             let resp = ui.add(
                 egui::TextEdit::multiline(&mut node.text)
                     .desired_width(body_rect.width())
                     .desired_rows(4)
-                    .font(egui::FontId::monospace(11.0 * zoom)),
+                    .font(egui::FontId::monospace(13.0)),
             );
             // 编辑后重新推断类型
             if resp.changed() {
@@ -3046,6 +3067,7 @@ impl EditorApp {
                 self.blueprint.nodes.clear();
                 self.blueprint.links.clear();
                 self.blueprint.selected = None;
+                self.blueprint.selected_set.clear();
                 self.blueprint.next_id = 0;
                 self.status = "已清空蓝图".to_string();
             }
@@ -3061,7 +3083,7 @@ impl EditorApp {
                 );
             } else {
                 ui.label(
-                    egui::RichText::new("右键拖动=平移 | 左键拖动=移动 | 拖引脚=连线 | Del=删除")
+                    egui::RichText::new("右键拖动=平移 | 左键拖动=移动 | 空白拖拽=框选多选 | 拖引脚=连线 | Del=删除")
                         .size(12.0)
                         .color(egui::Color32::from_rgb(150, 150, 160)),
                 );
@@ -3186,10 +3208,13 @@ impl EditorApp {
         }
 
         // ---- 处理交互（可变借用 self.blueprint）----
+        // 预读编辑面板矩形与框选标记到局部，避免在 bp 借用期间访问 self 其他字段。
+        let panel_rect = self.bp_edit_panel_rect;
+        let mut start_box_select = false;
         {
             let bp = &mut self.blueprint;
 
-            // 左键按下：选择 / 拖动 / 开始连线 / 触摸模式空白处开始平移
+            // 左键按下：选择 / 拖动 / 开始连线 / 触摸模式空白处开始平移 / 非触摸空白开始框选
             // 双指手势进行时抑制，避免与触摸缩放冲突。
             if primary_pressed && in_canvas && bp.context_menu_pos.is_none() && !touch_active {
                 // 优先检测输出引脚（开始连线）
@@ -3207,22 +3232,44 @@ impl EditorApp {
                     bp.drag_node = Some(node_id);
                     bp.drag_offset = canvas_pos - node_pos;
                     bp.selected = Some(node_id);
+                    // 多选：若点击的节点已在 selected_set 中，保留集合（可整体拖动）；
+                    // 否则单选该节点，清空旧集合。
+                    if !bp.selected_set.contains(&node_id) {
+                        bp.selected_set.clear();
+                        bp.selected_set.insert(node_id);
+                    }
                 } else {
                     // 点击空白：取消选中
                     bp.selected = None;
                     // 触摸模式下空白处按下开始平移画布（与右栏空白处拖拽滚动一致）。
-                    // 鼠标模式仍用右键拖动平移，不进入此分支。
+                    // 非触摸模式下空白处按下开始框选多选。
                     if touch_mode {
                         bp.touch_panning = true;
+                    } else {
+                        start_box_select = true;
                     }
                 }
             }
 
             // 左键持续按下：拖动节点 / 更新连线位置 / 触摸平移
-            // 双指手势进行时抑制。
+            // 双指手势进行时抑制。框选进行中不拖动节点（drag_node 为 None）。
             if primary_down && !touch_active {
                 if let Some(node_id) = bp.drag_node {
-                    if let Some(node) = bp.nodes.iter_mut().find(|n| n.id == node_id) {
+                    // 多选拖动：若拖动节点在 selected_set 中且集合不止一个，整体平移；
+                    // 否则仅移动该节点。
+                    if bp.selected_set.contains(&node_id) && bp.selected_set.len() > 1 {
+                        if let Some(cur) =
+                            bp.nodes.iter().find(|n| n.id == node_id).map(|n| n.pos)
+                        {
+                            let new_pos = canvas_pos - bp.drag_offset;
+                            let delta_move = new_pos - cur;
+                            for n in bp.nodes.iter_mut() {
+                                if bp.selected_set.contains(&n.id) {
+                                    n.pos += delta_move;
+                                }
+                            }
+                        }
+                    } else if let Some(node) = bp.nodes.iter_mut().find(|n| n.id == node_id) {
                         node.pos = canvas_pos - bp.drag_offset;
                     }
                 }
@@ -3275,9 +3322,15 @@ impl EditorApp {
                 bp.right_moved = false;
             }
 
-            // Delete 键：删除选中节点
+            // Delete 键：删除选中节点（优先多选集合，回退到单选）
             if ui.input(|i| i.key_pressed(egui::Key::Delete)) {
-                if let Some(id) = bp.selected {
+                if !bp.selected_set.is_empty() {
+                    let to_remove: Vec<usize> = bp.selected_set.iter().copied().collect();
+                    for id in to_remove {
+                        bp.remove_node(id);
+                    }
+                    bp.selected_set.clear();
+                } else if let Some(id) = bp.selected {
                     bp.remove_node(id);
                 }
             }
@@ -3293,12 +3346,44 @@ impl EditorApp {
                     bp.editing_node = Some(node_id);
                 }
             }
-            // 点击空白处退出编辑模式
+            // 点击空白处退出编辑模式（点击编辑面板内部不退出）
             if primary_pressed && in_canvas && bp.editing_node.is_some() {
                 if bp.node_at(canvas_pos).is_none() {
-                    bp.editing_node = None;
+                    let in_panel = panel_rect
+                        .map(|r| r.contains(mouse_pos))
+                        .unwrap_or(false);
+                    if !in_panel {
+                        bp.editing_node = None;
+                    }
                 }
             }
+        }
+
+        // ---- 框选多选（非触摸模式）----
+        // 起点已在上面交互块中通过 start_box_select 标记，此处写入 self 字段。
+        if start_box_select {
+            self.box_select_start = Some(canvas_pos);
+            self.box_select_end = Some(canvas_pos);
+            self.blueprint.selected_set.clear();
+        }
+        // 框选拖动：更新终点
+        if primary_down && self.box_select_start.is_some() && !touch_active {
+            self.box_select_end = Some(canvas_pos);
+        }
+        // 框选释放：把中心位于矩形内的节点加入 selected_set
+        if primary_released && self.box_select_start.is_some() {
+            if let (Some(start), Some(end)) = (self.box_select_start, self.box_select_end) {
+                let rect = egui::Rect::from_two_pos(start, end);
+                for n in &self.blueprint.nodes {
+                    let size = BlueprintState::node_size(&n.text);
+                    let center = egui::pos2(n.pos.x + size.x / 2.0, n.pos.y + size.y / 2.0);
+                    if rect.contains(center) {
+                        self.blueprint.selected_set.insert(n.id);
+                    }
+                }
+            }
+            self.box_select_start = None;
+            self.box_select_end = None;
         }
 
         // ---- 拖拽放置（从积木面板拖出模板，在画布上释放即添加节点）----
@@ -3510,7 +3595,7 @@ impl EditorApp {
             );
             let rect = egui::Rect::from_min_size(screen_pos, size);
             let color = BlueprintState::kind_color(node.kind);
-            let is_selected = bp.selected == Some(node.id);
+            let is_selected = bp.selected == Some(node.id) || bp.selected_set.contains(&node.id);
 
             // 节点背景：半透明色填充（与积木卡片一致），圆角。
             clipped.rect_filled(rect, 4.0 * zoom, color.linear_multiply(0.15));
@@ -3621,8 +3706,32 @@ impl EditorApp {
             );
         }
 
-        // ---- 就地编辑选中节点（双击进入，按节点类型显示填空式编辑器）----
-        // bp 的不可变借用到此结束，下面用 self.blueprint 的可变借用。
+        // ---- 绘制框选矩形（非触摸模式下拖拽空白处时）----
+        if let (Some(start), Some(end)) = (self.box_select_start, self.box_select_end) {
+            // 逻辑坐标转屏幕坐标
+            let s = egui::pos2(
+                start.x * zoom + pan.x + canvas_rect.min.x,
+                start.y * zoom + pan.y + canvas_rect.min.y,
+            );
+            let e = egui::pos2(
+                end.x * zoom + pan.x + canvas_rect.min.x,
+                end.y * zoom + pan.y + canvas_rect.min.y,
+            );
+            let sel_rect = egui::Rect::from_two_pos(s, e);
+            clipped.rect_filled(
+                sel_rect,
+                0.0,
+                egui::Color32::from_rgba_unmultiplied(100, 150, 255, 40),
+            );
+            clipped.rect_stroke(
+                sel_rect,
+                0.0,
+                egui::Stroke::new(1.0, egui::Color32::from_rgb(100, 150, 255)),
+            );
+        }
+
+        // ---- 就地编辑选中节点（双击进入，独立浮动面板编辑，按节点类型显示填空式编辑器）----
+        // 面板固定在画布右上角，不受节点尺寸限制；点击面板内部不会取消编辑。
         if let Some(edit_id) = self.blueprint.editing_node {
             // 切换编辑节点时（双击新节点 / 重新进入），从节点文本重新解析填充编辑状态
             if self.bp_edit_id != Some(edit_id) {
@@ -3631,62 +3740,48 @@ impl EditorApp {
                     self.bp_edit_id = Some(edit_id);
                 }
             }
-            // 读取节点屏幕位置和尺寸
-            let node_info = self
-                .blueprint
-                .nodes
-                .iter()
-                .find(|n| n.id == edit_id)
-                .map(|node| {
-                    let size = BlueprintState::node_size(&node.text) * zoom;
-                    let screen_pos = egui::pos2(
-                        node.pos.x * zoom + pan.x + canvas_rect.min.x,
-                        node.pos.y * zoom + pan.y + canvas_rect.min.y,
-                    );
-                    (screen_pos, size)
-                });
-            if let Some((screen_pos, size)) = node_info {
+            // 检查节点是否仍存在
+            let node_exists = self.blueprint.nodes.iter().any(|n| n.id == edit_id);
+            if node_exists {
+                // 独立浮动编辑面板（画布右上角），不受节点尺寸限制
+                let panel_pos = egui::pos2(canvas_rect.right() - 260.0, canvas_rect.top() + 10.0);
+                let panel_width = 240.0;
                 // 准备资源列表（克隆避免借用冲突）
                 let sprites = self.sprite_preview.available.clone();
                 let bgs = self.bg_preview.available.clone();
                 let musics = self.music_preview.available.clone();
                 let sections = Self::section_names_from_script(&self.editor_content);
                 let transitions = [
-                    "fade",
-                    "fade_black",
-                    "fade_white",
-                    "dissolve",
-                    "slide_left",
-                    "slide_right",
-                    "slide_up",
-                    "slide_down",
-                    "wipe_left",
-                    "wipe_right",
-                    "blur",
-                    "instant",
+                    "fade", "fade_black", "fade_white", "dissolve",
+                    "slide_left", "slide_right", "slide_up", "slide_down",
+                    "wipe_left", "wipe_right", "blur", "instant",
                 ];
+                // 面板内可用正文宽度（用于 ComboBox 宽度与 TextEdit desired_width）
+                let inner_w = panel_width - 16.0;
+                // 兜底编辑器用的 body_rect（仅用到宽度）
                 let body_rect = egui::Rect::from_min_size(
-                    egui::pos2(screen_pos.x + 4.0 * zoom, screen_pos.y + 24.0 * zoom),
-                    egui::Vec2::new(
-                        (size.x - 8.0 * zoom).max(20.0),
-                        (size.y - 28.0 * zoom).max(20.0),
-                    ),
+                    egui::Pos2::ZERO,
+                    egui::Vec2::new(inner_w, 80.0),
                 );
-                let node_id_str = format!("bp_edit_{}", edit_id);
-                egui::Area::new(egui::Id::new(node_id_str))
+                let panel_response = egui::Area::new(egui::Id::new("bp_edit_panel"))
                     .order(egui::Order::Foreground)
-                    .fixed_pos(body_rect.min)
+                    .fixed_pos(panel_pos)
                     .show(ui.ctx(), |ui| {
-                        ui.set_min_size(egui::Vec2::new(body_rect.width(), body_rect.height()));
-                        ui.vertical(|ui| {
-                            match self.bp_edit.kind {
+                        egui::Frame::popup(ui.style())
+                            .show(ui, |ui| {
+                                ui.set_min_width(panel_width);
+                                ui.set_max_width(panel_width);
+                                ui.vertical(|ui| {
+                                    ui.label(egui::RichText::new("编辑节点").strong());
+                                    ui.separator();
+                                    match self.bp_edit.kind {
                                 NodeKind::Direction => {
                                     let is_enter = self.bp_edit.text.trim_start().starts_with('+');
                                     if is_enter {
-                                        // 立绘上场：立绘名 + x/y/size
-                                        ui.label("立绘上场");
+                                        // 立绘上场：立绘名 + x/y/size（无小标题，节点标题栏已有）
                                         let before = self.bp_edit.sprite_name.clone();
                                         egui::ComboBox::from_id_salt("bp_edit_sprite_enter")
+                                            .width(inner_w)
                                             .selected_text(if self.bp_edit.sprite_name.is_empty() {
                                                 "（选择立绘）"
                                             } else {
@@ -3732,10 +3827,10 @@ impl EditorApp {
                                             }
                                         });
                                     } else {
-                                        // 立绘下场：角色名
-                                        ui.label("立绘下场");
+                                        // 立绘下场：角色名（无小标题）
                                         let before = self.bp_edit.sprite_name.clone();
                                         egui::ComboBox::from_id_salt("bp_edit_sprite_exit")
+                                            .width(inner_w)
                                             .selected_text(if self.bp_edit.sprite_name.is_empty() {
                                                 "（选择角色）"
                                             } else {
@@ -3769,10 +3864,10 @@ impl EditorApp {
                                         .collect();
                                     match cmd.as_str() {
                                         "bg" => {
-                                            // 背景：背景资源 + 过渡效果
-                                            ui.label("背景");
+                                            // 背景：背景资源 + 过渡效果（无小标题）
                                             let before_bg = self.bp_edit.bg_name.clone();
                                             egui::ComboBox::from_id_salt("bp_edit_bg")
+                                                .width(inner_w)
                                                 .selected_text(if self.bp_edit.bg_name.is_empty() {
                                                     "（选择背景）"
                                                 } else {
@@ -3789,6 +3884,7 @@ impl EditorApp {
                                                 });
                                             let before_tr = self.bp_edit.transition.clone();
                                             egui::ComboBox::from_id_salt("bp_edit_bg_transition")
+                                                .width(inner_w)
                                                 .selected_text(self.bp_edit.transition.as_str())
                                                 .show_ui(ui, |ui| {
                                                     for t in transitions {
@@ -3806,10 +3902,10 @@ impl EditorApp {
                                             }
                                         }
                                         "music" => {
-                                            // 音乐：音乐资源
-                                            ui.label("音乐");
+                                            // 音乐：音乐资源（无小标题）
                                             let before = self.bp_edit.music_name.clone();
                                             egui::ComboBox::from_id_salt("bp_edit_music")
+                                                .width(inner_w)
                                                 .selected_text(if self.bp_edit.music_name.is_empty() {
                                                     "（选择音乐）"
                                                 } else {
@@ -3830,7 +3926,7 @@ impl EditorApp {
                                         }
                                         "stop_music" => {
                                             // 停止音乐：无需编辑
-                                            ui.label("停止音乐");
+                                            ui.label("（停止音乐，无需编辑）");
                                         }
                                         _ => {
                                             // 其他命令：通用文本兜底
@@ -3838,17 +3934,16 @@ impl EditorApp {
                                                 ui,
                                                 edit_id,
                                                 body_rect,
-                                                zoom,
+                                                1.0,
                                             );
                                         }
                                     }
                                 }
                                 NodeKind::Flow | NodeKind::Visit => {
-                                    // 跳转/访问：章节选择
-                                    let is_flow = self.bp_edit.kind == NodeKind::Flow;
-                                    ui.label(if is_flow { "跳转" } else { "访问" });
+                                    // 跳转/访问：章节选择（无小标题）
                                     let before = self.bp_edit.section_name.clone();
                                     egui::ComboBox::from_id_salt("bp_edit_section")
+                                        .width(inner_w)
                                         .selected_text(if self.bp_edit.section_name.is_empty() {
                                             "（选择章节）"
                                         } else {
@@ -3869,22 +3964,21 @@ impl EditorApp {
                                 }
                                 NodeKind::Return => {
                                     // 返回：无需编辑
-                                    ui.label("返回");
+                                    ui.label("（返回，无需编辑）");
                                 }
                                 NodeKind::Dialogue => {
-                                    // 对话：角色名 + ":" + 内容
-                                    ui.label("对话");
+                                    // 对话：角色名 + ":" + 内容（无小标题）
                                     ui.horizontal(|ui| {
                                         let rsp = ui.add(
                                             egui::TextEdit::singleline(&mut self.bp_edit.speaker)
-                                                .desired_width(body_rect.width() * 0.3)
-                                                .font(egui::FontId::proportional(12.0 * zoom)),
+                                                .desired_width(inner_w * 0.3)
+                                                .font(egui::FontId::proportional(13.0)),
                                         );
                                         ui.label(":");
                                         let rct = ui.add(
                                             egui::TextEdit::singleline(&mut self.bp_edit.content)
-                                                .desired_width(body_rect.width() * 0.6)
-                                                .font(egui::FontId::proportional(12.0 * zoom)),
+                                                .desired_width(inner_w * 0.6)
+                                                .font(egui::FontId::proportional(13.0)),
                                         );
                                         if rsp.changed() || rct.changed() {
                                             self.bp_writeback(edit_id);
@@ -3892,13 +3986,12 @@ impl EditorApp {
                                     });
                                 }
                                 NodeKind::Narration => {
-                                    // 旁白：内容
-                                    ui.label("旁白");
+                                    // 旁白：内容（无小标题）
                                     let r = ui.add(
                                         egui::TextEdit::multiline(&mut self.bp_edit.content)
-                                            .desired_width(body_rect.width())
+                                            .desired_width(inner_w)
                                             .desired_rows(2)
-                                            .font(egui::FontId::proportional(12.0 * zoom)),
+                                            .font(egui::FontId::proportional(13.0)),
                                     );
                                     if r.changed() {
                                         self.bp_writeback(edit_id);
@@ -3906,19 +3999,24 @@ impl EditorApp {
                                 }
                                 _ => {
                                     // 其他类型（章节/选择/选项/等待/结局/变量/注释等）：通用文本兜底
-                                    self.bp_edit_textedit_fallback(ui, edit_id, body_rect, zoom);
+                                    self.bp_edit_textedit_fallback(ui, edit_id, body_rect, 1.0);
                                 }
                             }
-                        });
+                                });
+                            });
                     });
+                // 记录面板矩形，用于"点击面板内不退出编辑"判定（下一帧使用）
+                self.bp_edit_panel_rect = Some(panel_response.response.rect);
             } else {
                 // 节点不存在了，退出编辑
                 self.blueprint.editing_node = None;
                 self.bp_edit_id = None;
+                self.bp_edit_panel_rect = None;
             }
         } else if self.bp_edit_id.is_some() {
             // 未在编辑：清理 stale 编辑状态
             self.bp_edit_id = None;
+            self.bp_edit_panel_rect = None;
         }
 
         // ---- 右键菜单 ----
@@ -4114,7 +4212,7 @@ impl EditorApp {
         // ---- 底部操作提示栏 ----
         ui.separator();
         ui.label(
-            egui::RichText::new("双击节点编辑文本 ｜ 拖拽左侧积木添加 ｜ 左键拖动移动 ｜ 右键拖动平移 ｜ 右键空白处添加节点 ｜ Delete 删除")
+            egui::RichText::new("双击节点编辑 ｜ 拖拽积木添加 ｜ 左键拖动移动 ｜ 空白处拖拽框选 ｜ 右键拖动平移 ｜ 右键空白添加节点 ｜ Delete 删除")
                 .size(13.0)
                 .color(egui::Color32::from_rgb(120, 120, 140)),
         );
