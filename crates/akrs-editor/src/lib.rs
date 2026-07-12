@@ -3013,7 +3013,12 @@ impl EditorApp {
     fn show_blocks_panel(&mut self, ui: &mut egui::Ui) {
         ui.label("拖拽积木到画布添加节点：");
         ui.add_space(4.0);
-        egui::ScrollArea::vertical().show(ui, |ui| {
+        // 关闭「拖拽即滚动」：默认 drag_to_scroll=true 会吞掉垂直拖拽手势用于滚动列表，
+        // 导致积木上的 Sense::drag() 拿不到拖拽（拖动变成上下滚动，和滚轮效果一样）。
+        // 关闭后仍可用滚轮滚动，积木可正常拖出。
+        egui::ScrollArea::vertical()
+            .drag_to_scroll(false)
+            .show(ui, |ui| {
             for (idx, (label, desc, template)) in NODE_TEMPLATES.iter().enumerate() {
                 let kind = BlueprintState::detect_kind(template);
                 let color = BlueprintState::kind_color(kind);
