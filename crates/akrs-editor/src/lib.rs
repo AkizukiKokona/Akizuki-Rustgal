@@ -3190,6 +3190,10 @@ impl EditorApp {
                 let color = BlueprintState::kind_color(kind);
                 let frame = block_card_frame(ui, color, 3.0);
                 let resp = frame.show(ui, |ui| {
+                    // 让卡片撑满面板可用宽度：否则 Frame::group 会按内容收缩，
+                    // ScrollArea 内容宽度小于可用宽度，垂直滚动条会跟着内容右边缘
+                    // 跑到面板中间而非贴右。
+                    ui.set_min_width(ui.available_width());
                     paint_block_card(ui, label, desc, template, color);
                 });
                 // 拖拽添加：用 Sense::drag 检测拖拽开始，记录模板索引，画布上释放即添加。
