@@ -64,9 +64,20 @@ mod widgets;
 // 引入调色板与模板常量：颜色、字号、示例剧本、GitHub 链接、build 号等。
 use palette::*;
 use templates::*;
+// 流程标记扫描/配对（=>/<= 高亮与大纲用）。mark_at_cursor 未导入：大纲视图
+// 按行号匹配更合适，字符级匹配留给文本编辑器将来接入。
+use flow::{compute_flow_pairs, scan_flow_marks, FlowKind, FlowMark};
+// 剧本行解析与标签（错误格式化、阶段标签等）。
+use parse::{format_errors, phase_label};
 // 蓝图类型：画布程序/消息来自 widgets，状态/节点类型来自 state。
 use state::{BlueprintState, NodeKind};
 use widgets::blueprint_canvas::{BlueprintMsg, BlueprintProgram};
+// 文件系统与平台工具（sanitize/复制目录/打开文件管理器/检查 cargo 等）。
+// 已从本文件内联实现移至 fs_util 模块，此处统一导入。
+use fs_util::{
+    check_cargo, copy_dir_recursive, infer_project_root, open_path_in_file_manager,
+    open_url_in_browser, read_binary_names, sanitize_filename,
+};
 
 /// Rust 官网链接（cargo 引导弹窗的「打开 rust-lang.org」按钮使用）。
 /// 仅编辑器使用，不属于通用模板，故保留在本文件。
@@ -810,9 +821,7 @@ impl EditorApp {
                 // 含 project.json 或 assets/ 的祖先目录作为项目根。
                 // 这样打开单个剧本文件时资源预览也能正确读到 assets/。
                 if self.project_dir.is_none() {
-                    if let Some(root) = infer_project_root(path) {
-                        self.project_dir = Some(root);
-                    }
+                    self.project_dir = Some(infer_project_root(path));
                 }
                 self.engine = None;
                 self.diagnostics.clear();
@@ -1182,19 +1191,9 @@ impl EditorApp {
 
     // -- 打包与预览 -------------------------------------------------------
 
-    /// 检测 cargo 是否可用。
-    fn check_cargo() -> bool {
-        Command::new("cargo")
-            .arg("--version")
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .status()
-            .is_ok()
-    }
-
     /// 启动游戏预览（外部进程）。
     fn start_game_preview(&mut self) {
-        if !Self::check_cargo() {
+        if !check_cargo() {
             self.show_cargo_guide = true;
             return;
         }
@@ -1263,7 +1262,7 @@ impl EditorApp {
 
     /// 开始打包流程。
     fn start_build(&mut self) {
-        if !Self::check_cargo() {
+        if !check_cargo() {
             self.show_cargo_guide = true;
             return;
         }
@@ -1291,7 +1290,7 @@ impl EditorApp {
         let scripts_src = self.work_dir.join("scripts");
         if scripts_src.exists() {
             let _ = std::fs::create_dir_all(&snapshot_dir);
-            copy_dir_recursive(&scripts_src, &snapshot_dir);
+            let _ = copy_dir_recursive(&scripts_src, &snapshot_dir);
             self.build.snapshot_dir = Some(snapshot_dir.clone());
             self.build.log_line(format!("脚本快照已创建: {}", snapshot_dir.display()));
         } else {
@@ -1511,14 +1510,14 @@ impl EditorApp {
             .unwrap_or_else(|| self.work_dir.join("scripts"));
         if scripts_src.exists() {
             let scripts_dst = output_dir.join("scripts");
-            copy_dir_recursive(&scripts_src, &scripts_dst);
+            let _ = copy_dir_recursive(&scripts_src, &scripts_dst);
         }
 
         // 资源始终从项目目录复制（资源不在快照范围内）
         let assets_src = self.work_dir.join("assets");
         if assets_src.exists() {
             let assets_dst = output_dir.join("assets");
-            copy_dir_recursive(&assets_src, &assets_dst);
+            let _ = copy_dir_recursive(&assets_src, &assets_dst);
         }
     }
 
@@ -3864,7 +3863,8 @@ impl EditorApp {
 
         // 光标配对高亮：光标所在行的 =>/<= 及其配对行高亮
         let cursor_line = self.editor_content.cursor_position().0;
-        let active_mark = mark_at_cursor(&marks, cursor_line);
+        // 大纲视图按行号匹配标记（比字符级 mark_at_cursor 更适合行级高亮）。
+        let active_mark = marks.iter().position(|m| m.line == cursor_line);
         let pair_mark = active_mark.and_then(|mi| pairs[mi]);
         let highlight_lines: Vec<usize> = match (active_mark, pair_mark) {
             (Some(a), Some(b)) => vec![marks[a].line, marks[b].line],
@@ -4812,178 +4812,10 @@ fn load_png_handle(path: &Path) -> Result<iced::widget::image::Handle, String> {
     Ok(iced::widget::image::Handle::from_rgba(w, h, img.into_raw()))
 }
 
-/// 推断项目根目录：从给定文件路径向上逐级查找，直到找到含 `project.json`
-/// 或 `assets/` 子目录的祖先目录。找不到则返回 None。
-/// 用于打开单个剧本文件时自动定位资源根。
-fn infer_project_root(file_path: &Path) -> Option<PathBuf> {
-    let mut dir = file_path.parent()?;
-    loop {
-        if dir.join("project.json").is_file() || dir.join("assets").is_dir() {
-            return Some(dir.to_path_buf());
-        }
-        dir = match dir.parent() {
-            Some(p) => p,
-            None => return None,
-        };
-    }
-}
-
-/// 在系统文件管理器中打开路径。
-fn open_path_in_file_manager(path: &Path) {
-    #[cfg(target_os = "windows")]
-    {
-        let _ = Command::new("explorer").arg(path).spawn();
-    }
-    #[cfg(target_os = "macos")]
-    {
-        let _ = Command::new("open").arg(path).spawn();
-    }
-    #[cfg(all(unix, not(target_os = "macos")))]
-    {
-        let _ = Command::new("xdg-open").arg(path).spawn();
-    }
-}
-
-/// 在系统默认浏览器中打开 URL。
-fn open_url_in_browser(url: &str) {
-    #[cfg(target_os = "windows")]
-    {
-        let _ = Command::new("cmd").args(["/C", "start", url]).spawn();
-    }
-    #[cfg(target_os = "macos")]
-    {
-        let _ = Command::new("open").arg(url).spawn();
-    }
-    #[cfg(all(unix, not(target_os = "macos")))]
-    {
-        let _ = Command::new("xdg-open").arg(url).spawn();
-    }
-}
-
-/// 从 Cargo.toml 读取所有 `[[bin]]` 定义的二进制目标名。
-/// 查找 workspace 根目录和各成员 crate 的 Cargo.toml。
-/// 如无法读取，使用项目目录名作为后备。
-fn read_binary_names(work_dir: &Path) -> Vec<String> {
-    let mut names = Vec::new();
-
-    // 搜索 workspace 根和 crates/ 子目录下的 Cargo.toml
-    let candidates = [
-        work_dir.join("Cargo.toml"),
-        work_dir.join("crates").join("akrs-game").join("Cargo.toml"),
-    ];
-
-    for cargo_toml_path in &candidates {
-        if !cargo_toml_path.exists() {
-            continue;
-        }
-        let content = match std::fs::read_to_string(cargo_toml_path) {
-            Ok(c) => c,
-            Err(_) => continue,
-        };
-
-        let mut in_bin_section = false;
-        for line in content.lines() {
-            let trimmed = line.trim();
-            if trimmed.starts_with("[[") {
-                in_bin_section = trimmed == "[[bin]]";
-                continue;
-            }
-            if trimmed.starts_with('[') {
-                in_bin_section = false;
-                continue;
-            }
-            if in_bin_section {
-                if let Some(name) = trimmed.strip_prefix("name") {
-                    let name = name.trim_start();
-                    if let Some(name) = name.strip_prefix('=') {
-                        let name = name.trim().trim_matches(|c| c == '"' || c == '\'');
-                        if !name.is_empty() && !names.contains(&name.to_string()) {
-                            names.push(name.to_string());
-                        }
-                    }
-                }
-            }
-        }
-    }
-
-    // 后备：使用项目目录名
-    if names.is_empty() {
-        if let Some(dir_name) = work_dir.file_name().and_then(|n| n.to_str()) {
-            names.push(dir_name.to_string());
-        } else {
-            names.push("akrs-game".to_string());
-        }
-    }
-
-    names
-}
-
-/// 递归复制目录。
-fn copy_dir_recursive(src: &Path, dst: &Path) {
-    if !src.is_dir() {
-        return;
-    }
-    let _ = std::fs::create_dir_all(dst);
-    if let Ok(entries) = std::fs::read_dir(src) {
-        for entry in entries.flatten() {
-            let path = entry.path();
-            let name = entry.file_name();
-            let dest = dst.join(name);
-            if path.is_dir() {
-                copy_dir_recursive(&path, &dest);
-            } else {
-                let _ = std::fs::copy(&path, &dest);
-            }
-        }
-    }
-}
-
-/// 规范化用户输入的文件名：去除路径分隔符并确保有 `.akrs` 扩展名。
-fn sanitize_filename(input: &str) -> String {
-    let mut name: String = input
-        .trim()
-        .chars()
-        .filter(|c| !matches!(c, '/' | '\\'))
-        .collect();
-    if name.is_empty() {
-        name = "untitled.akrs".to_string();
-    }
-    if !name.ends_with(".akrs") {
-        name.push_str(".akrs");
-    }
-    name
-}
-
-/// 将编译诊断格式化为带严重性标签的单行字符串。
-fn format_errors(errors: &[CompileError]) -> Vec<String> {
-    errors
-        .iter()
-        .map(|e| {
-            let sev = match e.severity {
-                ErrSeverity::Error => "错误",
-                ErrSeverity::Warning => "警告",
-                ErrSeverity::Note => "提示",
-            };
-            let loc = format_location(&e.span);
-            match &e.hint {
-                Some(h) => format!("[{}] {} - 位于 {}（提示：{}）", sev, e.message, loc, h),
-                None => format!("[{}] {} - 位于 {}", sev, e.message, loc),
-            }
-        })
-        .collect()
-}
-
-/// 引擎阶段的可读名称。
-fn phase_label(phase: EnginePhase) -> &'static str {
-    match phase {
-        EnginePhase::Title => "标题",
-        EnginePhase::Running => "运行中",
-        EnginePhase::Transitioning => "过渡中",
-        EnginePhase::Waiting => "等待",
-        EnginePhase::ChoicePending => "等待选择",
-        EnginePhase::StoryEnded => "故事结束",
-    }
-}
+// infer_project_root / open_path_in_file_manager / open_url_in_browser /
+// read_binary_names / copy_dir_recursive / sanitize_filename / check_cargo
+// 已移至 fs_util.rs 模块，此处通过 `use fs_util::{...}` 导入。
+// format_errors / phase_label 已移至 parse.rs 模块，此处通过 `use parse::{...}` 导入。
 
 /// 根据行首非空白 token 选择基础颜色（语法高亮的纯逻辑部分）。
 fn line_base_color(trimmed: &str) -> Color {
@@ -5020,99 +4852,8 @@ fn line_base_color(trimmed: &str) -> Color {
 // ---------------------------------------------------------------------------
 // `=>` / `<=` 流程标记配对辅助
 // ---------------------------------------------------------------------------
-//
-// 纯文本层扫描与配对，用于编辑器的配对高亮、悬停提示与大纲视图。
-// 不修改任何脚本语法或编译逻辑，仅影响视觉呈现。
-//
-// 配对规则（经典括号栈匹配，按文本顺序扫描，不考虑嵌套语义或作用域边界）：
-// - `=>`（访问子章节）入栈，`<=`（从子章节返回）弹出栈顶 `=>` 并互相配对。
-// - 栈空时遇到的 `<=` 无配对（孤立返回）；栈中剩余的 `=>` 无配对（未闭合访问）。
-
-/// 流程标记种类。
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum FlowKind {
-    /// `=> target`：访问子章节。
-    Visit,
-    /// `<=`：从子章节返回。
-    Return,
-}
-
-/// 文本中扫描到的一个 `=>`/`<=` 流程标记。
-#[derive(Debug, Clone, PartialEq, Eq)]
-struct FlowMark {
-    kind: FlowKind,
-    /// 标记在全文中的起始字符索引（`=>`/`<=` 首字符）。
-    char_start: usize,
-    /// 标记在全文中的结束字符索引（exclusive，`=>`/`<=` 末尾）。
-    char_end: usize,
-    /// 标记所在行号（从 0 开始）。
-    line: usize,
-    /// `=>` 的目标章节名（`=> Sub` 中的 `Sub`）；`<=` 为 None。
-    target: Option<String>,
-}
-
-/// 扫描全文，按文本顺序收集所有行首的 `=>`/`<=` 流程标记。
-///
-/// 判定与 lexer 一致：仅识别行首（去除前导空白后）的 `=>`/`<=`。表达式中的
-/// `<=`（如 `if a <= b`）不会出现在行首语句位置，故按行首判定即可消歧。
-/// 字符索引按 `char` 计数，非字节偏移。
-fn scan_flow_marks(text: &str) -> Vec<FlowMark> {
-    let mut marks = Vec::new();
-    let mut line = 0usize;
-    let mut line_start_char = 0usize; // 当前行首在全文中的字符索引
-    for raw_line in text.split('\n') {
-        let trimmed = raw_line.trim_start();
-        let leading_ws = raw_line.chars().take_while(|c| c.is_whitespace()).count();
-        let token_char_start = line_start_char + leading_ws;
-        if let Some(rest) = trimmed.strip_prefix("=>") {
-            let target = rest.trim();
-            marks.push(FlowMark {
-                kind: FlowKind::Visit,
-                char_start: token_char_start,
-                char_end: token_char_start + "=>".chars().count(),
-                line,
-                target: if target.is_empty() { None } else { Some(target.to_string()) },
-            });
-        } else if trimmed.strip_prefix("<=").is_some() {
-            marks.push(FlowMark {
-                kind: FlowKind::Return,
-                char_start: token_char_start,
-                char_end: token_char_start + "<=".chars().count(),
-                line,
-                target: None,
-            });
-        }
-        line += 1;
-        line_start_char += raw_line.chars().count() + 1; // +1 为换行符
-    }
-    marks
-}
-
-/// 计算每个 FlowMark 的配对索引。
-///
-/// 返回 `pairs[i]` = 第 i 个 mark 的配对 mark 索引，无配对为 `None`。
-fn compute_flow_pairs(marks: &[FlowMark]) -> Vec<Option<usize>> {
-    let mut pairs = vec![None; marks.len()];
-    let mut stack: Vec<usize> = Vec::new(); // 待配对的 Visit 索引
-    for (i, m) in marks.iter().enumerate() {
-        match m.kind {
-            FlowKind::Visit => stack.push(i),
-            FlowKind::Return => {
-                if let Some(j) = stack.pop() {
-                    pairs[j] = Some(i);
-                    pairs[i] = Some(j);
-                }
-            }
-        }
-    }
-    pairs
-}
-
-/// 查找光标所在的 FlowMark 索引。
-/// `cursor_line` 为光标所在行号（从 0 开始），由 `text_editor::Content::cursor_position().0` 提供。
-fn mark_at_cursor(marks: &[FlowMark], cursor_line: usize) -> Option<usize> {
-    marks.iter().position(|m| m.line == cursor_line)
-}
+// 流程标记逻辑（FlowKind/FlowMark/scan_flow_marks/compute_flow_pairs/
+// mark_at_cursor）已移至 flow.rs 模块，此处通过 `use flow::{...}` 导入。
 
 #[cfg(test)]
 mod tests {
@@ -5126,88 +4867,7 @@ mod tests {
         assert_eq!(sanitize_filename(""), "untitled.akrs");
     }
 
-    #[test]
-    fn flow_marks_scan_visit_and_return() {
-        let src = "# Main\nAki: \"Hi\"\n=> Sub\nAki: \"in sub\"\n<=\nAki: \"back\"\n";
-        let marks = scan_flow_marks(src);
-        assert_eq!(marks.len(), 2);
-        assert_eq!(marks[0].kind, FlowKind::Visit);
-        assert_eq!(marks[0].target.as_deref(), Some("Sub"));
-        assert_eq!(marks[0].line, 2);
-        assert_eq!(marks[1].kind, FlowKind::Return);
-        assert_eq!(marks[1].target, None);
-        assert_eq!(marks[1].line, 4);
-        // char 索引：行 0 "# Main"(6) +\n=7，行1 "Aki: \"Hi\""(9)+\n=10 ->17，
-        // 行2 起始 char=17，"=> Sub" 的 "=>" 在 17..19
-        assert_eq!(marks[0].char_start, 17);
-        assert_eq!(marks[0].char_end, 19);
-    }
-
-    #[test]
-    fn flow_marks_ignore_expression_leq() {
-        // `if a <= b then` 中的 <= 不在行首，不应被识别
-        let src = "$x = 1\nif a <= b then\n  Aki: \"ok\"\nend\n";
-        let marks = scan_flow_marks(src);
-        assert!(marks.is_empty(), "表达式中的 <= 不应被识别为返回标记");
-    }
-
-    #[test]
-    fn flow_marks_leading_whitespace() {
-        let src = "  => Sub\n  <=\n";
-        let marks = scan_flow_marks(src);
-        assert_eq!(marks.len(), 2);
-        assert_eq!(marks[0].char_start, 2); // 2 个空格后
-        assert_eq!(marks[0].char_end, 4);
-    }
-
-    #[test]
-    fn flow_pairs_basic() {
-        let src = "=> A\n<=\n=> B\n<=\n";
-        let marks = scan_flow_marks(src);
-        let pairs = compute_flow_pairs(&marks);
-        assert_eq!(pairs, vec![Some(1), Some(0), Some(3), Some(2)]);
-    }
-
-    #[test]
-    fn flow_pairs_nested() {
-        // 嵌套：外层 => 配最后一个 <=，内层 => 配第一个 <=
-        let src = "=> Outer\n=> Inner\n<=\n<=\n";
-        let marks = scan_flow_marks(src);
-        let pairs = compute_flow_pairs(&marks);
-        // mark0(=>Outer) - mark3(<=)
-        // mark1(=>Inner) - mark2(<=)
-        assert_eq!(pairs[0], Some(3));
-        assert_eq!(pairs[1], Some(2));
-        assert_eq!(pairs[2], Some(1));
-        assert_eq!(pairs[3], Some(0));
-    }
-
-    #[test]
-    fn flow_pairs_unbalanced() {
-        // 孤立 <=（无 => 可配）+ 未闭合 =>
-        let src = "<=\n=> A\n<=\n=> B\n";
-        let marks = scan_flow_marks(src);
-        let pairs = compute_flow_pairs(&marks);
-        // mark0(<=) 无配对
-        assert_eq!(pairs[0], None);
-        // mark1(=>A) - mark2(<=)
-        assert_eq!(pairs[1], Some(2));
-        assert_eq!(pairs[2], Some(1));
-        // mark3(=>B) 未闭合
-        assert_eq!(pairs[3], None);
-    }
-
-    #[test]
-    fn flow_mark_at_cursor() {
-        let src = "=> Sub\n<=\n";
-        let marks = scan_flow_marks(src);
-        // 光标在第 0 行（=> Sub）
-        assert_eq!(mark_at_cursor(&marks, 0), Some(0));
-        // 光标在第 1 行（<=）
-        assert_eq!(mark_at_cursor(&marks, 1), Some(1));
-        // 光标在第 2 行（空行，无标记）
-        assert_eq!(mark_at_cursor(&marks, 2), None);
-    }
+    // flow 相关测试已随实现移至 flow.rs 模块。
 
     #[test]
     fn line_base_color_classification() {

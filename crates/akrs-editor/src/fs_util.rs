@@ -36,10 +36,12 @@ pub fn sanitize_filename(input: &str) -> String {
     name
 }
 
-/// 从文件路径向上查找含 `project.json` 的目录，作为项目根目录。
+/// 从文件路径向上查找含 `project.json` 或 `assets/` 子目录的祖先目录，作为项目根目录。
 ///
-/// 从给定文件的父目录开始逐级向上查找；若找到包含 `project.json` 的目录则返回该目录，
-/// 若一直找到根目录都未找到，则返回该文件的直接父目录。
+/// 从给定文件的父目录开始逐级向上查找；若找到包含 `project.json`（文件）或
+/// `assets`（目录）的目录则返回该目录，若一直找到根目录都未找到，则返回该文件的
+/// 直接父目录。这与 egui 主分支编辑器的行为一致：打开单个剧本文件时能自动定位
+/// 资源根，使预览正确读到 `assets/`。
 pub fn infer_project_root(path: &Path) -> PathBuf {
     let start = match path.parent() {
         Some(p) => p,
@@ -47,12 +49,12 @@ pub fn infer_project_root(path: &Path) -> PathBuf {
     };
     let mut current: Option<&Path> = Some(start);
     while let Some(dir) = current {
-        if dir.join("project.json").exists() {
+        if dir.join("project.json").is_file() || dir.join("assets").is_dir() {
             return dir.to_path_buf();
         }
         current = dir.parent();
     }
-    // 未找到含 project.json 的目录，返回直接父目录。
+    // 未找到含 project.json 或 assets/ 的目录，返回直接父目录。
     start.to_path_buf()
 }
 
@@ -119,7 +121,10 @@ pub fn open_url_in_browser(url: &str) {
     }
 }
 
-/// 从 `work_dir/Cargo.toml` 读取所有 `[[bin]]` 段定义的二进制目标名。
+/// 从 `Cargo.toml` 读取所有 `[[bin]]` 段定义的二进制目标名。
+///
+/// 搜索两个候选路径：`work_dir/Cargo.toml`（workspace 根）与
+/// `work_dir/crates/akrs-game/Cargo.toml`（游戏 crate），合并去重。
 ///
 /// 与 egui 主分支版本相比，本函数采用更健壮的解析：
 /// - 正确处理 `name = { ... }` 内联表形式（跳过，不误当作名字）。
@@ -128,15 +133,37 @@ pub fn open_url_in_browser(url: &str) {
 /// - 忽略 `[package]` 等其他节下的 `name` 字段。
 /// - 用 `=` 分割键值并校验键名严格等于 `name`，避免误匹配 `namex` 之类。
 ///
-/// 若文件无法读取或解析失败，返回空 `Vec`。
+/// 若所有候选文件都无法读取或解析失败，使用 `work_dir` 的目录名作为后备；
+/// 目录名也无法取得时，使用 `akrs-game` 作为最终后备。
 pub fn read_binary_names(work_dir: &Path) -> Vec<String> {
-    let cargo_toml = work_dir.join("Cargo.toml");
-    let content = match fs::read_to_string(&cargo_toml) {
-        Ok(c) => c,
-        Err(_) => return Vec::new(),
-    };
+    let candidates = [
+        work_dir.join("Cargo.toml"),
+        work_dir.join("crates").join("akrs-game").join("Cargo.toml"),
+    ];
 
     let mut names: Vec<String> = Vec::new();
+    for cargo_toml in &candidates {
+        let content = match fs::read_to_string(cargo_toml) {
+            Ok(c) => c,
+            Err(_) => continue,
+        };
+        parse_bin_names(&content, &mut names);
+    }
+
+    // 后备：使用项目目录名。
+    if names.is_empty() {
+        if let Some(dir_name) = work_dir.file_name().and_then(|n| n.to_str()) {
+            names.push(dir_name.to_string());
+        } else {
+            names.push("akrs-game".to_string());
+        }
+    }
+
+    names
+}
+
+/// 从单个 `Cargo.toml` 文本内容解析 `[[bin]]` 段的 `name` 字段，追加到 `names`（去重）。
+fn parse_bin_names(content: &str, names: &mut Vec<String>) {
     let mut in_bin_section = false;
 
     for raw_line in content.lines() {
@@ -198,8 +225,6 @@ pub fn read_binary_names(work_dir: &Path) -> Vec<String> {
             names.push(name);
         }
     }
-
-    names
 }
 
 /// 检测 `cargo` 是否可用。
