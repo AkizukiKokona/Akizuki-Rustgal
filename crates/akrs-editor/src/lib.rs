@@ -41,8 +41,8 @@ use iced::widget::{
     text, text_editor, text_input, vertical_space,
 };
 use iced::{
-    alignment, Alignment, Background, Border, Color, Element, Font, Length, Padding, Pixels,
-    Point, Size, Subscription, Task, Theme,
+    Background, Color, Element, Font, Length, Padding, Pixels, Point, Size, Subscription,
+    Task, Theme,
 };
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -106,6 +106,7 @@ pub enum BuildPlatform {
 }
 
 impl BuildPlatform {
+    #[allow(dead_code)]
     fn label(self) -> &'static str {
         match self {
             Self::Windows => "Windows",
@@ -122,6 +123,7 @@ impl BuildPlatform {
         }
     }
 
+    #[allow(dead_code)]
     fn binary_name(self) -> &'static str {
         match self {
             Self::Windows => "akrs-game.exe",
@@ -133,6 +135,7 @@ impl BuildPlatform {
 }
 
 /// 打包状态。
+#[allow(dead_code)]
 struct BuildState {
     /// 是否显示打包对话框。
     show: bool,
@@ -408,6 +411,7 @@ fn modal_overlay<'a>(
 // ===========================================================================
 
 /// 编辑器主应用状态。
+#[allow(dead_code)]
 pub struct EditorApp {
     // ---- 文本编辑 ----
     /// text_editor 组件的内容（iced 要求独立持有）。
@@ -1317,7 +1321,7 @@ impl EditorApp {
         }
     }
 
-    pub fn view(&self) -> Element<Message> {
+    pub fn view(&self) -> Element<'_, Message> {
         // 主三栏布局：顶部工具栏 + (左栏 | 中栏 | 右栏) + 底部状态栏。
         let toolbar = self.view_toolbar();
         let left = self.view_left_panel();
@@ -1385,7 +1389,7 @@ impl EditorApp {
 
 impl EditorApp {
     /// 顶部工具栏：文件操作 + 运行 + 模式切换 + 帮助。
-    fn view_toolbar(&self) -> Element<Message> {
+    fn view_toolbar(&self) -> Element<'_, Message> {
         let btn = |label, msg| {
             button(text(label).size(13))
                 .on_press(msg)
@@ -1423,7 +1427,7 @@ impl EditorApp {
     }
 
     /// 左栏：文件名输入 + 文件列表。
-    fn view_left_panel(&self) -> Element<Message> {
+    fn view_left_panel(&self) -> Element<'_, Message> {
         let file_input = text_input("文件名", &self.file_name_input)
             .on_input(Message::FileNameInputChanged)
             .size(13);
@@ -1478,7 +1482,7 @@ impl EditorApp {
     }
 
     /// 中栏：文本编辑器或蓝图画布。
-    fn view_center(&self) -> Element<Message> {
+    fn view_center(&self) -> Element<'_, Message> {
         if self.blueprint_mode {
             self.view_blueprint_canvas()
         } else {
@@ -1487,7 +1491,7 @@ impl EditorApp {
     }
 
     /// 文本编辑器（带语法高亮）。
-    fn view_text_editor(&self) -> Element<Message> {
+    fn view_text_editor(&self) -> Element<'_, Message> {
         let editor = text_editor(&self.editor_content)
             .on_action(Message::Edit)
             .highlight_with::<highlight::AkrsHighlighter>(
@@ -1506,7 +1510,7 @@ impl EditorApp {
     }
 
     /// 蓝图画布。
-    fn view_blueprint_canvas(&self) -> Element<Message> {
+    fn view_blueprint_canvas(&self) -> Element<'_, Message> {
         let program = BlueprintProgram::new(self.blueprint.clone());
         let canvas_widget = canvas::Canvas::new(program)
             .width(Length::Fill)
@@ -1544,7 +1548,7 @@ impl EditorApp {
     }
 
     /// 右栏：预览面板（诊断 / 立绘 / 背景 / 音乐）。
-    fn view_right_panel(&self) -> Element<Message> {
+    fn view_right_panel(&self) -> Element<'_, Message> {
         // 标签页按钮。
         let mut tabs = row![].spacing(2);
         for tab in PreviewTab::ALL {
@@ -1620,7 +1624,7 @@ impl EditorApp {
     }
 
     /// 底部状态栏。
-    fn view_status_bar(&self) -> Element<Message> {
+    fn view_status_bar(&self) -> Element<'_, Message> {
         let dirty = if self.is_dirty() { " [未保存]" } else { "" };
         let status = text(format!("{}{dirty}", self.status)).size(12);
         let file_info = text(
@@ -2003,9 +2007,16 @@ pub fn run_editor() -> Result<(), iced::Error> {
         app
     };
 
-    // 窗口配置 + 订阅 + 主题：`window_size` / `resizable` 返回 `Self`，
+    // 窗口设置：通过 `window::Settings` 传入图标（若加载成功）。
+    let window = iced::window::Settings {
+        icon: load_icon(),
+        ..Default::default()
+    };
+
+    // 窗口配置 + 订阅 + 主题：`window` / `window_size` / `resizable` 返回 `Self`，
     // `subscription` / `theme` 返回新类型，必须链式调用到最后。
-    app.window_size(Size::new(1280.0, 820.0))
+    app.window(window)
+        .window_size(Size::new(1280.0, 820.0))
         .resizable(true)
         .subscription(|state: &EditorApp| state.subscription())
         .theme(|_state: &EditorApp| Theme::Dark)
