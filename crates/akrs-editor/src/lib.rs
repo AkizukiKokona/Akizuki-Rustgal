@@ -16,7 +16,8 @@
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
-use std::io::Read;
+use std::io::{BufRead, Read};
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use iced::advanced::text::highlighter::Format as HighlightFormat;
@@ -524,6 +525,9 @@ struct BuildState {
     snapshot_dir: Option<PathBuf>,
     /// 日志是否跟随底部（用户上滚时暂停）。
     log_follow: bool,
+    /// 子进程 stderr 的后台累积缓冲（由排空线程写入，poll_build 读取）。
+    /// stdout 不参与日志，由独立排空线程丢弃以防管道死锁。
+    log_buffer: Option<Arc<Mutex<String>>>,
 }
 
 impl Default for BuildState {
@@ -551,6 +555,7 @@ impl Default for BuildState {
             failed: Vec::new(),
             snapshot_dir: None,
             log_follow: true,
+            log_buffer: None,
         }
     }
 }
@@ -1271,7 +1276,22 @@ impl EditorApp {
                 }
                 Ok(Some(status)) => {
                     let platform = self.build.building.take().unwrap();
+                    // 取走排空线程累积的 stderr 缓冲。child.stderr 已被线程取走，
+                    // 不能再从 child 读取；这里从 log_buffer 拿全部 cargo 输出。
+                    let captured = self
+                        .build
+                        .log_buffer
+                        .take()
+                        .and_then(|buf| buf.lock().ok().map(|g| g.clone()))
+                        .unwrap_or_default();
                     if status.success() {
+                        // 把 cargo 的关键输出（最后 10 行）追加到日志，便于确认。
+                        let lines: Vec<&str> = captured.lines().collect();
+                        let tail = lines.len().saturating_sub(10);
+                        for line in &lines[tail..] {
+                            self.build.log.push_str(line);
+                            self.build.log.push('\n');
+                        }
                         self.build.log_line(format!("[成功] {} 构建成功", platform.label()));
                         self.build.succeeded.push(platform);
 
@@ -1282,14 +1302,9 @@ impl EditorApp {
                         ));
                         self.collect_build_artifacts(platform, &target_dir);
                     } else {
-                        // 尝试读取 stderr 输出
-                        let mut err_msg = String::new();
-                        if let Some(stderr) = child.stderr.as_mut() {
-                            let _ = stderr.read_to_string(&mut err_msg);
-                        }
-                        if !err_msg.is_empty() {
-                            // 只保留最后几行关键信息
-                            let lines: Vec<&str> = err_msg.lines().collect();
+                        // 失败：把 stderr 最后 10 行写入日志，定位编译错误
+                        if !captured.is_empty() {
+                            let lines: Vec<&str> = captured.lines().collect();
                             let tail = lines.len().saturating_sub(10);
                             for line in &lines[tail..] {
                                 self.build.log.push_str(line);
@@ -1318,9 +1333,10 @@ impl EditorApp {
             self.build
                 .log_line(format!("[构建] 正在构建 {} (target: {})...", platform.label(), platform.target()));
 
-            // 确保安装了目标平台
-            let _ = Command::new("cargo")
-                .args(["rustup", "target", "add", platform.target()])
+            // 确保安装了目标平台（修复：原 `cargo rustup target add` 不是有效命令，
+            // cargo 没有 rustup 子命令；正确调用是直接 `rustup target add`）。
+            let _ = Command::new("rustup")
+                .args(["target", "add", platform.target()])
                 .current_dir(&self.work_dir)
                 .stdout(Stdio::null())
                 .stderr(Stdio::null())
@@ -1336,7 +1352,33 @@ impl EditorApp {
                 .stderr(Stdio::piped())
                 .spawn()
             {
-                Ok(child) => {
+                Ok(mut child) => {
+                    // 修复死锁：stdout/stderr piped 后必须持续读取，否则管道缓冲
+                    // （Linux 约 64KB）填满时子进程阻塞，try_wait 永远返回 None。
+                    // 这里取走两个管道句柄，各起一个后台线程：
+                    //   - stdout 线程：copy 到 sink 丢弃（日志只需 stderr）
+                    //   - stderr 线程：逐行累积到共享缓冲，poll_build 在进程退出后取走
+                    let stdout = child.stdout.take();
+                    let stderr = child.stderr.take();
+                    let buf = Arc::new(Mutex::new(String::new()));
+                    if let Some(stderr) = stderr {
+                        let buf_clone = Arc::clone(&buf);
+                        std::thread::spawn(move || {
+                            let reader = std::io::BufReader::new(stderr);
+                            for line in reader.lines().flatten() {
+                                if let Ok(mut g) = buf_clone.lock() {
+                                    g.push_str(&line);
+                                    g.push('\n');
+                                }
+                            }
+                        });
+                    }
+                    if let Some(mut stdout) = stdout {
+                        std::thread::spawn(move || {
+                            let _ = std::io::copy(&mut stdout, &mut std::io::sink());
+                        });
+                    }
+                    self.build.log_buffer = Some(buf);
                     self.build.process = Some(child);
                 }
                 Err(e) => {
