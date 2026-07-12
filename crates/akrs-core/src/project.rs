@@ -273,7 +273,7 @@ fn recent_projects_path() -> PathBuf {
     }
 }
 
-fn dirs_data_dir() -> Option<PathBuf> {
+pub fn dirs_data_dir() -> Option<PathBuf> {
     // 使用 dirs crate 做跨平台数据目录解析，替代手写的 40 行环境变量逻辑。
     // 修复了旧实现的 bug：Linux 下 ~/.local/share 不存在时回退到家目录根（污染）。
     dirs::data_dir().or_else(dirs::data_local_dir)
