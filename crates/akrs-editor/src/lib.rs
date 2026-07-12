@@ -287,6 +287,12 @@ struct BlueprintState {
     collapse_comments: bool,
     /// 画布缩放系数（1.0 = 100%）。
     zoom: f32,
+    /// 是否处于触摸模式（检测到 Event::Touch 后置 true，粘性保持）。
+    /// 触摸模式下：放大引脚便于点按、空白处单指拖拽平移画布、
+    /// 工具栏显示触摸操作提示。
+    touch_mode: bool,
+    /// 触摸模式下空白处单指拖拽平移进行中（primary 按下在空白处时置 true）。
+    touch_panning: bool,
 }
 
 impl Default for BlueprintState {
@@ -307,6 +313,8 @@ impl Default for BlueprintState {
             editing_node: None,
             collapse_comments: true,
             zoom: 1.0,
+            touch_mode: false,
+            touch_panning: false,
         }
     }
 }
@@ -797,8 +805,8 @@ impl BlueprintState {
     }
 
     /// 命中测试：返回指定画布坐标处的输出引脚所属节点 ID。
-    fn output_pin_at(&self, canvas_pos: egui::Pos2) -> Option<usize> {
-        let r = 8.0; // 引脚命中半径
+    /// `r` 为引脚命中半径（触摸模式下应放大以便点按）。
+    fn output_pin_at(&self, canvas_pos: egui::Pos2, r: f32) -> Option<usize> {
         for node in &self.nodes {
             if self.collapse_comments && node.kind == NodeKind::Comment {
                 continue;
@@ -814,8 +822,8 @@ impl BlueprintState {
     }
 
     /// 命中测试：返回指定画布坐标处的输入引脚所属节点 ID。
-    fn input_pin_at(&self, canvas_pos: egui::Pos2) -> Option<usize> {
-        let r = 8.0;
+    /// `r` 为引脚命中半径（触摸模式下应放大以便点按）。
+    fn input_pin_at(&self, canvas_pos: egui::Pos2, r: f32) -> Option<usize> {
         for node in &self.nodes {
             if self.collapse_comments && node.kind == NodeKind::Comment {
                 continue;
@@ -2625,11 +2633,22 @@ impl EditorApp {
                 self.status = "已清空蓝图".to_string();
             }
             ui.separator();
-            ui.label(
-                egui::RichText::new("右键拖动=平移 | 左键拖动=移动 | 拖引脚=连线 | Del=删除")
-                    .size(12.0)
-                    .color(egui::Color32::from_rgb(150, 150, 160)),
-            );
+            // 操作提示：触摸模式与鼠标模式显示不同提示。
+            // 触摸模式检测到 Event::Touch 后置 touch_mode=true（粘性），此时引脚放大、
+            // 空白处单指拖拽平移画布、双指捏合缩放。
+            if self.blueprint.touch_mode {
+                ui.label(
+                    egui::RichText::new("🖥 触摸模式：单指拖节点=移动 | 单指拖空白=平移画布 | 拖引脚=连线 | 双指捏合=缩放")
+                        .size(12.0)
+                        .color(egui::Color32::from_rgb(120, 200, 255)),
+                );
+            } else {
+                ui.label(
+                    egui::RichText::new("右键拖动=平移 | 左键拖动=移动 | 拖引脚=连线 | Del=删除")
+                        .size(12.0)
+                        .color(egui::Color32::from_rgb(150, 150, 160)),
+                );
+            }
         });
         ui.separator();
 
@@ -2694,27 +2713,43 @@ impl EditorApp {
 
         // ---- 平板触摸手势（Windows/Linux 平板双指）----
         // egui 0.21 把单指触摸映射为 pointer 事件（单指点击/拖拽等价鼠标，单指拖节点已可用）；
-        // ≥2 指时聚合为 MultiTouchInfo。这里处理画布的双指手势：
-        //   - 双指捏合 → 缩放画布（zoom_delta）
-        //   - 双指平移 → 平移画布（translation_delta）
-        // 双指手势进行时抑制单指节点拖拽与右键平移，避免冲突。
-        // 同时支持桌面端 Ctrl+滚轮缩放（egui 的 zoom_delta() 已合成该信号）。
+        // ≥2 指时聚合为 MultiTouchInfo。
+        // 触摸模式检测：扫描 i.events 中的 Event::Touch（触摸屏会在 pointer 事件之外
+        // 额外发送 Event::Touch）。检测到后置 touch_mode=true（粘性，本会话内保持）。
+        let has_touch_event = ui.input(|i| {
+            i.events
+                .iter()
+                .any(|e| matches!(e, egui::Event::Touch { .. }))
+        });
+        if has_touch_event {
+            self.blueprint.touch_mode = true;
+        }
+        let touch_mode = self.blueprint.touch_mode;
+        // 引脚半径：触摸模式下放大（渲染与命中测试共用），便于手指点按。
+        let pin_r = if touch_mode { 9.0 } else { 5.0 };
+        let pin_hit_r = if touch_mode { 16.0 } else { 8.0 };
+
+        // 双指捏合只控制缩放（不再用 translation_delta 平移画布——
+        // 平移改由单指拖空白处完成，与右栏空白处拖拽滚动一致）。
+        // 双指手势进行时抑制单指节点拖拽，避免冲突。
         let multi_touch = ui.input(|i| i.multi_touch());
         let mut touch_active = false;
         if let Some(mt) = multi_touch {
-            if in_canvas || canvas_rect.intersects(egui::Rect::from_center_size(mt.start_pos, egui::Vec2::splat(1.0))) {
+            if in_canvas
+                || canvas_rect
+                    .intersects(egui::Rect::from_center_size(mt.start_pos, egui::Vec2::splat(1.0)))
+            {
                 touch_active = true;
                 let bp = &mut self.blueprint;
-                // 双指平移（直接用 translation_delta，已基于手势起点归一化）
-                bp.pan += mt.translation_delta;
-                // 双指捏合缩放：以画布中心为锚点缩放，避免内容飘走
+                // 双指捏合缩放：以双指起始中点（手势起点）为锚点缩放，
+                // 让双指之间的内容在缩放后仍大致保持在手指下方。
                 let new_zoom = (bp.zoom * mt.zoom_delta).max(0.2).min(3.0);
                 if (new_zoom - bp.zoom).abs() > 1e-4 {
-                    let center_canvas = canvas_rect.center();
-                    // 保持画布中心点在缩放前后对应的逻辑坐标不变
-                    let anchor = ((center_canvas - canvas_rect.min - bp.pan) / bp.zoom).to_pos2();
+                    let anchor_pos = mt.start_pos;
+                    let anchor =
+                        ((anchor_pos - canvas_rect.min - bp.pan) / bp.zoom).to_pos2();
                     bp.zoom = new_zoom;
-                    bp.pan = center_canvas - canvas_rect.min - anchor.to_vec2() * new_zoom;
+                    bp.pan = anchor_pos - canvas_rect.min - anchor.to_vec2() * new_zoom;
                 }
             }
         }
@@ -2737,11 +2772,11 @@ impl EditorApp {
         {
             let bp = &mut self.blueprint;
 
-            // 左键按下：选择 / 拖动 / 开始连线
-            // 双指手势进行时抑制，避免与触摸缩放/平移冲突。
+            // 左键按下：选择 / 拖动 / 开始连线 / 触摸模式空白处开始平移
+            // 双指手势进行时抑制，避免与触摸缩放冲突。
             if primary_pressed && in_canvas && bp.context_menu_pos.is_none() && !touch_active {
                 // 优先检测输出引脚（开始连线）
-                if let Some(from_id) = bp.output_pin_at(canvas_pos) {
+                if let Some(from_id) = bp.output_pin_at(canvas_pos, pin_hit_r) {
                     bp.connecting_from = Some(from_id);
                     bp.connecting_pos = canvas_pos;
                 } else if let Some(node_id) = bp.node_at(canvas_pos) {
@@ -2758,10 +2793,15 @@ impl EditorApp {
                 } else {
                     // 点击空白：取消选中
                     bp.selected = None;
+                    // 触摸模式下空白处按下开始平移画布（与右栏空白处拖拽滚动一致）。
+                    // 鼠标模式仍用右键拖动平移，不进入此分支。
+                    if touch_mode {
+                        bp.touch_panning = true;
+                    }
                 }
             }
 
-            // 左键持续按下：拖动节点 / 更新连线位置
+            // 左键持续按下：拖动节点 / 更新连线位置 / 触摸平移
             // 双指手势进行时抑制。
             if primary_down && !touch_active {
                 if let Some(node_id) = bp.drag_node {
@@ -2772,17 +2812,22 @@ impl EditorApp {
                 if bp.connecting_from.is_some() {
                     bp.connecting_pos = canvas_pos;
                 }
+                // 触摸模式空白处拖拽平移画布（drag_node/connecting_from 均为 None 时）。
+                if bp.touch_panning {
+                    bp.pan += delta;
+                }
             }
 
-            // 左键释放：完成连线
+            // 左键释放：完成连线 / 结束触摸平移
             if primary_released {
                 if let Some(from_id) = bp.connecting_from {
-                    if let Some(to_id) = bp.input_pin_at(canvas_pos) {
+                    if let Some(to_id) = bp.input_pin_at(canvas_pos, pin_hit_r) {
                         bp.add_link(from_id, to_id);
                     }
                     bp.connecting_from = None;
                 }
                 bp.drag_node = None;
+                bp.touch_panning = false;
             }
 
             // 右键按下：记录起点
@@ -3052,19 +3097,20 @@ impl EditorApp {
                 );
             }
             // 输入引脚（顶部中心）——保留上下引脚用于连线。
+            // 触摸模式下引脚半径放大（pin_r），便于手指点按。
             let in_pin = egui::pos2(rect.center().x, rect.top());
-            clipped.circle_filled(in_pin, 5.0 * zoom, egui::Color32::from_rgb(100, 180, 255));
+            clipped.circle_filled(in_pin, pin_r * zoom, egui::Color32::from_rgb(100, 180, 255));
             clipped.circle_stroke(
                 in_pin,
-                5.0 * zoom,
+                pin_r * zoom,
                 egui::Stroke::new(1.5 * zoom, egui::Color32::from_rgb(60, 60, 80)),
             );
             // 输出引脚（底部中心）
             let out_pin = egui::pos2(rect.center().x, rect.bottom());
-            clipped.circle_filled(out_pin, 5.0 * zoom, egui::Color32::from_rgb(255, 180, 100));
+            clipped.circle_filled(out_pin, pin_r * zoom, egui::Color32::from_rgb(255, 180, 100));
             clipped.circle_stroke(
                 out_pin,
-                5.0 * zoom,
+                pin_r * zoom,
                 egui::Stroke::new(1.5 * zoom, egui::Color32::from_rgb(60, 60, 80)),
             );
         }
