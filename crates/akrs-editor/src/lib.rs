@@ -16,7 +16,7 @@
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
-use std::io::{BufRead, Read};
+use std::io::BufRead;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
@@ -27,8 +27,8 @@ use iced::widget::{
     slider, stack, text, text_editor, text_input, Column, Space,
 };
 use iced::{
-    Alignment, Background, Border, Color, Element, Font, Length, Padding, Shadow,
-    Subscription, Task, Theme,
+    Alignment, Background, Border, Color, Element, Font, Length, Padding, Point, Rectangle,
+    Shadow, Size, Subscription, Task, Theme, Vector,
 };
 
 // iced_aw 附加组件：`Card` 统一弹窗卡片，`Tabs`/`TabLabel` 用于右栏预览标签页。
@@ -58,10 +58,15 @@ mod parse;
 mod rpy;
 /// 蓝图节点编辑器状态（纯数据 + 算法，不含 UI）。
 mod state;
+/// 蓝图画布 widget（iced `canvas::Program` 实现，渲染 + 交互层）。
+mod widgets;
 
 // 引入调色板与模板常量：颜色、字号、示例剧本、GitHub 链接、build 号等。
 use palette::*;
 use templates::*;
+// 蓝图类型：画布程序/消息来自 widgets，状态/节点类型来自 state。
+use state::{BlueprintState, NodeKind};
+use widgets::blueprint_canvas::{BlueprintMsg, BlueprintProgram};
 
 /// Rust 官网链接（cargo 引导弹窗的「打开 rust-lang.org」按钮使用）。
 /// 仅编辑器使用，不属于通用模板，故保留在本文件。
@@ -211,6 +216,26 @@ impl PreviewTab {
         Self::Music,
         Self::Outline,
     ];
+}
+
+/// 主编辑区模式：剧本文本编辑或蓝图节点编辑。
+///
+/// 蓝图模式占满中央区域显示节点画布，与三栏布局互斥。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum EditorMode {
+    /// 三栏布局：文件列表 + 文本编辑器 + 预览面板。
+    Script,
+    /// 蓝图节点画布：占满主区域。
+    Blueprint,
+}
+
+impl EditorMode {
+    fn label(&self) -> &'static str {
+        match self {
+            Self::Script => "剧本模式",
+            Self::Blueprint => "蓝图模式",
+        }
+    }
 }
 
 /// 立绘预览状态：允许作者在不启动游戏的情况下调整立绘位置与大小，
@@ -405,6 +430,19 @@ pub struct EditorApp {
     rpy_import_target: PathBuf,
     /// rpy 导入：转换警告信息。
     rpy_import_warnings: Vec<String>,
+    /// 主编辑区当前模式（剧本 / 蓝图）。
+    editor_mode: EditorMode,
+    /// 蓝图节点编辑器状态（节点/连线/视口/交互态）。
+    blueprint: BlueprintState,
+    /// 蓝图右键菜单弹出位置（窗口绝对坐标），None 表示菜单关闭。
+    blueprint_context_menu: Option<iced::Point>,
+    /// 蓝图右键菜单选中要添加的节点模板（用于显示「添加」按钮列表）。
+    /// 实际渲染用 NODE_TEMPLATES 常量，此字段仅标记菜单是否处于「添加节点」子状态。
+    blueprint_menu_add: bool,
+    /// 正在就地编辑文本的节点 ID（双击触发），None 表示无编辑。
+    blueprint_editing: Option<usize>,
+    /// 就地编辑文本框的当前内容。
+    blueprint_edit_text: String,
 }
 
 /// 可翻译行的类型。
@@ -623,6 +661,12 @@ impl Default for EditorApp {
             rpy_import_source: None,
             rpy_import_target: PathBuf::new(),
             rpy_import_warnings: Vec::new(),
+            editor_mode: EditorMode::Script,
+            blueprint: BlueprintState::default(),
+            blueprint_context_menu: None,
+            blueprint_menu_add: false,
+            blueprint_editing: None,
+            blueprint_edit_text: String::new(),
         };
         app.refresh_file_list();
         app
@@ -2082,6 +2126,34 @@ enum Message {
 
     // 快捷键帮助
     ToggleShortcuts,
+
+    // 蓝图模式
+    /// 切换剧本/蓝图主编辑模式。
+    ToggleBlueprintMode,
+    /// 画布交互消息（拖拽/平移/缩放/连线/选择/右键菜单请求等）。
+    Blueprint(BlueprintMsg),
+    /// 从右键菜单添加节点（索引到 NODE_TEMPLATES）。
+    BlueprintAddNode(usize),
+    /// 删除当前选中的蓝图节点。
+    BlueprintDeleteSelected,
+    /// 对蓝图节点执行自动布局。
+    BlueprintAutoLayout,
+    /// 从当前脚本文本重新构建蓝图节点（覆盖现有节点）。
+    BlueprintSyncFromScript,
+    /// 将蓝图节点写回脚本文本（覆盖编辑器内容）。
+    BlueprintSyncToScript,
+    /// 缩放控件：放大 / 缩小 / 重置视图。
+    BlueprintZoomIn,
+    BlueprintZoomOut,
+    BlueprintResetView,
+    /// 关闭蓝图右键菜单。
+    BlueprintContextMenuClose,
+    /// 就地编辑：提交新文本。
+    BlueprintEditCommit(String),
+    /// 就地编辑：输入框内容变更。
+    BlueprintEditInput(String),
+    /// 就地编辑：取消（Esc）。
+    BlueprintEditCancel,
 }
 
 impl EditorApp {
@@ -2420,6 +2492,132 @@ impl EditorApp {
                 open_url_in_browser(RUST_LANG_URL);
             }
             Message::ToggleShortcuts => self.show_shortcuts = !self.show_shortcuts,
+
+            // ---- 蓝图模式 ----
+            Message::ToggleBlueprintMode => {
+                if self.editor_mode == EditorMode::Script {
+                    // 进入蓝图模式：从当前脚本重建节点，避免蓝图与脚本脱节。
+                    let text = self.editor_content.text();
+                    self.blueprint = BlueprintState::default();
+                    self.blueprint.from_script(&text);
+                    self.blueprint.auto_layout();
+                    self.editor_mode = EditorMode::Blueprint;
+                    self.status = "已进入蓝图模式".to_string();
+                } else {
+                    self.editor_mode = EditorMode::Script;
+                    self.status = "已返回剧本模式".to_string();
+                }
+                self.blueprint_context_menu = None;
+                self.blueprint_editing = None;
+            }
+            Message::Blueprint(msg) => {
+                match msg {
+                    BlueprintMsg::NodeMoved { id, pos } => {
+                        if let Some(n) = self.blueprint.nodes.iter_mut().find(|n| n.id == id) {
+                            n.pos = pos;
+                        }
+                    }
+                    BlueprintMsg::PanChanged(pan) => self.blueprint.pan = pan,
+                    BlueprintMsg::ZoomChanged(z) => self.blueprint.zoom = z.clamp(0.2, 3.0),
+                    BlueprintMsg::ViewportChanged { pan, zoom } => {
+                        self.blueprint.pan = pan;
+                        self.blueprint.zoom = zoom.clamp(0.2, 3.0);
+                    }
+                    BlueprintMsg::SelectionChanged(id) => self.blueprint.selected = id,
+                    BlueprintMsg::LinkCreated { from, to } => {
+                        if from != to {
+                            self.blueprint.add_link(from, to);
+                        }
+                    }
+                    BlueprintMsg::NodeDeleted(id) => {
+                        self.blueprint.remove_node(id);
+                        if self.blueprint.selected == Some(id) {
+                            self.blueprint.selected = None;
+                        }
+                    }
+                    BlueprintMsg::EditRequested(id) => {
+                        if let Some(n) = self.blueprint.nodes.iter().find(|n| n.id == id) {
+                            self.blueprint_edit_text = n.text.clone();
+                            self.blueprint_editing = Some(id);
+                        }
+                        // 进入编辑时关闭右键菜单。
+                        self.blueprint_context_menu = None;
+                    }
+                    BlueprintMsg::ContextMenuRequested(pos) => {
+                        self.blueprint_context_menu = Some(pos);
+                        self.blueprint_menu_add = true;
+                    }
+                    BlueprintMsg::NodeMenuRequested(id) => {
+                        // 右键节点：选中并弹出节点操作菜单（删除/编辑）。
+                        // 菜单居中显示（context_menu_pos 仅作非 None 标记）。
+                        self.blueprint.selected = Some(id);
+                        self.blueprint_context_menu = Some(iced::Point::new(0.0, 0.0));
+                        self.blueprint_menu_add = false;
+                    }
+                }
+            }
+            Message::BlueprintAddNode(idx) => {
+                if let Some(&(label, _desc, template)) = NODE_TEMPLATES.get(idx) {
+                    let kind = BlueprintState::detect_kind(template);
+                    let pos = self.blueprint.next_placement_pos();
+                    let _id = self.blueprint.add_node(kind, pos, template.to_string());
+                    self.status = format!("已添加「{}」节点", label);
+                }
+                self.blueprint_context_menu = None;
+            }
+            Message::BlueprintDeleteSelected => {
+                if let Some(id) = self.blueprint.selected {
+                    self.blueprint.remove_node(id);
+                    self.blueprint.selected = None;
+                    self.status = "已删除选中节点".to_string();
+                }
+            }
+            Message::BlueprintAutoLayout => {
+                self.blueprint.auto_layout();
+                self.status = "已自动布局".to_string();
+            }
+            Message::BlueprintSyncFromScript => {
+                let text = self.editor_content.text();
+                self.blueprint = BlueprintState::default();
+                self.blueprint.from_script(&text);
+                self.blueprint.auto_layout();
+                self.status = "已从脚本同步蓝图".to_string();
+            }
+            Message::BlueprintSyncToScript => {
+                let text = self.blueprint.to_script();
+                self.editor_content = text_editor::Content::with_text(&text);
+                self.status = "已将蓝图写回脚本".to_string();
+            }
+            Message::BlueprintZoomIn => {
+                self.blueprint.zoom = (self.blueprint.zoom * 1.2).min(3.0);
+            }
+            Message::BlueprintZoomOut => {
+                self.blueprint.zoom = (self.blueprint.zoom / 1.2).max(0.2);
+            }
+            Message::BlueprintResetView => {
+                self.blueprint.zoom = 1.0;
+                self.blueprint.pan = Vector::new(40.0, 40.0);
+            }
+            Message::BlueprintContextMenuClose => {
+                self.blueprint_context_menu = None;
+            }
+            Message::BlueprintEditInput(s) => {
+                self.blueprint_edit_text = s;
+            }
+            Message::BlueprintEditCommit(new_text) => {
+                if let Some(id) = self.blueprint_editing.take() {
+                    if let Some(n) = self.blueprint.nodes.iter_mut().find(|n| n.id == id) {
+                        n.text = new_text;
+                        // 同步更新节点类型（文本可能从对话改成了指令等）。
+                        n.kind = BlueprintState::detect_kind(&n.text);
+                    }
+                }
+                self.blueprint_edit_text.clear();
+            }
+            Message::BlueprintEditCancel => {
+                self.blueprint_editing = None;
+                self.blueprint_edit_text.clear();
+            }
         }
         Task::none()
     }
@@ -2625,7 +2823,11 @@ impl EditorApp {
 
     fn view_main(&self) -> Element<'_, Message> {
         let toolbar = self.view_toolbar();
-        let panels = self.view_three_panels();
+        // 蓝图模式占满主区域；剧本模式沿用三栏布局。
+        let panels = match self.editor_mode {
+            EditorMode::Script => self.view_three_panels(),
+            EditorMode::Blueprint => self.view_blueprint(),
+        };
         let status_bar = self.view_status_bar();
 
         let main = column![toolbar, panels, status_bar]
@@ -2670,6 +2872,14 @@ impl EditorApp {
             b("插入unlock", Message::InsertUnlockSyntax),
             b("快捷键", Message::ToggleShortcuts),
             b("关于", Message::ShowAbout),
+            b(
+                if self.editor_mode == EditorMode::Blueprint {
+                    "返回剧本"
+                } else {
+                    "蓝图模式"
+                },
+                Message::ToggleBlueprintMode,
+            ),
         ]
         .spacing(6);
 
@@ -2714,6 +2924,246 @@ impl EditorApp {
                 background: Some(Background::Color(Color::from_rgb(0.12, 0.13, 0.16))),
                 ..Default::default()
             })
+            .into()
+    }
+
+    // -- 蓝图模式 ---------------------------------------------------------
+
+    fn view_blueprint(&self) -> Element<'_, Message> {
+        // 蓝图小工具栏按钮。
+        let tb_btn = |label: &'static str, msg: Message| {
+            button(text(label).size(12.0))
+                .on_press(msg)
+                .padding([4, 10])
+                .style(|_t, _s| button::Style {
+                    background: Some(Background::Color(Color::from_rgb(0.16, 0.19, 0.26))),
+                    text_color: Color::WHITE,
+                    border: Border::default().rounded(4.0),
+                    ..Default::default()
+                })
+        };
+
+        let info = text(format!(
+            "节点 {} · 连线 {} · 缩放 {:.0}%",
+            self.blueprint.nodes.len(),
+            self.blueprint.links.len(),
+            self.blueprint.zoom * 100.0
+        ))
+        .size(11.0)
+        .color(Color::from_rgb(0.6, 0.65, 0.72));
+
+        let toolbar = row![
+            tb_btn("＋放大", Message::BlueprintZoomIn),
+            tb_btn("－缩小", Message::BlueprintZoomOut),
+            tb_btn("重置视图", Message::BlueprintResetView),
+            tb_btn("自动布局", Message::BlueprintAutoLayout),
+            tb_btn("从脚本同步", Message::BlueprintSyncFromScript),
+            tb_btn("写回脚本", Message::BlueprintSyncToScript),
+            tb_btn("删除选中", Message::BlueprintDeleteSelected),
+            horizontal_space(),
+            info,
+            text("· 右键空白添加节点 · 右键节点操作 · 双击编辑 · Ctrl+滚轮缩放 · Del 删除")
+                .size(10.0)
+                .color(Color::from_rgb(0.45, 0.5, 0.58)),
+        ]
+        .spacing(6)
+        .padding([4, 8])
+        .align_y(Alignment::Center);
+
+        // 画布：克隆当前蓝图状态作为快照，每帧重新构造 Program。
+        let program = BlueprintProgram::new(self.blueprint.clone());
+        let canvas_el: Element<'_, BlueprintMsg> =
+            iced::widget::canvas::Canvas::new(program)
+                .width(Length::Fill)
+                .height(Length::Fill)
+                .into();
+        let canvas_el: Element<'_, Message> = canvas_el.map(Message::Blueprint);
+
+        // 叠加层：右键菜单 / 就地编辑（用 stack 覆盖在画布上）。
+        let mut layers: Vec<Element<'_, Message>> = vec![canvas_el];
+        if self.blueprint_context_menu.is_some() {
+            layers.push(self.view_blueprint_context_menu());
+        }
+        if self.blueprint_editing.is_some() {
+            layers.push(self.view_blueprint_edit_overlay());
+        }
+        let canvas_area = stack(layers).width(Length::Fill).height(Length::Fill);
+
+        let main = column![
+            container(toolbar).width(Length::Fill).style(|_t| {
+                container::Style {
+                    background: Some(Background::Color(Color::from_rgb(0.10, 0.12, 0.16))),
+                    border: Border::default()
+                        .color(Color::from_rgb(0.18, 0.20, 0.25)),
+                    ..Default::default()
+                }
+            }),
+            canvas_area,
+        ]
+        .width(Length::Fill)
+        .height(Length::Fill);
+
+        container(main)
+            .width(Length::Fill)
+            .height(Length::Fill)
+            .style(|_t| container::Style {
+                background: Some(Background::Color(Color::from_rgb(0.12, 0.13, 0.16))),
+                ..Default::default()
+            })
+            .into()
+    }
+
+    /// 蓝图右键菜单覆盖层：opaque 全屏遮罩 + 居中卡片。
+    /// `menu_add=true` 显示节点模板列表；`false` 显示节点操作（删除/编辑）。
+    fn view_blueprint_context_menu(&self) -> Element<'_, Message> {
+        // 全屏遮罩：点击任意空白处关闭菜单。
+        let backdrop = button(text("").size(1.0))
+            .on_press(Message::BlueprintContextMenuClose)
+            .width(Length::Fill)
+            .height(Length::Fill)
+            .style(|_t, _s| button::Style {
+                background: Some(Background::Color(Color::from_rgba(0.0, 0.0, 0.0, 0.35))),
+                ..Default::default()
+            });
+
+        let card_btn = |label: String, msg: Message| {
+            button(text(label).size(13.0))
+                .on_press(msg)
+                .padding([6, 12])
+                .width(Length::Fill)
+                .style(|_t, _s| button::Style {
+                    background: Some(Background::Color(Color::TRANSPARENT)),
+                    text_color: Color::from_rgb(0.85, 0.88, 0.93),
+                    border: Border::default().rounded(4.0),
+                    ..Default::default()
+                })
+        };
+
+        let mut card_col = Column::new().spacing(2).padding(6);
+
+        if self.blueprint_menu_add {
+            // 节点模板列表。
+            card_col = card_col.push(
+                text("添加节点").size(13.0).color(COLOR_FLOW),
+            );
+            for (idx, (label, desc, _template)) in NODE_TEMPLATES.iter().enumerate() {
+                card_col = card_col.push(card_btn(
+                    format!("{}  ·  {}", label, desc),
+                    Message::BlueprintAddNode(idx),
+                ));
+            }
+        } else {
+            // 节点操作菜单。
+            card_col = card_col.push(text("节点操作").size(13.0).color(COLOR_FLOW));
+            card_col = card_col.push(card_btn(
+                "编辑文本".to_string(),
+                {
+                    let id = self.blueprint.selected;
+                    // 进入编辑：通过 EditRequested 让 update 载入当前节点文本。
+                    if let Some(id) = id {
+                        Message::Blueprint(BlueprintMsg::EditRequested(id))
+                    } else {
+                        Message::BlueprintContextMenuClose
+                    }
+                },
+            ));
+            card_col = card_col.push(card_btn(
+                "删除节点".to_string(),
+                Message::BlueprintDeleteSelected,
+            ));
+            card_col = card_col.push(card_btn(
+                "关闭菜单".to_string(),
+                Message::BlueprintContextMenuClose,
+            ));
+        }
+
+        let card = container(card_col)
+            .width(240)
+            .style(|_t| container::Style {
+                background: Some(Background::Color(Color::from_rgb(0.18, 0.20, 0.26))),
+                border: Border::default()
+                    .color(Color::from_rgb(0.35, 0.4, 0.5))
+                    .rounded(8.0),
+                ..Default::default()
+            });
+
+        // 居中放置卡片。
+        let centered = container(card)
+            .width(Length::Fill)
+            .height(Length::Fill)
+            .center_x(Length::Fill)
+            .center_y(Length::Fill);
+
+        stack![backdrop, centered]
+            .width(Length::Fill)
+            .height(Length::Fill)
+            .into()
+    }
+
+    /// 蓝图就地编辑覆盖层：居中 text_input + 确认/取消。
+    fn view_blueprint_edit_overlay(&self) -> Element<'_, Message> {
+        let backdrop = button(text("").size(1.0))
+            .on_press(Message::BlueprintEditCancel)
+            .width(Length::Fill)
+            .height(Length::Fill)
+            .style(|_t, _s| button::Style {
+                background: Some(Background::Color(Color::from_rgba(0.0, 0.0, 0.0, 0.45))),
+                ..Default::default()
+            });
+
+        let input = text_input("编辑节点文本（回车提交 · Esc 取消）", &self.blueprint_edit_text)
+            .on_input(Message::BlueprintEditInput)
+            .on_submit(Message::BlueprintEditCommit(self.blueprint_edit_text.clone()))
+            .padding(8)
+            .width(360);
+
+        let confirm = button(text("提交").size(13.0))
+            .on_press(Message::BlueprintEditCommit(self.blueprint_edit_text.clone()))
+            .padding([6, 14])
+            .style(|_t, _s| button::Style {
+                background: Some(Background::Color(Color::from_rgb(0.20, 0.45, 0.30))),
+                text_color: Color::WHITE,
+                border: Border::default().rounded(4.0),
+                ..Default::default()
+            });
+
+        let cancel = button(text("取消").size(13.0))
+            .on_press(Message::BlueprintEditCancel)
+            .padding([6, 14])
+            .style(|_t, _s| button::Style {
+                background: Some(Background::Color(Color::from_rgb(0.40, 0.18, 0.18))),
+                text_color: Color::WHITE,
+                border: Border::default().rounded(4.0),
+                ..Default::default()
+            });
+
+        let card = container(
+            column![
+                text("编辑节点").size(14.0).color(COLOR_FLOW),
+                input,
+                row![confirm, cancel].spacing(8),
+            ]
+            .spacing(10)
+            .padding(16),
+        )
+        .width(420)
+        .style(|_t| container::Style {
+            background: Some(Background::Color(Color::from_rgb(0.18, 0.20, 0.26))),
+            border: Border::default()
+                .color(Color::from_rgb(0.35, 0.4, 0.5))
+                .rounded(8.0),
+            ..Default::default()
+        });
+
+        let centered = container(card)
+            .width(Length::Fill)
+            .height(Length::Fill)
+            .center_x(Length::Fill)
+            .center_y(Length::Fill);
+
+        stack![backdrop, centered]
+            .width(Length::Fill)
+            .height(Length::Fill)
             .into()
     }
 

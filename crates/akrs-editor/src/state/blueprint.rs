@@ -51,6 +51,7 @@ pub enum NodeKind {
 }
 
 /// 蓝图节点：对应剧本中的一行（或多行）指令。
+#[derive(Clone)]
 pub struct BlueprintNode {
     /// 节点唯一 ID。
     pub id: usize,
@@ -63,6 +64,7 @@ pub struct BlueprintNode {
 }
 
 /// 蓝图连线：从某节点的输出引脚连到另一节点的输入引脚。
+#[derive(Clone)]
 pub struct BlueprintLink {
     /// 源节点 ID（输出引脚）。
     pub from: usize,
@@ -71,6 +73,7 @@ pub struct BlueprintLink {
 }
 
 /// 蓝图编辑器状态。
+#[derive(Clone)]
 pub struct BlueprintState {
     /// 全部节点（按创建顺序）。
     pub nodes: Vec<BlueprintNode>,
