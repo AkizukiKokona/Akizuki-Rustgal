@@ -3182,18 +3182,19 @@ impl EditorApp {
         // 关闭「拖拽即滚动」：默认 drag_to_scroll=true 会吞掉垂直拖拽手势用于滚动列表，
         // 导致积木上的 Sense::drag() 拿不到拖拽（拖动变成上下滚动，和滚轮效果一样）。
         // 关闭后仍可用滚轮滚动，积木可正常拖出。
+        // auto_shrink(false)：让 ScrollArea 在水平方向撑满父容器宽度，而非按内容收缩。
+        // 否则内容（积木卡片）比面板窄时，ScrollArea 自身宽度也跟着收缩，其 solid
+        // 滚动条会画在收缩后内容区的右边缘——即面板中间，而非面板右边缘。
+        // 撑满后滚动条贴右；卡片本身仍按自然宽度渲染，不会被撑大。
         egui::ScrollArea::vertical()
             .drag_to_scroll(false)
+            .auto_shrink([false; 2])
             .show(ui, |ui| {
             for (idx, (label, desc, template)) in NODE_TEMPLATES.iter().enumerate() {
                 let kind = BlueprintState::detect_kind(template);
                 let color = BlueprintState::kind_color(kind);
                 let frame = block_card_frame(ui, color, 3.0);
                 let resp = frame.show(ui, |ui| {
-                    // 让卡片撑满面板可用宽度：否则 Frame::group 会按内容收缩，
-                    // ScrollArea 内容宽度小于可用宽度，垂直滚动条会跟着内容右边缘
-                    // 跑到面板中间而非贴右。
-                    ui.set_min_width(ui.available_width());
                     paint_block_card(ui, label, desc, template, color);
                 });
                 // 拖拽添加：用 Sense::drag 检测拖拽开始，记录模板索引，画布上释放即添加。
