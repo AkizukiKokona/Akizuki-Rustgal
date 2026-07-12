@@ -204,5 +204,8 @@ jobs:
           tag_name: ${{ needs.resolve.outputs.tag }}
           name: ${{ needs.resolve.outputs.tag }}
           prerelease: ${{ needs.resolve.outputs.prerelease }}
-          generate_release_notes: true
+          body: |
+            第一正式版。
+
+            功能详见 [README.md](https://github.com/AkizukiKokona/Akizuki-Rustgal/blob/main/README.md)。
           files: artifacts/*
