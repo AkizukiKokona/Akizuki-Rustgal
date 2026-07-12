@@ -2789,20 +2789,34 @@ impl EditorApp {
             let mut close_menu = false;
             let pan_copy = self.blueprint.pan;
             let canvas_min = canvas_rect.min;
-            // 预计算菜单宽度：标签与描述统一字体大小，估算最大行宽用于屏幕边界检测。
-            // 不强制 set_min_width，让菜单按内容自适应（避免"几个字却拉很长"）。
-            let menu_width = {
-                let mut max_w = 150.0f32;
-                for (label, desc, _) in NODE_TEMPLATES {
-                    // 标签与描述均按 12px 估算（统一字号）。
-                    let w = (label.chars().count() + desc.chars().count()) as f32 * 12.0
-                        + 56.0; // 按钮内边距 + 间距 + 描述前留白
-                    if w > max_w {
-                        max_w = w;
-                    }
-                }
-                max_w.min(260.0) // 上限避免过宽
+            // 按内容自适应宽度：用 painter 测量每行真实文本宽度，取最长行 + 少量余量。
+            // 不再凭字符数估算、不加固定 56px 留白，避免菜单比最长行还宽。
+            let btn_pad = ui.style().spacing.button_padding.x;
+            let item_sp = ui.style().spacing.item_spacing.x;
+            let font_id = egui::FontId::proportional(14.0);
+            let measure = |ui: &egui::Ui, txt: &str| {
+                ui.painter()
+                    .layout_no_wrap(txt.to_string(), font_id.clone(), egui::Color32::WHITE)
+                    .size()
+                    .x
             };
+            let mut content_width = measure(ui, "添加节点");
+            for (label, desc, _) in NODE_TEMPLATES {
+                // 行宽 = 标签按钮(文本 + 左右内边距) + 行内间距 + 描述文本
+                let row_w = measure(ui, label) + 2.0 * btn_pad + item_sp + measure(ui, desc);
+                if row_w > content_width {
+                    content_width = row_w;
+                }
+            }
+            for txt in ["整理布局", "从脚本导入", "折叠注释", "展开注释", "删除选中节点"] {
+                let bw = measure(ui, txt) + 2.0 * btn_pad;
+                if bw > content_width {
+                    content_width = bw;
+                }
+            }
+            content_width += 4.0; // 少量安全余量，避免字宽估算误差导致右侧贴边
+            // 屏幕边界检测用的总宽度（含 popup 内边距）
+            let menu_width = content_width + 16.0;
             // 防止菜单超出屏幕底部：若菜单高度可能超出，把弹出位置往上挪。
             // 估算菜单高度：每个条目约 22px，加标题、分隔符和操作按钮。
             let estimated_height = (NODE_TEMPLATES.len() as f32 + 7.0) * 22.0;
@@ -2823,6 +2837,9 @@ impl EditorApp {
                 .fixed_pos(menu_pos_copy)
                 .show(ui.ctx(), |ui| {
                     egui::Frame::popup(ui.style()).show(ui, |ui| {
+                        // 取消按钮默认最小交互宽度，让短按钮按文本收缩；统一行宽到最长行
+                        ui.spacing_mut().interact_size.x = 0.0;
+                        ui.set_min_width(content_width);
                         ui.label(egui::RichText::new("添加节点").strong());
                         ui.separator();
                         // 节点模板列表：每行按钮(标签) + 灰色描述文字，字号统一。
