@@ -2541,12 +2541,54 @@ impl EditorApp {
         // 注意：Pos2 - Pos2 = Vec2，需转回 Pos2 以匹配节点命中测试等接口。
         let canvas_pos = ((mouse_pos - canvas_rect.min - pan) / zoom).to_pos2();
 
+        // ---- 平板触摸手势（Windows/Linux 平板双指）----
+        // egui 0.21 把单指触摸映射为 pointer 事件（单指点击/拖拽等价鼠标，单指拖节点已可用）；
+        // ≥2 指时聚合为 MultiTouchInfo。这里处理画布的双指手势：
+        //   - 双指捏合 → 缩放画布（zoom_delta）
+        //   - 双指平移 → 平移画布（translation_delta）
+        // 双指手势进行时抑制单指节点拖拽与右键平移，避免冲突。
+        // 同时支持桌面端 Ctrl+滚轮缩放（egui 的 zoom_delta() 已合成该信号）。
+        let multi_touch = ui.input(|i| i.multi_touch());
+        let mut touch_active = false;
+        if let Some(mt) = multi_touch {
+            if in_canvas || canvas_rect.intersects(egui::Rect::from_center_size(mt.start_pos, egui::Vec2::splat(1.0))) {
+                touch_active = true;
+                let bp = &mut self.blueprint;
+                // 双指平移（直接用 translation_delta，已基于手势起点归一化）
+                bp.pan += mt.translation_delta;
+                // 双指捏合缩放：以画布中心为锚点缩放，避免内容飘走
+                let new_zoom = (bp.zoom * mt.zoom_delta).max(0.2).min(3.0);
+                if (new_zoom - bp.zoom).abs() > 1e-4 {
+                    let center_canvas = canvas_rect.center();
+                    // 保持画布中心点在缩放前后对应的逻辑坐标不变
+                    let anchor = ((center_canvas - canvas_rect.min - bp.pan) / bp.zoom).to_pos2();
+                    bp.zoom = new_zoom;
+                    bp.pan = center_canvas - canvas_rect.min - anchor.to_vec2() * new_zoom;
+                }
+            }
+        }
+        // Ctrl+滚轮缩放（桌面端）：egui 的 zoom_delta() 在 Ctrl 按下滚动时返回缩放因子
+        if !touch_active {
+            let zd = ui.input(|i| i.zoom_delta());
+            if (zd - 1.0).abs() > 1e-4 && in_canvas {
+                let bp = &mut self.blueprint;
+                let new_zoom = (bp.zoom * zd).max(0.2).min(3.0);
+                if (new_zoom - bp.zoom).abs() > 1e-4 {
+                    // 以鼠标位置为锚点缩放
+                    let anchor = ((mouse_pos - canvas_rect.min - bp.pan) / bp.zoom).to_pos2();
+                    bp.zoom = new_zoom;
+                    bp.pan = mouse_pos - canvas_rect.min - anchor.to_vec2() * new_zoom;
+                }
+            }
+        }
+
         // ---- 处理交互（可变借用 self.blueprint）----
         {
             let bp = &mut self.blueprint;
 
             // 左键按下：选择 / 拖动 / 开始连线
-            if primary_pressed && in_canvas && bp.context_menu_pos.is_none() {
+            // 双指手势进行时抑制，避免与触摸缩放/平移冲突。
+            if primary_pressed && in_canvas && bp.context_menu_pos.is_none() && !touch_active {
                 // 优先检测输出引脚（开始连线）
                 if let Some(from_id) = bp.output_pin_at(canvas_pos) {
                     bp.connecting_from = Some(from_id);
@@ -2569,7 +2611,8 @@ impl EditorApp {
             }
 
             // 左键持续按下：拖动节点 / 更新连线位置
-            if primary_down {
+            // 双指手势进行时抑制。
+            if primary_down && !touch_active {
                 if let Some(node_id) = bp.drag_node {
                     if let Some(node) = bp.nodes.iter_mut().find(|n| n.id == node_id) {
                         node.pos = canvas_pos - bp.drag_offset;
@@ -2597,7 +2640,8 @@ impl EditorApp {
                 bp.right_moved = false;
             }
             // 右键持续按下：平移
-            if secondary_down {
+            // 双指手势进行时抑制（触摸平移由 MultiTouchInfo 处理）。
+            if secondary_down && !touch_active {
                 if let Some(start) = bp.right_press_pos {
                     if (mouse_pos - start).length() > 4.0 {
                         bp.right_moved = true;
