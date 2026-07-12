@@ -4617,26 +4617,27 @@ impl eframe::App for EditorApp {
                 self.open_current_name();
             }
         }
-        if sc.save {
+        if sc.save && !self.editor_content.trim().is_empty() {
             self.save_file();
         }
-        if sc.run {
+        if sc.run && !self.editor_content.trim().is_empty() {
             self.run_script();
         }
-        // Ctrl+1/2/3/4：快速插入语法
-        if sc.ins1 {
+        // Ctrl+1/2/3/4：快速插入语法（无剧本内容时跳过，与「插入语法」按钮守卫一致）。
+        let can_ins = !self.editor_content.trim().is_empty() || self.blueprint_mode;
+        if sc.ins1 && can_ins {
             self.editor_content.push_str("+ 角色\n");
             self.status = "已插入：+ 角色（立绘上场）".to_string();
         }
-        if sc.ins2 {
+        if sc.ins2 && can_ins {
             self.editor_content.push_str("- 角色\n");
             self.status = "已插入：- 角色（立绘下场）".to_string();
         }
-        if sc.ins3 {
+        if sc.ins3 && can_ins {
             self.editor_content.push_str("# 章节\n");
             self.status = "已插入：# 章节（章节标题）".to_string();
         }
-        if sc.ins4 {
+        if sc.ins4 && can_ins {
             self.editor_content.push_str("@bg 背景\n");
             self.status = "已插入：@bg 背景（背景指令）".to_string();
         }
@@ -4653,12 +4654,18 @@ impl eframe::App for EditorApp {
             self.toggle_blueprint_mode();
         }
         // Ctrl+T：切换对照翻译模式
+        // 无剧本内容时：仅允许从翻译模式退出，不允许进入（与按钮守卫一致）。
         if sc.toggle_translation {
-            // 蓝图模式下不允许直接进翻译，先退出蓝图。
-            if self.blueprint_mode {
-                self.toggle_blueprint_mode();
+            if self.translation_mode {
+                // 已在翻译模式，直接退出。
+                self.toggle_translation_mode();
+            } else if !self.editor_content.trim().is_empty() {
+                // 有内容才允许进入；蓝图模式下先退出蓝图。
+                if self.blueprint_mode {
+                    self.toggle_blueprint_mode();
+                }
+                self.toggle_translation_mode();
             }
-            self.toggle_translation_mode();
         }
 
         if let Some(engine) = self.engine.as_mut() {
@@ -4703,13 +4710,20 @@ impl eframe::App for EditorApp {
                 if ui.button("打开").on_hover_text("快捷键：Ctrl+O").clicked() {
                     self.open_file_picker(FilePickerMode::Open);
                 }
-                if ui.button("保存").on_hover_text("快捷键：Ctrl+S").clicked() {
+                // 保存：未打开/无内容剧本时禁用（无内容可保存）。
+                if ui.add_enabled(!self.editor_content.trim().is_empty(), egui::Button::new("保存"))
+                    .on_hover_text("快捷键：Ctrl+S")
+                    .clicked()
+                {
                     self.save_file();
                 }
                 ui.separator();
                 // 快速插入语法按钮（收进下拉菜单，节省工具栏空间）
                 // 蓝图模式下点击直接添加节点到画布；文本模式下追加到脚本末尾。
+                // 无剧本内容时禁用（与蓝图模式按钮守卫一致）。
                 let insert_label = if self.blueprint_mode { "插入节点" } else { "插入语法" };
+                let can_edit = !self.editor_content.trim().is_empty() || self.blueprint_mode;
+                ui.add_enabled_ui(can_edit, |ui| {
                 ui.menu_button(insert_label, |ui| {
                     let insert_buttons = [
                         ("立绘上场", "+ 角色", "立绘上场（0.5秒淡入）(Ctrl+1)"),
@@ -4737,8 +4751,13 @@ impl eframe::App for EditorApp {
                         }
                     }
                 });
+                }); // add_enabled_ui(can_edit)
                 ui.separator();
-                if ui.button("运行").on_hover_text("快捷键：Ctrl+R").clicked() {
+                // 运行：无剧本内容时禁用（无内容可运行）。
+                if ui.add_enabled(!self.editor_content.trim().is_empty(), egui::Button::new("运行"))
+                    .on_hover_text("快捷键：Ctrl+R")
+                    .clicked()
+                {
                     self.run_script();
                 }
                 if self.engine.is_some() {
@@ -4779,12 +4798,17 @@ impl eframe::App for EditorApp {
                     self.show_about = true;
                 }
                 ui.separator();
+                // 对照翻译：无剧本内容时禁用（无可翻译内容）。
+                // 已进入对照翻译模式时「退出」按钮始终可用，避免被困在模式里。
                 if self.translation_mode {
                     if ui.button("退出对照翻译").on_hover_text("快捷键：Ctrl+T").clicked() {
                         self.toggle_translation_mode();
                     }
                 } else {
-                    if ui.button("对照翻译").on_hover_text("快捷键：Ctrl+T").clicked() {
+                    if ui.add_enabled(!self.editor_content.trim().is_empty(), egui::Button::new("对照翻译"))
+                        .on_hover_text("快捷键：Ctrl+T")
+                        .clicked()
+                    {
                         self.toggle_translation_mode();
                     }
                 }
