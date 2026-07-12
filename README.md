@@ -14,6 +14,8 @@
 
 ---
 
+> **关于代码**：本项目代码实现由 AI 负责，但我会对里面的每一行代码负责。
+
 ## 独有特色
 
 > **语言 / Language:** 简体中文 | [English](#unique-highlights) | [日本語](#独自の特徴) | [繁體中文](#獨有特色)
@@ -25,6 +27,7 @@
 - **对照翻译模式** — 编辑器内原文-译文并排，原文只读、译文实时写入；翻译文件以原文为 key，仅改动的行需重译（Ren'Py 用哈希 ID 翻译块，与脚本结构耦合）
 - **过程宏编译期嵌入** — `.akrs` 脚本通过过程宏在编译时嵌入 Rust 代码，类型检查延伸至剧本层（其他引擎均为运行时解析）
 - **满血 Rust 零运行时** — 无 Python、无 TJS、无 GC 停顿，单二进制分发，帧率稳定可预测
+- **蓝图模式可视化写剧本** — 编辑器内置类 Unreal Engine 蓝图的节点编辑界面，剧本的每一行变成画布上的可视节点，拖拽输出引脚到输入引脚即可创建连线、组织执行顺序，告别逐行敲代码；完整支持触摸屏（检测到触摸事件即进入触摸模式，双指捏合缩放、单指拖动平移画布与连线、引脚自动放大便于手指点按），平板/触屏本也能流畅写剧本（Ren'Py / KiriKiri 均无此能力）
 
 <details>
 <summary><b>English</b></summary>
@@ -38,6 +41,7 @@ Compared to Ren'Py (Python runtime) and KiriKiri/KAG (TJS interpreter), Akizuki\
 - **Side-by-side translation mode** — The editor shows original and translation columns; the original is read-only and the translation writes back live. Translation files key on the original text, so only edited lines need retranslation (Ren'Py uses hash-ID translate blocks coupled to script structure)
 - **Compile-time script embedding via proc macros** — `.akrs` scripts are embedded into Rust code at compile time via procedural macros, extending type checking into the script layer (other engines parse scripts at runtime)
 - **Full Rust, zero runtime** — No Python, no TJS, no GC pauses; a single binary ships with stable, predictable frame rates
+- **Blueprint mode for visual scripting** — The built-in editor offers a Unreal-Engine-blueprint-style node graph where every script line becomes a visual node on the canvas; drag an output pin to an input pin to wire up execution flow instead of typing code line by line. Full touch-screen support (auto-enters touch mode on touch events, two-finger pinch to zoom, one-finger drag to pan the canvas and connect pins, pins auto-enlarge for finger tapping) lets you author scripts smoothly on tablets and touch-screen laptops (Ren'Py and KiriKiri offer nothing comparable)
 
 </details>
 
@@ -53,6 +57,7 @@ Ren'Py（Python ランタイム）や KiriKiri/KAG（TJS インタプリタ）�
 - **対照翻訳モード** — エディタ内で原文-訳文を並列表示。原文は読み取り専用、訳文はリアルタイム反映。翻訳ファイルは原文をキーとするため、変更した行のみ再翻訳（Ren'Py はハッシュ ID 翻訳ブロックでスクリプト構造と結合）
 - **プロシージャルマクロによるコンパイル時埋め込み** — `.akrs` スクリプトはプロシージャルマクロでコンパイル時に Rust コードへ埋め込まれ、型検査がスクリプト層まで及ぶ（他エンジンは実行時解析）
 - **完全 Rust・ランタイムゼロ** — Python なし、TJS なし、GC 停止なし。シングルバイナリで配布、安定した予測可能なフレームレート
+- **ブループリントモードでビジュアル脚本編集** — エディタ内蔵の Unreal Engine ブループリント風ノードグラフで、脚本の各行がキャンバス上のビジュアルノード化。出力ピンから入力ピンへドラッグして実行順序を繋ぎ、行単位のコード入力から解放。タッチスクリーン完全対応（タッチイベント検出で自動的にタッチモードへ切替、2 本指ピンチでズーム、1 本指ドラッグでキャンバスパンとピン接続、指タップ用にピン自動拡大）によりタブレット/タッチ PC でも快適に脚本執筆可能（Ren'Py / KiriKiri に同等機能なし）
 
 </details>
 
@@ -68,6 +73,7 @@ Ren'Py（Python ランタイム）や KiriKiri/KAG（TJS インタプリタ）�
 - **對照翻譯模式** — 編輯器內原文-譯文並排，原文唯讀、譯文即時寫入；翻譯檔案以原文為鍵，僅改動的行需重譯（Ren'Py 使用雜湊 ID 翻譯區塊，與腳本結構耦合）
 - **過程巨集編譯期嵌入** — `.akrs` 腳本透過過程巨集在編譯時嵌入 Rust 程式碼，型別檢查延伸至劇本層（其他引擎皆為執行時期解析）
 - **滿血 Rust 零執行時期** — 無 Python、無 TJS、無 GC 停頓，單一二進位散布，幀率穩定可預測
+- **藍圖模式視覺化寫劇本** — 編輯器內建類 Unreal Engine 藍圖的節點編輯介面，劇本的每一行變成畫布上的視覺節點，拖曳輸出引腳到輸入引腳即可建立連線、組織執行順序，告別逐行敲程式碼；完整支援觸控螢幕（偵測到觸控事件即進入觸控模式，雙指捏合縮放、單指拖曳平移畫布與連線、引腳自動放大便於手指點按），平板/觸控筆電也能流暢寫劇本（Ren'Py / KiriKiri 均無此能力）
 
 </details>
 

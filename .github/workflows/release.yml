@@ -135,14 +135,19 @@ jobs:
           if [ "${{ matrix.platform }}" = "windows" ]; then
             cp "$BIN_DIR/akrs.exe" "$STAGE/"
             cp "$BIN_DIR/akrs-game.exe" "$STAGE/"
+            cp "$BIN_DIR/akrs-editor.exe" "$STAGE/"
             find "$BIN_DIR/deps" -name "lewton.dll" -exec cp {} "$STAGE/" \; 2>/dev/null || true
             rm -f "$STAGE"/lewton-*.dll
             printf 'cd /d "%%~dp0"\r\nstart akrs-game.exe\r\n' > "$STAGE/启动游戏.bat"
+            printf 'cd /d "%%~dp0"\r\nstart akrs-editor.exe\r\n' > "$STAGE/启动编辑器.bat"
           else
             cp "$BIN_DIR/akrs" "$STAGE/"
             cp "$BIN_DIR/akrs-game" "$STAGE/"
+            cp "$BIN_DIR/akrs-editor" "$STAGE/"
             printf '#!/bin/bash\ncd "$(dirname "$0")"\n./akrs-game\n' > "$STAGE/启动游戏.sh"
             chmod +x "$STAGE/启动游戏.sh"
+            printf '#!/bin/bash\ncd "$(dirname "$0")"\n./akrs-editor\n' > "$STAGE/启动编辑器.sh"
+            chmod +x "$STAGE/启动编辑器.sh"
           fi
           cp scripts/demo.akrs "$STAGE/scripts/" 2>/dev/null || true
           cp assets/fonts/SourceHanSansSC-Regular-2.otf "$STAGE/assets/fonts/" 2>/dev/null || true
@@ -152,7 +157,8 @@ jobs:
           mkdir -p "$STAGE/assets/scripts/languages/ui"
           cp assets/scripts/languages/*.json "$STAGE/assets/scripts/languages/" 2>/dev/null || true
           cp assets/scripts/languages/ui/*.json "$STAGE/assets/scripts/languages/ui/" 2>/dev/null || true
-          printf 'Akizuki*Rustgal ${{ needs.resolve.outputs.version }} (%s)\n\nWindows: 双击 启动游戏.bat\nLinux/macOS: ./启动游戏.sh\n命令行工具: akrs check scripts/demo.akrs\n' "${{ matrix.platform }}" > "$STAGE/README.txt"
+          cp LICENSE "$STAGE/" 2>/dev/null || true
+          printf 'Akizuki*Rustgal ${{ needs.resolve.outputs.version }} (%s)\n\n游戏:\n  Windows: 双击 启动游戏.bat\n  Linux/macOS: ./启动游戏.sh\n编辑器:\n  Windows: 双击 启动编辑器.bat\n  Linux/macOS: ./启动编辑器.sh\n命令行工具: akrs check scripts/demo.akrs\n' "${{ matrix.platform }}" > "$STAGE/README.txt"
 
       - name: Archive
         id: archive

@@ -168,6 +168,7 @@ jobs:
           mkdir -p "$STAGE/assets/scripts/languages/ui"
           cp assets/scripts/languages/*.json "$STAGE/assets/scripts/languages/" 2>/dev/null || true
           cp assets/scripts/languages/ui/*.json "$STAGE/assets/scripts/languages/ui/" 2>/dev/null || true
+          cp LICENSE "$STAGE/" 2>/dev/null || true
           printf 'Akizuki*Rustgal — 开发测试版 (%s)\n版本: %s\n\nWindows: 双击 启动游戏.bat\nLinux/macOS: ./启动游戏.sh\n命令行工具: akrs check scripts/demo.akrs\n' "${{ matrix.platform }}" "${{ steps.ver.outputs.version }}" > "$STAGE/README.txt"
 
       - name: Archive

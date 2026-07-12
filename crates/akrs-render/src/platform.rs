@@ -171,7 +171,7 @@ mod macos_impl {
     // macOS 上无需额外 crate 依赖，CoreGraphics 是系统框架，
     // 链接时通过 #[link(name = "CoreGraphics", kind = "framework")] 指定。
     #[link(name = "CoreGraphics", kind = "framework")]
-    extern "C" {
+    unsafe extern "C" {
         fn CGMainDisplayID() -> u32;
         fn CGDisplayPixelsWide(display: u32) -> usize;
         fn CGDisplayPixelsHigh(display: u32) -> usize;
