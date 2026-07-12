@@ -10,7 +10,7 @@
 //!
 //! 所有文件操作使用 `Result` 风格的错误处理，不会 panic；失败信息显示在底部状态栏。
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::io::Read;
@@ -516,20 +516,145 @@ impl BlueprintState {
 
     /// 从蓝图节点生成脚本文本。
     ///
-    /// 若有连线，按连线顺序（DFS 遍历）输出；无连线则按创建顺序输出。
+    /// 注释节点（`//` 开头）按连线状态分类处理：
+    /// - **完全连线**（上下都连）：作为普通节点参与拓扑排序，在流程位置输出。
+    /// - **只连上面**（有入线无出线）：作为前驱节点的下一行注释输出（紧跟前驱之后）。
+    /// - **只连下面**（有出线无入线）：作为后继节点的上一行注释输出（紧邻后继之前）。
+    /// - **都没连**（孤立）：不导出到脚本中（调用方可通过 [`orphan_comments`] 获取
+    ///   孤立注释列表，在保存/离开时警告用户这些注释无法迁移）。
+    ///
+    /// 非注释节点按连线顺序（DFS 遍历）输出；无连线则按创建顺序输出。
     fn to_script(&self) -> String {
         if self.nodes.is_empty() {
             return String::new();
         }
-        if self.links.is_empty() {
-            return self
-                .nodes
-                .iter()
-                .map(|n| n.text.as_str())
-                .collect::<Vec<_>>()
-                .join("\n");
+
+        // ---- 分类注释节点 ----
+        // after_comments[pred_id]：只连上面的注释，附在前驱之后输出。
+        // before_comments[succ_id]：只连下面的注释，附在后继之前输出。
+        // skip_ids：不参与主流程拓扑输出的注释节点（只连上/只连下/都没连）。
+        let mut after_comments: HashMap<usize, Vec<String>> = HashMap::new();
+        let mut before_comments: HashMap<usize, Vec<String>> = HashMap::new();
+        let mut skip_ids: HashSet<usize> = HashSet::new();
+
+        // 第一遍：收集所有需要跳过的注释节点（非完全连线的）。
+        // 必须先完整构建 skip_ids，第二遍才能正确穿过被跳过的注释节点解析链。
+        for node in &self.nodes {
+            if node.kind != NodeKind::Comment {
+                continue;
+            }
+            let has_incoming = self.links.iter().any(|l| l.to == node.id);
+            let has_outgoing = self.links.iter().any(|l| l.from == node.id);
+            if !has_incoming || !has_outgoing {
+                skip_ids.insert(node.id);
+            }
         }
-        // 找到没有入线的节点作为起点。
+
+        // 第二遍：分类并附到前驱/后继上。
+        for node in &self.nodes {
+            if node.kind != NodeKind::Comment {
+                continue;
+            }
+            let has_incoming = self.links.iter().any(|l| l.to == node.id);
+            let has_outgoing = self.links.iter().any(|l| l.from == node.id);
+            match (has_incoming, has_outgoing) {
+                (true, false) => {
+                    // 只连上面：找到前驱（穿过其他被跳过的注释节点）。
+                    if let Some(pred) = self.resolve_chain(node.id, true, &skip_ids) {
+                        after_comments.entry(pred).or_default().push(node.text.clone());
+                    }
+                }
+                (false, true) => {
+                    // 只连下面：找到后继（穿过其他被跳过的注释节点）。
+                    if let Some(succ) = self.resolve_chain(node.id, false, &skip_ids) {
+                        before_comments.entry(succ).or_default().push(node.text.clone());
+                    }
+                }
+                // 完全连线或都没连：不在第二遍处理（完全连线参与拓扑，都没连由 orphan_comments 报告）。
+                _ => {}
+            }
+        }
+
+        // ---- 拓扑排序（跳过被分类的注释节点，但完全连线注释仍参与）----
+        let order = self.topo_order(&skip_ids);
+
+        // ---- 构建输出行 ----
+        // 对每个节点：先输出其 before_comments，再输出节点文本，再输出 after_comments。
+        let mut lines: Vec<String> = Vec::new();
+        for id in &order {
+            if let Some(comments) = before_comments.get(id) {
+                for c in comments {
+                    lines.push(c.clone());
+                }
+            }
+            if let Some(node) = self.nodes.iter().find(|n| n.id == *id) {
+                lines.push(node.text.clone());
+            }
+            if let Some(comments) = after_comments.get(id) {
+                for c in comments {
+                    lines.push(c.clone());
+                }
+            }
+        }
+
+        lines.join("\n")
+    }
+
+    /// 返回所有「都没连」（既无入线也无出线）的孤立注释节点文本列表。
+    /// 这些注释不会出现在导出的脚本中，调用方应在保存/离开蓝图时警告用户。
+    fn orphan_comments(&self) -> Vec<String> {
+        self.nodes
+            .iter()
+            .filter(|n| n.kind == NodeKind::Comment)
+            .filter(|n| {
+                let has_incoming = self.links.iter().any(|l| l.to == n.id);
+                let has_outgoing = self.links.iter().any(|l| l.from == n.id);
+                !has_incoming && !has_outgoing
+            })
+            .map(|n| n.text.clone())
+            .collect()
+    }
+
+    /// 沿连线链解析：穿过其他被跳过的注释节点，找到最近的未被跳过的前驱或后继。
+    /// - `up = true`：向上找前驱（follow `to == id` → `from`）。
+    /// - `up = false`：向下找后继（follow `from == id` → `to`）。
+    fn resolve_chain(
+        &self,
+        start: usize,
+        up: bool,
+        skip_ids: &HashSet<usize>,
+    ) -> Option<usize> {
+        let mut current = start;
+        let mut guard = 0usize;
+        const MAX_DEPTH: usize = 64;
+        loop {
+            guard += 1;
+            if guard > MAX_DEPTH {
+                break;
+            }
+            let next = if up {
+                self.links.iter().find(|l| l.to == current).map(|l| l.from)
+            } else {
+                self.links.iter().find(|l| l.from == current).map(|l| l.to)
+            };
+            match next {
+                Some(n) => {
+                    if skip_ids.contains(&n) {
+                        // 该前驱/后继也是被跳过的注释，继续沿链查找。
+                        current = n;
+                    } else {
+                        return Some(n);
+                    }
+                }
+                None => return None,
+            }
+        }
+        None
+    }
+
+    /// 拓扑排序：DFS 从无入线节点出发，跳过 `skip_ids` 中的节点（不加入输出顺序，
+    /// 但仍遍历其连线以桥接后续节点）。无连线时按创建顺序输出。
+    fn topo_order(&self, skip_ids: &HashSet<usize>) -> Vec<usize> {
         let has_incoming = |id: usize| self.links.iter().any(|l| l.to == id);
         let mut order: Vec<usize> = Vec::new();
         let mut visited: Vec<usize> = Vec::new();
@@ -544,14 +669,15 @@ impl BlueprintState {
         } else {
             starts
         };
-        // DFS 遍历。
         let mut stack: Vec<usize> = starts.into_iter().rev().collect();
         while let Some(id) = stack.pop() {
             if visited.contains(&id) {
                 continue;
             }
             visited.push(id);
-            order.push(id);
+            if !skip_ids.contains(&id) {
+                order.push(id);
+            }
             let nexts: Vec<usize> = self
                 .links
                 .iter()
@@ -562,18 +688,13 @@ impl BlueprintState {
                 stack.push(next);
             }
         }
-        // 追加未访问的节点。
+        // 追加未访问的节点（跳过的除外）。
         for node in &self.nodes {
-            if !visited.contains(&node.id) {
+            if !visited.contains(&node.id) && !skip_ids.contains(&node.id) {
                 order.push(node.id);
             }
         }
         order
-            .iter()
-            .filter_map(|id| self.nodes.iter().find(|n| n.id == *id))
-            .map(|n| n.text.as_str())
-            .collect::<Vec<_>>()
-            .join("\n")
     }
 
     /// 自动整理布局：按章节分组，组内垂直排列，章节间水平排列。
@@ -992,6 +1113,10 @@ pub struct EditorApp {
     show_project_warning: bool,
     /// 是否显示「请先保存再预览」提示弹窗（点预览时若当前文件未存档则置 true）。
     show_save_reminder: bool,
+    /// 是否显示「孤立注释无法迁移」警告弹窗（保存/离开蓝图时若存在未连线注释则置 true）。
+    show_comment_warning: bool,
+    /// 触发警告的孤立注释文本列表（供弹窗展示）。
+    comment_warning_list: Vec<String>,
     /// 本地「不再显示」的项目警告忽略列表（持久化到编辑器数据目录）。
     dismissed_warnings: DismissedWarnings,
     /// 是否处于蓝图模式（可视化节点编辑）。
@@ -1236,6 +1361,8 @@ impl Default for EditorApp {
             rpy_import_warnings: Vec::new(),
             show_project_warning: false,
             show_save_reminder: false,
+            show_comment_warning: false,
+            comment_warning_list: Vec::new(),
             dismissed_warnings,
             blueprint_mode: false,
             blueprint: BlueprintState::default(),
@@ -1472,6 +1599,16 @@ impl EditorApp {
 
     /// 将编辑器内容保存到 `work_dir/file_name_input`。
     fn save_file(&mut self) {
+        // 蓝图模式下保存：先同步蓝图到编辑器内容，确保保存的是最新蓝图状态。
+        // 同时检查孤立注释（未连线的注释节点），这些注释无法迁移到脚本中。
+        if self.blueprint_mode {
+            let orphans = self.blueprint.orphan_comments();
+            self.editor_content = self.blueprint.to_script();
+            if !orphans.is_empty() {
+                self.comment_warning_list = orphans;
+                self.show_comment_warning = true;
+            }
+        }
         let name = sanitize_filename(&self.file_name_input);
         let path = self.work_dir.join(&name);
         match std::fs::write(&path, &self.editor_content) {
@@ -2413,9 +2550,15 @@ impl EditorApp {
     /// 避免打乱用户手动调整过的布局）。
     fn toggle_blueprint_mode(&mut self) {
         if self.blueprint_mode {
+            // 离开蓝图模式：导出脚本，并检查孤立注释（未连线的注释无法迁移到脚本）。
+            let orphans = self.blueprint.orphan_comments();
             let script = self.blueprint.to_script();
             if !script.is_empty() {
                 self.editor_content = script;
+            }
+            if !orphans.is_empty() {
+                self.comment_warning_list = orphans;
+                self.show_comment_warning = true;
             }
             self.blueprint_mode = false;
             self.status = "已切换到文本模式".to_string();
@@ -2462,8 +2605,13 @@ impl EditorApp {
                 self.status = "已从脚本导入蓝图".to_string();
             }
             if ui.button("生成脚本").clicked() {
+                let orphans = self.blueprint.orphan_comments();
                 self.editor_content = self.blueprint.to_script();
                 self.status = "已从蓝图生成脚本".to_string();
+                if !orphans.is_empty() {
+                    self.comment_warning_list = orphans;
+                    self.show_comment_warning = true;
+                }
             }
             if ui.button("整理布局").clicked() {
                 self.blueprint.auto_layout();
@@ -2519,8 +2667,11 @@ impl EditorApp {
         }
 
         // ---- 读取输入 ----
+        // 优先用 interact_pos()：触摸释放时 hover_pos() 会返回 None 或跳到 (0,0)，
+        // 导致拖拽预览飘走、松手位置判定失效（节点无法放置）。
+        // interact_pos() 在触摸拖拽/释放期间返回稳定的触点位置。
         let mouse_pos = ui
-            .input(|i| i.pointer.hover_pos())
+            .input(|i| i.pointer.interact_pos().or_else(|| i.pointer.hover_pos()))
             .unwrap_or(egui::Pos2::ZERO);
         let primary_pressed =
             ui.input(|i| i.pointer.button_pressed(egui::PointerButton::Primary));
@@ -3230,7 +3381,7 @@ impl EditorApp {
         // 否则内容（积木卡片）比面板窄时，ScrollArea 自身宽度也跟着收缩，其 solid
         // 滚动条会画在收缩后内容区的右边缘——即面板中间，而非面板右边缘。
         // 撑满后滚动条贴右；卡片本身仍按自然宽度渲染，不会被撑大。
-        egui::ScrollArea::vertical()
+        let scroll_output = egui::ScrollArea::vertical()
             .drag_to_scroll(false)
             .auto_shrink([false; 2])
             .show(ui, |ui| {
@@ -3256,6 +3407,31 @@ impl EditorApp {
                 }
             }
         });
+        // 手动处理空白处触摸/鼠标拖拽滚动：
+        // drag_to_scroll(false) 保证积木卡片拖拽不被吞，但空白处（卡片之间间隙、
+        // 列表底部余白）也无法拖拽滚动。这里补充：若无积木正在被拖拽
+        // （drag_template 为 None，说明拖拽不在积木上），且指针在滚动区域内
+        // 按下并移动，则手动调整滚动偏移。触摸屏单指上下拖空白处即可滚动。
+        // 用 interact_pos() 而非 hover_pos()，保证触摸释放前位置稳定可用。
+        if self.drag_template.is_none() {
+            let inner_rect = scroll_output.inner_rect;
+            let scroll_id = scroll_output.id;
+            let content_size = scroll_output.content_size;
+            let mut state = scroll_output.state;
+            let interact_pos = ui.input(|i| i.pointer.interact_pos());
+            let primary_down = ui.input(|i| i.pointer.primary_down());
+            let delta = ui.input(|i| i.pointer.delta());
+            if primary_down && delta.y.abs() > 0.5 {
+                if let Some(pos) = interact_pos {
+                    if inner_rect.contains(pos) {
+                        let max_offset =
+                            (content_size.y - inner_rect.height()).max(0.0);
+                        state.offset.y = (state.offset.y - delta.y).clamp(0.0, max_offset);
+                        state.store(ui.ctx(), scroll_id);
+                    }
+                }
+            }
+        }
     }
 
     fn show_outline(&self, ui: &mut egui::Ui) {
@@ -6094,6 +6270,48 @@ impl eframe::App for EditorApp {
                     ui.horizontal(|ui| {
                         if ui.button("知道了").clicked() {
                             self.show_save_reminder = false;
+                        }
+                    });
+                });
+        }
+
+        // ---- 孤立注释无法迁移警告（保存/离开蓝图时若存在未连线注释则弹出）------
+        if self.show_comment_warning {
+            egui::Window::new("注释无法迁移")
+                .collapsible(false)
+                .resizable(false)
+                .default_width(440.0)
+                .anchor(egui::Align2::CENTER_CENTER, egui::Vec2::ZERO)
+                .show(ctx, |ui| {
+                    ui.add_space(8.0);
+                    ui.label(
+                        egui::RichText::new("⚠ 以下注释节点未连线，无法迁移到脚本")
+                            .size(16.0)
+                            .color(egui::Color32::from_rgb(255, 200, 100)),
+                    );
+                    ui.add_space(6.0);
+                    ui.label("蓝图中有注释节点既没有上方连线也没有下方连线，导出脚本时这些注释会被丢弃。请在蓝图中为它们连线（连上方则附在前驱之后，连下方则附在后继之前），否则注释不会出现在代码中。");
+                    ui.add_space(8.0);
+                    ui.label(
+                        egui::RichText::new("被丢弃的注释：")
+                            .color(egui::Color32::from_gray(180)),
+                    );
+                    egui::ScrollArea::vertical()
+                        .max_height(180.0)
+                        .show(ui, |ui| {
+                            for c in &self.comment_warning_list {
+                                ui.label(
+                                    egui::RichText::new(c)
+                                        .color(egui::Color32::from_gray(200))
+                                        .monospace(),
+                                );
+                            }
+                        });
+                    ui.add_space(12.0);
+                    ui.horizontal(|ui| {
+                        if ui.button("知道了").clicked() {
+                            self.show_comment_warning = false;
+                            self.comment_warning_list.clear();
                         }
                     });
                 });
