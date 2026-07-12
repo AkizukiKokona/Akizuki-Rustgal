@@ -7,26 +7,11 @@ license.workspace = true
 [dependencies]
 akrs-core = { workspace = true }
 akrs-runtime = { workspace = true }
-# 启用 iced 的 `image` widget：textures 缓存字段使用 `iced::widget::image::Handle`，
-# 且 `iced::window::icon::from_file_data` 解码窗口图标也依赖该 feature。
-# `smol` 提供 iced 的异步运行时后端，`iced::time::every` 轮询子进程需要它。
-iced = { workspace = true, features = ["image", "smol", "advanced", "canvas"] }
-# iced_aw：iced 官方附加组件库。iced_aw 0.10 对应 iced 0.13（其 Cargo.toml 声明
-# `iced = "^0.13.0"`，与编辑器框架版本一致）。`default-features = false` 后按需启用：
-# - `card`：弹窗卡片（替代手写的 opaque+container 卡片）
-# - `tabs`：右栏预览面板的标签页（替代手写的按钮式 tab bar）
-iced_aw = { version = "0.10", default-features = false, features = ["card", "tabs"] }
+eframe = { workspace = true }
+egui = { workspace = true }
 # 用于在编辑器中解码 PNG 立绘以供预览（不启动游戏进程）。
-# 版本与 workspace 根 Cargo.toml 保持一致（0.25），消除锁文件碎片化，
-# 使编辑器与 akrs-render 共享同一 image 条目，避免重复编译。
-image = { version = "0.25", default-features = false, features = ["png"] }
-# log + env_logger：编辑器入口初始化统一日志。
-log = { workspace = true }
-env_logger = { workspace = true }
-# rfd：原生文件对话框（打开/保存/选目录）。替代 main 分支自实现的文件浏览器，
-# 彻底避免自实现带来的"读不了文件"类 bug。使用同步 API（pick_file 等），
-# 不引入异步运行时依赖。
-rfd = { workspace = true }
+# 复用 workspace 的 image 0.25，避免与 akrs-render 锁文件碎片化。
+image = { workspace = true }
 
 [build-dependencies]
 winres = "0.1"

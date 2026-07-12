@@ -1,8 +1,9 @@
 [workspace]
 resolver = "2"
-# 任务5：akrs-editor 重新加入 workspace。编辑器已从 eframe/egui 迁移到 iced 0.13。
-# iced 0.13 使用 wgpu 22 + winit 0.29，与 akrs-render 完全共享同一锁文件条目，
-# 无冲突。eframe/egui 不再被任何 crate 使用，已从依赖中移除。
+# akrs-editor 使用 eframe/egui 0.29（wgpu 22 后端）构建编辑器 GUI，移植自 main 分支。
+# eframe 0.29 内部依赖 wgpu ^22.1.0，与 akrs-render 的 wgpu 22 严格对齐，
+# 编辑器与游戏本体共享同一份 wgpu 22 编译产物，不引入第二份 wgpu。
+# eframe 自带的 winit 0.30 与 akrs-render 的 winit 0.29 为不同主版本，可共存。
 members = [
     "crates/akrs-core",
     "crates/akrs-macros",
@@ -15,8 +16,8 @@ members = [
 ]
 
 [workspace.package]
-# patch 段与编辑器关于页 BUILD_NUMBER 保持一致（本轮 0090 → 0091）。
-version = "1.0.91"
+# patch 段与编辑器关于页 BUILD_NUMBER 保持一致（本轮 0091 → 0092）。
+version = "1.0.92"
 edition = "2024"
 license = "MIT"
 authors = ["Akizuki*Rustgal Team"]
@@ -63,14 +64,13 @@ image = { version = "0.25", default-features = false, features = ["png"] }
 pollster = "0.4"
 # bytemuck: 顶点数据零拷贝上传（wgpu vertex buffer）。
 bytemuck = { version = "1", features = ["derive"] }
-# iced 0.13：编辑器 GUI 框架（替换 main 分支的 eframe/egui）。受 Elm 启发的
-# 跨平台 GUI 库，Elm 架构（State + Message + update + view）。iced 0.13 使用
-# wgpu 22 + winit 0.29，与 akrs-render 共享同一锁文件条目，无冲突。
-iced = "0.13"
-# rfd：原生文件对话框（打开/保存/选目录）。跨平台（Windows/macOS/Linux）。
-# Linux 默认用 xdg-portal（需要 libdbus），避免 GTK3 编译依赖。
-# 替代 main 分支自实现的文件浏览器，彻底避免"读不了文件"类 bug。
-rfd = "0.15"
+# eframe/egui 0.29：编辑器 GUI 框架（移植自 main 分支后升级到 0.29）。
+# `default-features = false` 关闭 accesskit（Linux 拉 atspi/zbus）、glow（OpenGL，
+# 与已弃用的 macroquad 同代）、web_screen_reader 等不需要的特性。
+# 显式启用 wgpu（wgpu 22 后端，与 akrs-render 对齐）、default_fonts、
+# wayland + x11（Linux 窗口系统支持）。
+eframe = { version = "0.29", default-features = false, features = ["default_fonts", "wgpu", "wayland", "x11"] }
+egui = "0.29"
 
 [profile.release]
 opt-level = 3

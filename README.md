@@ -6,13 +6,15 @@
 
 [![License](https://img.shields.io/badge/license-MIT-blue.svg)](#许可证)
 [![Rust](https://img.shields.io/badge/rust-1.92+-orange.svg)](https://www.rust-lang.org)
-[![Version](https://img.shields.io/badge/version-1.0.73-success.svg)](#)
+[![Version](https://img.shields.io/badge/version-1.0.92-success.svg)](#)
 [![Platform](https://img.shields.io/badge/platform-Windows%20%7C%20Linux%20%7C%20macOS-lightgrey.svg)](#下载与安装)
 [![PRs Not Recommended](https://img.shields.io/badge/PRs-not%20recommended-yellow.svg)](#贡献)
 
 </div>
 
 ---
+
+> **关于代码**：本项目代码实现由 AI 负责，但我会对里面的每一行代码负责。
 
 ## 独有特色
 
@@ -21,7 +23,7 @@
 对比 Ren'Py（Python 运行时）、KiriKiri/KAG（TJS 解释器）等主流视觉小说引擎，Akizuki\*Rustgal 凭借纯 Rust + 自定义 DSL 实现了以下独有能力：
 
 - **编译时剧本纠错** — 未定义跳转、重复节名、缺失资源、舞台角色超限在 `cargo build` 阶段即报错，无需运行即可发现（Ren'Py / KiriKiri 均为运行时检查）
-- **内置可视化编辑器** — iced 驱动的 GUI 编辑器：语法高亮 + 立绘/背景/音乐实时预览 + 便携查找替换插入，告别纯文本编辑（Ren'Py 仅 Launcher 文本编辑，KiriKiri 依赖外部编辑器）
+- **内置可视化编辑器** — egui 驱动的 GUI 编辑器：语法高亮 + 立绘/背景/音乐实时预览 + 便携查找替换插入，告别纯文本编辑（Ren'Py 仅 Launcher 文本编辑，KiriKiri 依赖外部编辑器）
 - **对照翻译模式** — 编辑器内原文-译文并排，原文只读、译文实时写入；翻译文件以原文为 key，仅改动的行需重译（Ren'Py 用哈希 ID 翻译块，与脚本结构耦合）
 - **过程宏编译期嵌入** — `.akrs` 脚本通过过程宏在编译时嵌入 Rust 代码，类型检查延伸至剧本层（其他引擎均为运行时解析）
 - **满血 Rust 零运行时** — 无 Python、无 TJS、无 GC 停顿，单二进制分发，帧率稳定可预测
@@ -34,7 +36,7 @@
 Compared to Ren'Py (Python runtime) and KiriKiri/KAG (TJS interpreter), Akizuki\*Rustgal leverages pure Rust plus a custom DSL to deliver capabilities no other VN engine offers:
 
 - **Compile-time script checking** — Undefined jumps, duplicate section names, missing assets, and stage character overflow are caught at `cargo build` time, before the game ever runs (Ren'Py and KiriKiri only detect these at runtime)
-- **Built-in visual editor** — An iced-powered GUI editor with syntax highlighting, live sprite/background/music preview, and find-and-replace insertion — no more plain-text editing (Ren'Py ships only a launcher text editor; KiriKiri relies on external editors)
+- **Built-in visual editor** — An egui-powered GUI editor with syntax highlighting, live sprite/background/music preview, and find-and-replace insertion — no more plain-text editing (Ren'Py ships only a launcher text editor; KiriKiri relies on external editors)
 - **Side-by-side translation mode** — The editor shows original and translation columns; the original is read-only and the translation writes back live. Translation files key on the original text, so only edited lines need retranslation (Ren'Py uses hash-ID translate blocks coupled to script structure)
 - **Compile-time script embedding via proc macros** — `.akrs` scripts are embedded into Rust code at compile time via procedural macros, extending type checking into the script layer (other engines parse scripts at runtime)
 - **Full Rust, zero runtime** — No Python, no TJS, no GC pauses; a single binary ships with stable, predictable frame rates
@@ -49,7 +51,7 @@ Compared to Ren'Py (Python runtime) and KiriKiri/KAG (TJS interpreter), Akizuki\
 Ren'Py（Python ランタイム）や KiriKiri/KAG（TJS インタプリタ）などの主要ノベルエンジンと比較し、Akizuki\*Rustgal は純 Rust + カスタム DSL により他にない機能を実現しています：
 
 - **コンパイル時スクリプト検査** — 未定義ジャンプ、重複セクション名、欠落アセット、ステージキャラ超過は `cargo build` 段階で検出され、実行せずに問題を発見（Ren'Py / KiriKiri は実行時検査のみ）
-- **内蔵ビジュアルエディタ** — iced 駆動の GUI エディタ。シンタックスハイライト + 立絵/背景/音楽のライブプレビュー + 検索置換挿入。プレーンテキスト編集から解放（Ren'Py はランチャーのテキストエディタのみ、KiriKiri は外部エディタ依存）
+- **内蔵ビジュアルエディタ** — egui 駆動の GUI エディタ。シンタックスハイライト + 立絵/背景/音楽のライブプレビュー + 検索置換挿入。プレーンテキスト編集から解放（Ren'Py はランチャーのテキストエディタのみ、KiriKiri は外部エディタ依存）
 - **対照翻訳モード** — エディタ内で原文-訳文を並列表示。原文は読み取り専用、訳文はリアルタイム反映。翻訳ファイルは原文をキーとするため、変更した行のみ再翻訳（Ren'Py はハッシュ ID 翻訳ブロックでスクリプト構造と結合）
 - **プロシージャルマクロによるコンパイル時埋め込み** — `.akrs` スクリプトはプロシージャルマクロでコンパイル時に Rust コードへ埋め込まれ、型検査がスクリプト層まで及ぶ（他エンジンは実行時解析）
 - **完全 Rust・ランタイムゼロ** — Python なし、TJS なし、GC 停止なし。シングルバイナリで配布、安定した予測可能なフレームレート
@@ -64,7 +66,7 @@ Ren'Py（Python ランタイム）や KiriKiri/KAG（TJS インタプリタ）�
 相較於 Ren'Py（Python 執行時期）與 KiriKiri/KAG（TJS 直譯器）等主流視覺小說引擎，Akizuki\*Rustgal 藉由純 Rust + 自訂 DSL 實現了以下獨有能力：
 
 - **編譯時劇本檢查** — 未定義跳轉、重複章節名、缺失資源、舞台角色超限在 `cargo build` 階段即報錯，無需執行即可發現（Ren'Py / KiriKiri 皆為執行時期檢查）
-- **內建視覺化編輯器** — iced 驅動的 GUI 編輯器：語法高亮 + 立繪/背景/音樂即時預覽 + 查找取代插入，告別純文字編輯（Ren'Py 僅 Launcher 文字編輯器，KiriKiri 依賴外部編輯器）
+- **內建視覺化編輯器** — egui 驅動的 GUI 編輯器：語法高亮 + 立繪/背景/音樂即時預覽 + 查找取代插入，告別純文字編輯（Ren'Py 僅 Launcher 文字編輯器，KiriKiri 依賴外部編輯器）
 - **對照翻譯模式** — 編輯器內原文-譯文並排，原文唯讀、譯文即時寫入；翻譯檔案以原文為鍵，僅改動的行需重譯（Ren'Py 使用雜湊 ID 翻譯區塊，與腳本結構耦合）
 - **過程巨集編譯期嵌入** — `.akrs` 腳本透過過程巨集在編譯時嵌入 Rust 程式碼，型別檢查延伸至劇本層（其他引擎皆為執行時期解析）
 - **滿血 Rust 零執行時期** — 無 Python、無 TJS、無 GC 停頓，單一二進位散布，幀率穩定可預測
@@ -95,7 +97,7 @@ Akizuki\*Rustgal 是一个从零开始、**100% 纯 Rust** 实现的视觉小说
 - **UI 页面切换动画** — 标题 / 设置 / 存档 / 读档等页面切换均带 0.5 秒淡入淡出过渡（淡出 + 淡入合计 0.5 秒）；设置内标签页切换为即时切换不加过渡；确认对话框、备注编辑等模态弹窗带 0.2 秒内容淡入，避免瞬间弹出
 - **多分辨率自适应** — 所有立绘位置使用百分比坐标（0.0–1.0），在 1080p / 1440p / 4K 下布局比例一致
 - **高 DPI 适配** — 启用 `high_dpi` 渲染模式，UI 缩放按逻辑像素计算，在 125% / 150% / 200% 等 DPI 倍率下控件不再溢出堆叠，高 DPI 屏幕文字自动更清晰
-- **可视化编辑器** — 基于 iced 的剧本编辑器，支持语法高亮、立绘预览、实时调参
+- **可视化编辑器** — 基于 egui 的剧本编辑器，支持语法高亮、立绘预览、实时调参
 - **存档系统** — 多槽位存档/读档，支持崩溃恢复；快速存档使用独立不可见槽位，不覆盖手动存档；读档/崩溃恢复时完整还原背景、立绘、音乐等场景状态（含过渡中途存档：存档时把待应用的过渡变更一并写入快照，读档后清空残留过渡状态，避免立绘"下不去"）；存档页每个槽位显示 16:9 长方形场景缩略图（与游戏画面比例一致，按场景快照重绘背景与立绘，contain 模式完整显示不裁切），空槽位或旧存档显示「无预览」占位文字；支持玩家自定义备注（Enter 确认 / Esc 取消 / Backspace 删除）
 - **热重载** — 修改剧本后自动重新编译，无需重启游戏
 - **快进模式** — 支持仅文本快进和包含语音快进两种模式
@@ -118,8 +120,8 @@ Akizuki\*Rustgal 是一个从零开始、**100% 纯 Rust** 实现的视觉小说
 - **项目警告提示** — 项目可在 `project.json` 的 `warning` 字段（编辑器「项目设置」内可编辑）留一段作者提示文字（彩蛋/版权声明等）。用编辑器打开本项目时自动弹出小窗显示该文字，玩家可点「确定」仅本次关闭，或点「不再显示」永久忽略（仅本地生效，存于编辑器数据目录 `dismissed_warnings.json`，按项目规范化路径记录，不随项目分发）。本仓库 demo 即带一条版权声明作为示例。
 - **弹窗防截断** — 编辑器中内容较多的弹出窗口（项目设置 / 快捷键帮助 / Cargo 安装引导 / 项目警告）内容统一包入竖向滚动区，窗口高度受限不超过主窗口，内容超出时在窗内滚动而非被截断；项目设置窗口改为可缩放。彻底解决小窗口下表单底部按钮被顶出可视区的问题。
 - **预览精确运行当前剧本** — 编辑器点「预览游戏」时把当前编辑的文件路径以 `--script` 参数显式传给游戏，确保预览运行的就是用户当前编辑的剧本，而非 `project.json` 的 `main_script` 或内置 demo 回退（修复了「保存后预览却打开内置 demo」的问题）。游戏入口 `akrs-game` 新增 `--script`/`-s` 参数，剧本加载优先级为 `--script` 显式参数 > `project.json` main_script > `scripts/demo.akrs` 回退。未保存到磁盘的新建文件点预览时弹「请先保存再预览」提示；保存时若文件名与 main_script 不一致，状态栏追加非阻断提示。
-- **蓝图模式（可视化节点编辑）** — 工具栏「蓝图模式」按钮切换到类 Unreal Engine 蓝图的流程图编辑界面（基于 iced canvas）。剧本的每一行变成画布上的一个节点（17 种类型，各自带颜色标识），节点之间用贝塞尔曲线连线表示执行顺序。支持左键拖动节点移动、左键拖动输出引脚到输入引脚创建连线、右键拖动空白平移画布、Ctrl+滚轮光标锚点缩放、右键空白弹出 13 种节点模板菜单、右键节点弹出操作菜单、双击节点就地编辑、Delete 删除选中节点。工具栏提供「从脚本导入」「生成脚本」「整理布局」「缩放/重置视图」操作；进入蓝图时自动从当前脚本生成节点并自动布局，退出时自动导出为脚本文本。蓝图模式下右侧预览面板的按钮自动适配为「添加为节点 / 替换选中节点」。
-- **Ctrl+点击跳转预览** — 在剧本编辑器中按住 Ctrl 点击 `@bg 背景` / `@music 音乐` / `+ 角色` 等行（或按 Ctrl+J），右侧预览面板自动跳转到对应标签页并选中该资源，无需手动切换标签页翻找。iced 的 text_editor 不暴露带修饰键的点击事件，编辑器通过全局事件过滤器追踪 Ctrl 按下/释放状态实现该功能。
+- **蓝图模式（可视化节点编辑）** — 工具栏「蓝图模式」按钮切换到类 Unreal Engine 蓝图的流程图编辑界面（基于 egui 自绘）。剧本的每一行变成画布上的一个节点（17 种类型，各自带颜色标识），节点之间用贝塞尔曲线连线表示执行顺序。支持左键拖动节点移动、左键拖动输出引脚到输入引脚创建连线、右键拖动空白平移画布、Ctrl+滚轮光标锚点缩放、右键空白弹出 13 种节点模板菜单、右键节点弹出操作菜单、双击节点就地编辑、Delete 删除选中节点。工具栏提供「从脚本导入」「生成脚本」「整理布局」「缩放/重置视图」操作；进入蓝图时自动从当前脚本生成节点并自动布局，退出时自动导出为脚本文本。蓝图模式下右侧预览面板的按钮自动适配为「添加为节点 / 替换选中节点」。
+- **Ctrl+点击跳转预览** — 在剧本编辑器中按住 Ctrl 点击 `@bg 背景` / `@music 音乐` / `+ 角色` 等行（或按 Ctrl+J），右侧预览面板自动跳转到对应标签页并选中该资源，无需手动切换标签页翻找。egui 的 TextEdit 不暴露带修饰键的点击事件，编辑器通过全局事件过滤器追踪 Ctrl 按下/释放状态实现该功能。
 
 ## 快速开始
 
@@ -218,7 +220,7 @@ akrs-core      DSL 核心：词法分析 → 语法解析 → AST → 类型检�
 akrs-macros    过程宏：编译时将 .akrs 脚本嵌入 Rust 代码
 akrs-runtime   运行时引擎：场景状态、过渡动画、存档、热重载、设置
 akrs-render    渲染层：基于 wgpu/winit 的 2D 渲染器
-akrs-editor    可视化编辑器：基于 iced 的剧本编辑与预览工具
+akrs-editor    可视化编辑器：基于 egui 的剧本编辑与预览工具
 akrs-pack      打包工具：将游戏资源打包为可分发包
 akrs-cli       命令行工具：检查、运行、打包
 akrs-game      游戏启动器：读取剧本并启动图形界面
@@ -232,7 +234,7 @@ akrs-game      游戏启动器：读取剧本并启动图形界面
 |------|------|
 | [**wgpu**](https://github.com/gfx-rs/wgpu) | 跨平台图形 API 抽象层，提供 Vulkan/DX12/Metal/GL 后端渲染 |
 | [**winit**](https://github.com/rust-windowing/winit) | 跨平台窗口管理与事件系统 |
-| [**iced**](https://github.com/iced-rs/iced) | 跨平台 GUI 框架，用于编辑器界面 |
+| [**eframe/egui**](https://github.com/emilk/egui) | 跨平台 GUI 框架，用于编辑器界面 |
 | [**serde**](https://github.com/serde-rs/serde) / serde_json | 序列化框架，用于存档和设置持久化 |
 | [**syn**](https://github.com/dtolnay/syn) / quote / proc-macro2 | 过程宏工具链，用于编译时脚本嵌入 |
 | [**notify**](https://github.com/notify-rs/notify) | 文件系统监听，用于热重载 |
@@ -273,7 +275,7 @@ akrs-game      游戏启动器：读取剧本并启动图形界面
 
 ### 蓝图模式（可视化节点编辑）
 
-点击工具栏「蓝图模式」按钮进入可视化节点编辑界面（灵感来自 Unreal Engine 蓝图，精简版，基于 iced canvas 实现）。剧本的每一行被转换为画布上的一个节点，节点之间用贝塞尔曲线连线表示执行顺序，比逐行点击插入更直观。
+点击工具栏「蓝图模式」按钮进入可视化节点编辑界面（灵感来自 Unreal Engine 蓝图，精简版，基于 egui 自绘实现）。剧本的每一行被转换为画布上的一个节点，节点之间用贝塞尔曲线连线表示执行顺序，比逐行点击插入更直观。
 
 **节点类型**（17 种，由行首标记自动推断，各自带颜色标识）：
 
