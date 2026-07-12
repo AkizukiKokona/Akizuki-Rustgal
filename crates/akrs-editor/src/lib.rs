@@ -480,7 +480,7 @@ impl BlueprintState {
         }
     }
 
-    /// 估算节点尺寸（宽度随最长行自适应，高度随行数自适应）。
+    /// 估算节点尺寸：宽度随最长行自适应，高度固定（最多显示 4 行，超出裁剪）。
     fn node_size(text: &str) -> egui::Vec2 {
         // 估算每字符宽度：中文约 12px，ASCII 约 7px。
         let char_width = |c: char| if c.is_ascii() { 7.0 } else { 12.0 };
@@ -491,12 +491,56 @@ impl BlueprintState {
         // 宽度 = 正文最大行宽 + 左右内边距，限制在 [200, 420]。
         let width = (max_line_w + 24.0).clamp(200.0, 420.0);
         let header_h = 22.0;
-        let line_count = text.lines().count().max(1);
-        let body_h = (line_count as f32 * 15.0 + 12.0).max(36.0);
+        // 固定正文高度：最多 4 行，超出部分在绘制时裁剪，不增加节点高度。
+        let body_h = 4.0 * 15.0 + 12.0;
         egui::Vec2::new(width, header_h + body_h)
     }
 
+    /// 返回节点的友好显示文本（去掉脚本前缀符号，不暴露代码语法）。
+    /// 例如 `+ 角色 at 0.5,1.0` → `角色 at 0.5,1.0`，`? 提示` → `提示`。
+    /// 仅影响画布显示，节点 text 字段仍保留原始脚本文本用于导出。
+    fn node_display_text(text: &str, kind: NodeKind) -> String {
+        let t = text.trim();
+        match kind {
+            NodeKind::Section => t.strip_prefix('#').unwrap_or(t).trim().to_string(),
+            NodeKind::Dialogue => {
+                // 角色: "对话" → 角色：对话
+                if let Some(colon) = t.find(':') {
+                    let speaker = t[..colon].trim();
+                    let rest = t[colon + 1..].trim();
+                    let content = rest.trim_matches('"');
+                    format!("{}：{}", speaker, content)
+                } else {
+                    t.to_string()
+                }
+            }
+            NodeKind::Narration => t.trim_matches('"').to_string(),
+            NodeKind::Command => t.strip_prefix('@').unwrap_or(t).trim().to_string(),
+            NodeKind::Direction => {
+                // +/- 开头的立绘上场/下场
+                if t.starts_with('+') {
+                    format!("上场：{}", t.trim_start_matches('+').trim())
+                } else {
+                    format!("下场：{}", t.trim_start_matches('-').trim())
+                }
+            }
+            NodeKind::Choice => t.strip_prefix('?').unwrap_or(t).trim().to_string(),
+            NodeKind::ChoiceOption => t.strip_prefix('|').unwrap_or(t).trim().to_string(),
+            NodeKind::Flow => t.strip_prefix("->").unwrap_or(t).trim().to_string(),
+            NodeKind::Visit => t.strip_prefix("=>").unwrap_or(t).trim().to_string(),
+            NodeKind::Return => "返回".to_string(),
+            NodeKind::Wait => format!("等待 {} 秒", t.strip_prefix("~~").unwrap_or(t).trim()),
+            NodeKind::StoryEnd => "故事结束".to_string(),
+            NodeKind::Ending => t.strip_prefix("ending").unwrap_or(t).trim().to_string(),
+            NodeKind::Unlock => t.strip_prefix("unlock").unwrap_or(t).trim().to_string(),
+            NodeKind::VarOp => t.strip_prefix('$').unwrap_or(t).trim().to_string(),
+            NodeKind::Comment => t.strip_prefix("//").unwrap_or(t).trim().to_string(),
+            NodeKind::Other => t.to_string(),
+        }
+    }
+
     /// 从脚本文本生成蓝图节点（自动布局 + 顺序连线）。
+    /// 选择块结尾的 `?` 不生成节点（to_script 会自动补上）。
     /// 生成后调用 auto_layout 整理布局，避免节点堆叠。
     fn from_script(&mut self, text: &str) {
         self.nodes.clear();
@@ -506,17 +550,26 @@ impl BlueprintState {
 
         // 先生成所有节点（位置暂为默认），同时建立顺序连线。
         let mut prev_id: Option<usize> = None;
+        let mut in_choice = false; // 是否在选择块内（用于跳过结尾 ?）
         for line in text.lines() {
             if line.trim().is_empty() {
                 continue;
             }
             let kind = Self::detect_kind(line);
+            // 选择块结尾的 ? 跳过（to_script 遇到 Choice 后自动补 ?）
+            if in_choice && kind == NodeKind::Choice {
+                in_choice = false;
+                continue;
+            }
             let id = self.add_node(kind, egui::Pos2::ZERO, line.to_string());
             // 与上一个节点顺序连线（含章节节点→本章第一个积木，保持流程连贯）。
             if let Some(prev) = prev_id {
                 self.links.push(BlueprintLink { from: prev, to: id });
             }
             prev_id = Some(id);
+            if kind == NodeKind::Choice {
+                in_choice = true;
+            }
         }
         // 生成完毕后统一整理布局。
         self.auto_layout();
@@ -588,8 +641,14 @@ impl BlueprintState {
 
         // ---- 构建输出行 ----
         // 对每个节点：先输出其 before_comments，再输出节点文本，再输出 after_comments。
+        // 选择块（Choice）特殊处理：输出 Choice 后沿出线找 ChoiceOption 链逐个输出，
+        // 最后自动补结尾 `?`（from_script 跳过了结尾 ?，这里负责还原）。
         let mut lines: Vec<String> = Vec::new();
+        let mut processed_options: std::collections::HashSet<usize> = std::collections::HashSet::new();
         for id in &order {
+            if processed_options.contains(id) {
+                continue;
+            }
             if let Some(comments) = before_comments.get(id) {
                 for c in comments {
                     lines.push(c.clone());
@@ -597,6 +656,27 @@ impl BlueprintState {
             }
             if let Some(node) = self.nodes.iter().find(|n| n.id == *id) {
                 lines.push(node.text.clone());
+                // 选择块：沿出线找 ChoiceOption 链，逐个输出后补 ?
+                if node.kind == NodeKind::Choice {
+                    let mut cur = *id;
+                    loop {
+                        // 找 cur 的出线中第一个目标是 ChoiceOption 的
+                        let next_opt = self.links.iter()
+                            .find(|l| l.from == cur)
+                            .and_then(|l| {
+                                self.nodes.iter().find(|n| n.id == l.to && n.kind == NodeKind::ChoiceOption)
+                            });
+                        match next_opt {
+                            Some(opt) => {
+                                lines.push(opt.text.clone());
+                                processed_options.insert(opt.id);
+                                cur = opt.id;
+                            }
+                            None => break, // 没有 ChoiceOption 后继了，选择块结束
+                        }
+                    }
+                    lines.push("?".to_string()); // 自动补结尾 ?
+                }
             }
             if let Some(comments) = after_comments.get(id) {
                 for c in comments {
@@ -705,19 +785,18 @@ impl BlueprintState {
         order
     }
 
-    /// 自动整理布局：按章节分组，组内垂直排列，章节间水平排列。
-    /// 同一章节内节点超过 max_rows 个时自动换列，避免单列过长。
+    /// 自动整理布局：按章节分列，一列纵向不限（不换列），章节间水平排列。
+    /// 节点在列内水平居中对齐——同列所有节点中心 x 一致，连线是垂直直线不弯曲。
     /// 节点间距根据节点实际高度累加，确保不重叠。
     fn auto_layout(&mut self) {
         if self.nodes.is_empty() {
             return;
         }
-        // 整理策略：按章节分组分列，每列宽度取该列最宽节点自适应，
-        // 避免宽节点与相邻列重叠（"该堆叠的堆叠"——同列紧凑、列间不重叠）。
+        // 整理策略：仅按章节分列（一列纵向不限），每列宽度取该列最宽节点自适应。
+        // 节点在列内水平居中对齐，使同列节点中心 x 一致，连线保持为垂直直线。
         // 折叠注释时跳过注释节点（它们隐藏到下一个非注释积木中，不占布局位置）。
         let collapse = self.collapse_comments;
         let skip = |n: &BlueprintNode| collapse && n.kind == NodeKind::Comment;
-        let max_rows = 6usize; // 每列最多 6 个节点，超过则换列
         let gap = 24.0; // 同列节点之间的垂直间距
         let col_gap = 40.0; // 列之间的水平间距
         let top_margin = 20.0;
@@ -731,10 +810,9 @@ impl BlueprintState {
             .collect();
 
         // 确定每个节点所属的列号（跳过注释）。
-        // 章节节点开始新的一列；同一列超过 max_rows 个也换列。
+        // 仅按章节分列，一列纵向不限，不再因行数换列。
         let mut col_of: Vec<usize> = vec![0; self.nodes.len()];
         let mut cur_col = 0usize;
-        let mut row_in_col = 0usize;
         let mut any_placed = false;
         for (i, node) in self.nodes.iter().enumerate() {
             if skip(node) {
@@ -743,14 +821,8 @@ impl BlueprintState {
             }
             if node.kind == NodeKind::Section && any_placed {
                 cur_col += 1;
-                row_in_col = 0;
-            }
-            if row_in_col >= max_rows {
-                cur_col += 1;
-                row_in_col = 0;
             }
             col_of[i] = cur_col;
-            row_in_col += 1;
             any_placed = true;
         }
         let num_cols = cur_col + 1;
@@ -775,14 +847,19 @@ impl BlueprintState {
             x += w + col_gap;
         }
 
-        // 第二遍：放置节点，同列内 y 坐标按实际高度累加。跳过注释（不占垂直空间）。
+        // 第二遍：放置节点，同列内水平居中对齐，y 坐标按实际高度累加。
+        // 居中对齐后同列节点中心 x 一致，连线（底部中心→顶部中心）为垂直直线。
+        // 跳过注释（不占垂直空间）。
         let mut col_y = vec![top_margin; num_cols];
         for (i, node) in self.nodes.iter_mut().enumerate() {
             if skip(node) {
                 continue;
             }
             let c = col_of[i];
-            node.pos = egui::pos2(col_x[c], col_y[c]);
+            let node_w = sizes[i].x;
+            let col_w = col_widths[c];
+            // 居中对齐：节点 x = 列起点 + (列宽 - 节点宽) / 2
+            node.pos = egui::pos2(col_x[c] + (col_w - node_w) * 0.5, col_y[c]);
             col_y[c] += sizes[i].y + gap;
         }
     }
@@ -917,6 +994,7 @@ impl BlueprintState {
 
 /// 蓝图右键菜单中可选的节点模板。
 /// (标签, 简短描述, 模板文本)
+/// 注意：选择模板拖出时会自动生成 Choice + 2 个 Option 节点 + 连线（见 show_blueprint 拖拽放置逻辑）。
 const NODE_TEMPLATES: &[(&str, &str, &str)] = &[
     ("章节", "章节标题分隔", "# NewSection 章节标题"),
     ("对话", "角色说话", "角色: \"对话内容\""),
@@ -925,7 +1003,8 @@ const NODE_TEMPLATES: &[(&str, &str, &str)] = &[
     ("音乐", "播放音乐", "@music music"),
     ("立绘上场", "角色立绘登场", "+ 角色 at 0.5,1.0 size 1.0"),
     ("立绘下场", "角色立绘退场", "- 角色"),
-    ("选择", "分支选项", "? 提示\n| 选项A\n| 选项B\n?"),
+    ("选择", "分支选项", "? 提示"),
+    ("选项", "选择分支选项", "| 选项"),
     ("跳转", "跳转到章节", "-> TargetSection"),
     ("访问", "访问子章节", "=> TargetSection"),
     ("返回", "从子章节返回", "<="),
@@ -2907,8 +2986,35 @@ impl EditorApp {
                 // 释放：在画布内添加节点，否则取消
                 if primary_released {
                     if in_canvas {
-                        self.blueprint.add_node(kind, canvas_pos, template.to_string());
-                        self.status = format!("已添加节点：{}", label);
+                        // 选择模板特殊处理：生成 Choice + 2 个 Option + 连线
+                        if kind == NodeKind::Choice {
+                            let choice_id = self.blueprint.add_node(
+                                NodeKind::Choice,
+                                canvas_pos,
+                                template.to_string(),
+                            );
+                            // 两个选项节点放在 Choice 下方
+                            let size = BlueprintState::node_size(template);
+                            let opt1_pos = egui::pos2(canvas_pos.x, canvas_pos.y + size.y + 24.0);
+                            let opt2_pos = egui::pos2(canvas_pos.x, opt1_pos.y + size.y + 24.0);
+                            let opt1_id = self.blueprint.add_node(
+                                NodeKind::ChoiceOption,
+                                opt1_pos,
+                                "| 选项A".to_string(),
+                            );
+                            let opt2_id = self.blueprint.add_node(
+                                NodeKind::ChoiceOption,
+                                opt2_pos,
+                                "| 选项B".to_string(),
+                            );
+                            // Choice → 选项A → 选项B（顺序连线）
+                            self.blueprint.links.push(BlueprintLink { from: choice_id, to: opt1_id });
+                            self.blueprint.links.push(BlueprintLink { from: opt1_id, to: opt2_id });
+                            self.status = "已添加选择块（含2个选项）".to_string();
+                        } else {
+                            self.blueprint.add_node(kind, canvas_pos, template.to_string());
+                            self.status = format!("已添加节点：{}", label);
+                        }
                     }
                     self.drag_template = None;
                 }
@@ -3068,33 +3174,21 @@ impl EditorApp {
                     .on_hover_text(&tooltip);
                 }
             }
-            // 正文：若该节点正在编辑则跳过（稍后用 TextEdit 覆盖），
-            // 否则截断显示前几行，超长行用省略号截断。
+            // 正文：若该节点正在编辑则跳过（稍后用 TextEdit 覆盖）。
+            // 否则用 galley 自动换行布局，配合 clip_rect 裁剪超出固定高度的部分。
+            // 显示友好文本（去掉脚本前缀符号），不暴露代码语法。
             if bp.editing_node != Some(node.id) {
-                let body_max_w = size.x - 16.0 * zoom; // 左右各 8px 内边距
-                let char_w_approx = 7.0 * zoom; // monospace 11px 的 ASCII 字符宽近似
-                let max_chars = (body_max_w / char_w_approx).floor() as usize;
-                let preview: String = node
-                    .text
-                    .lines()
-                    .take(6)
-                    .map(|line| {
-                        if line.chars().count() > max_chars {
-                            let truncated: String = line.chars().take(max_chars.saturating_sub(1)).collect();
-                            format!("{}…", truncated)
-                        } else {
-                            line.to_string()
-                        }
-                    })
-                    .collect::<Vec<_>>()
-                    .join("\n");
-                clipped.text(
-                    egui::pos2(screen_pos.x + pad, screen_pos.y + header_h + 4.0 * zoom),
-                    egui::Align2::LEFT_TOP,
-                    &preview,
-                    egui::FontId::monospace(11.0 * zoom),
-                    egui::Color32::from_rgb(200, 210, 220),
-                );
+                let body_w = (size.x - 2.0 * pad).max(10.0);
+                let body_h = (size.y - header_h - 8.0 * zoom).max(10.0);
+                let body_pos = egui::pos2(screen_pos.x + pad, screen_pos.y + header_h + 4.0 * zoom);
+                let body_rect = egui::Rect::from_min_size(body_pos, egui::Vec2::new(body_w, body_h));
+                let display = BlueprintState::node_display_text(&node.text, node.kind);
+                let font = egui::FontId::proportional(12.0 * zoom);
+                let galley = ui.fonts(|f| {
+                    f.layout(display, font, egui::Color32::from_rgb(200, 210, 220), body_w)
+                });
+                let body_painter = clipped.with_clip_rect(body_rect);
+                body_painter.galley(body_pos, galley, egui::Color32::from_rgb(200, 210, 220));
             }
             // 输入引脚（顶部中心）——保留上下引脚用于连线。
             // 触摸模式下引脚半径放大（pin_r），便于手指点按。
@@ -3239,7 +3333,19 @@ impl EditorApp {
                                     let cpos = (menu_pos_copy - canvas_min - pan_copy).to_pos2();
                                     let text = template.to_string();
                                     let kind = BlueprintState::detect_kind(&text);
-                                    self.blueprint.add_node(kind, cpos, text);
+                                    // 选择模板特殊处理：生成 Choice + 2 个 Option + 连线
+                                    if kind == NodeKind::Choice {
+                                        let choice_id = self.blueprint.add_node(NodeKind::Choice, cpos, text);
+                                        let size = BlueprintState::node_size(template);
+                                        let opt1_pos = egui::pos2(cpos.x, cpos.y + size.y + 24.0);
+                                        let opt2_pos = egui::pos2(cpos.x, opt1_pos.y + size.y + 24.0);
+                                        let opt1_id = self.blueprint.add_node(NodeKind::ChoiceOption, opt1_pos, "| 选项A".to_string());
+                                        let opt2_id = self.blueprint.add_node(NodeKind::ChoiceOption, opt2_pos, "| 选项B".to_string());
+                                        self.blueprint.links.push(BlueprintLink { from: choice_id, to: opt1_id });
+                                        self.blueprint.links.push(BlueprintLink { from: opt1_id, to: opt2_id });
+                                    } else {
+                                        self.blueprint.add_node(kind, cpos, text);
+                                    }
                                     close_menu = true;
                                 }
                                 ui.label(
@@ -3291,9 +3397,10 @@ impl EditorApp {
             }
         }
 
-        // ---- 右下角缩放控制（靠近画布右下角才显示，类似游戏浮动按钮）----
+        // ---- 右下角缩放控制（靠近画布右下角且鼠标在画布内才显示，类似游戏浮动按钮）----
+        // 加 in_canvas 条件：避免鼠标在积木面板等画布外区域时误触发缩放控制。
         let br = canvas_rect.right_bottom();
-        let near = mouse_pos.distance(br) < 150.0;
+        let near = in_canvas && mouse_pos.distance(br) < 150.0;
         if near {
             let show_pos = egui::pos2(br.x - 168.0, br.y - 38.0);
             egui::Area::new(egui::Id::new("bp_zoom_ctrl"))
@@ -4102,11 +4209,29 @@ impl EditorApp {
             "+ {} at {:.2},{:.2} size {:.2}",
             name, self.sprite_preview.x_percent, self.sprite_preview.y_percent, self.sprite_preview.scale
         );
-        ui.label(
-            egui::RichText::new(&syntax)
-                .monospace()
-                .color(egui::Color32::from_rgb(200, 220, 255)),
-        );
+        // 蓝图模式下显示积木卡片预览，非蓝图模式显示原始语法文本。
+        if self.blueprint_mode {
+            let kind = BlueprintState::detect_kind(&syntax);
+            let color = BlueprintState::kind_color(kind);
+            let display = BlueprintState::node_display_text(&syntax, kind);
+            block_card_frame(ui, color, 0.0).show(ui, |ui| {
+                ui.horizontal(|ui| {
+                    let (rect, _) = ui.allocate_exact_size(egui::Vec2::new(10.0, 10.0), egui::Sense::hover());
+                    ui.painter().rect_filled(rect, 2.0, color);
+                    ui.label(egui::RichText::new("立绘上场").strong().color(color));
+                });
+                ui.label(
+                    egui::RichText::new(&display)
+                        .color(egui::Color32::from_rgb(200, 210, 220)),
+                );
+            });
+        } else {
+            ui.label(
+                egui::RichText::new(&syntax)
+                    .monospace()
+                    .color(egui::Color32::from_rgb(200, 220, 255)),
+            );
+        }
         ui.horizontal(|ui| {
             if ui.button("复制到剪贴板").clicked() {
                 ctx.output_mut(|o| o.copied_text = syntax.clone());
@@ -4327,11 +4452,29 @@ impl EditorApp {
                 self.bg_preview.selected, self.bg_preview.transition
             )
         };
-        ui.label(
-            egui::RichText::new(&syntax)
-                .monospace()
-                .color(egui::Color32::from_rgb(200, 220, 255)),
-        );
+        // 蓝图模式下显示积木卡片预览，非蓝图模式显示原始语法文本。
+        if self.blueprint_mode && !self.bg_preview.selected.is_empty() {
+            let kind = BlueprintState::detect_kind(&syntax);
+            let color = BlueprintState::kind_color(kind);
+            let display = BlueprintState::node_display_text(&syntax, kind);
+            block_card_frame(ui, color, 0.0).show(ui, |ui| {
+                ui.horizontal(|ui| {
+                    let (rect, _) = ui.allocate_exact_size(egui::Vec2::new(10.0, 10.0), egui::Sense::hover());
+                    ui.painter().rect_filled(rect, 2.0, color);
+                    ui.label(egui::RichText::new("背景").strong().color(color));
+                });
+                ui.label(
+                    egui::RichText::new(&display)
+                        .color(egui::Color32::from_rgb(200, 210, 220)),
+                );
+            });
+        } else {
+            ui.label(
+                egui::RichText::new(&syntax)
+                    .monospace()
+                    .color(egui::Color32::from_rgb(200, 220, 255)),
+            );
+        }
         ui.horizontal(|ui| {
             if ui.button("复制到剪贴板").clicked() {
                 ctx.output_mut(|o| o.copied_text = syntax.clone());
@@ -4434,24 +4577,56 @@ impl EditorApp {
             format!("@music {}", self.music_preview.selected)
         };
         let stop_syntax = "@stop_music";
-        ui.label(
-            egui::RichText::new("播放音乐：")
-                .color(egui::Color32::from_rgb(180, 180, 180)),
-        );
-        ui.label(
-            egui::RichText::new(&play_syntax)
-                .monospace()
-                .color(egui::Color32::from_rgb(200, 220, 255)),
-        );
-        ui.label(
-            egui::RichText::new("关闭音乐：")
-                .color(egui::Color32::from_rgb(180, 180, 180)),
-        );
-        ui.label(
-            egui::RichText::new(stop_syntax)
-                .monospace()
-                .color(egui::Color32::from_rgb(200, 220, 255)),
-        );
+        // 蓝图模式下显示积木卡片预览，非蓝图模式显示原始语法文本。
+        if self.blueprint_mode && !self.music_preview.selected.is_empty() {
+            let play_kind = BlueprintState::detect_kind(&play_syntax);
+            let play_color = BlueprintState::kind_color(play_kind);
+            let play_display = BlueprintState::node_display_text(&play_syntax, play_kind);
+            block_card_frame(ui, play_color, 0.0).show(ui, |ui| {
+                ui.horizontal(|ui| {
+                    let (rect, _) = ui.allocate_exact_size(egui::Vec2::new(10.0, 10.0), egui::Sense::hover());
+                    ui.painter().rect_filled(rect, 2.0, play_color);
+                    ui.label(egui::RichText::new("音乐").strong().color(play_color));
+                });
+                ui.label(
+                    egui::RichText::new(&play_display)
+                        .color(egui::Color32::from_rgb(200, 210, 220)),
+                );
+            });
+            let stop_kind = BlueprintState::detect_kind(stop_syntax);
+            let stop_color = BlueprintState::kind_color(stop_kind);
+            let stop_display = BlueprintState::node_display_text(stop_syntax, stop_kind);
+            block_card_frame(ui, stop_color, 0.0).show(ui, |ui| {
+                ui.horizontal(|ui| {
+                    let (rect, _) = ui.allocate_exact_size(egui::Vec2::new(10.0, 10.0), egui::Sense::hover());
+                    ui.painter().rect_filled(rect, 2.0, stop_color);
+                    ui.label(egui::RichText::new("停止音乐").strong().color(stop_color));
+                });
+                ui.label(
+                    egui::RichText::new(&stop_display)
+                        .color(egui::Color32::from_rgb(200, 210, 220)),
+                );
+            });
+        } else {
+            ui.label(
+                egui::RichText::new("播放音乐：")
+                    .color(egui::Color32::from_rgb(180, 180, 180)),
+            );
+            ui.label(
+                egui::RichText::new(&play_syntax)
+                    .monospace()
+                    .color(egui::Color32::from_rgb(200, 220, 255)),
+            );
+            ui.label(
+                egui::RichText::new("关闭音乐：")
+                    .color(egui::Color32::from_rgb(180, 180, 180)),
+            );
+            ui.label(
+                egui::RichText::new(stop_syntax)
+                    .monospace()
+                    .color(egui::Color32::from_rgb(200, 220, 255)),
+            );
+        }
 
         ui.add_space(8.0);
         let play_label = if self.blueprint_mode { "添加播放节点" } else { "追加播放语法" };
