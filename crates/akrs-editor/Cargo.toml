@@ -17,7 +17,9 @@ iced = { workspace = true, features = ["image", "smol", "advanced"] }
 # - `tabs`：右栏预览面板的标签页（替代手写的按钮式 tab bar）
 iced_aw = { version = "0.10", default-features = false, features = ["card", "tabs"] }
 # 用于在编辑器中解码 PNG 立绘以供预览（不启动游戏进程）。
-image = { version = "0.24", default-features = false, features = ["png"] }
+# 版本与 workspace 根 Cargo.toml 保持一致（0.25），消除锁文件碎片化，
+# 使编辑器与 akrs-render 共享同一 image 条目，避免重复编译。
+image = { version = "0.25", default-features = false, features = ["png"] }
 # log + env_logger：编辑器入口初始化统一日志。
 log = { workspace = true }
 env_logger = { workspace = true }

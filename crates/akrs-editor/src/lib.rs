@@ -40,83 +40,30 @@ use akrs_core::{
 use akrs_runtime::{Engine, EnginePhase};
 
 // ---------------------------------------------------------------------------
-// 语法高亮调色板（不透明 RGB，源自规格文档的 RGBA 值）
+// 子模块：纯逻辑/数据/常量已拆分到独立文件，便于维护与测试。
 // ---------------------------------------------------------------------------
 
-/// `#` 章节标题 -> (0.9, 0.8, 1.0)
-const COLOR_SECTION: Color = Color::from_rgb(0.9, 0.8, 1.0);
-/// `->` `=>` `<=` `~~` 流程控制 -> (1.0, 0.6, 0.3)
-const COLOR_FLOW: Color = Color::from_rgb(1.0, 0.6, 0.3);
-/// `@` 指令 -> (0.3, 0.8, 0.3)
-const COLOR_COMMAND: Color = Color::from_rgb(0.3, 0.8, 0.3);
-/// `+` `-` 角色方向 -> (0.3, 0.7, 1.0)
-const COLOR_DIRECTION: Color = Color::from_rgb(0.3, 0.7, 1.0);
-/// `$` 变量操作 -> (1.0, 0.8, 0.3)
-const COLOR_VARIABLE: Color = Color::from_rgb(1.0, 0.8, 0.3);
-/// `?` `|` 选择分支 -> (0.8, 0.3, 0.8)
-const COLOR_CHOICE: Color = Color::from_rgb(0.8, 0.3, 0.8);
-/// `//` 注释 -> (0.4, 0.4, 0.4)
-const COLOR_COMMENT: Color = Color::from_rgb(0.4, 0.4, 0.4);
-/// `"..."` 字符串 -> (0.9, 0.9, 0.4)
-const COLOR_STRING: Color = Color::from_rgb(0.9, 0.9, 0.4);
-/// 默认文字 -> 白色
-const COLOR_DEFAULT: Color = Color::from_rgb(1.0, 1.0, 1.0);
-/// 配对高亮背景色：光标停在 `=>`/`<=` 时，该指令及其配对指令的背景。
-const COLOR_PAIR_HIGHLIGHT: Color = Color::from_rgb(1.0, 0.86, 0.0);
+/// 语法高亮调色板（不透明 RGB，源自规格文档的 RGBA 值）。
+mod palette;
+/// 编辑器常量与模板（字号、章节标题上限、示例剧本、build 号等）。
+mod templates;
+/// `=>`/`<=` 流程标记扫描与配对算法（纯逻辑，含单元测试）。
+mod flow;
+/// 文件系统与平台工具（sanitize/复制目录/打开文件管理器/检查 cargo）。
+mod fs_util;
+/// 剧本行解析与标签（立绘行/指令行解析、阶段标签、错误格式化）。
+mod parse;
+/// Ren'Py `.rpy` → `.akrs` 转换。
+mod rpy;
+/// 蓝图节点编辑器状态（纯数据 + 算法，不含 UI）。
+mod state;
 
-const FONT_SIZE: f32 = 14.0;
-
-/// 章节显示标题（`# name title` 中的 title，无标题时取 name）的最大建议字符数。
-/// 超过此值时编辑器给出警告（非阻断，仍可强制运行；运行时通知会自动缩字显示）。
-/// 取值依据：顶部章节通知宽度约为屏幕 80%，基准字号下可舒适显示约 24 个字符。
-const MAX_CHAPTER_TITLE_CHARS: usize = 24;
-
-/// 「新建」操作使用的小型有效模板。
-const NEW_TEMPLATE: &str = "# Start\n\n~~\n";
-
-/// 首次启动或点击「打开示例剧本」时加载的丰富示例。
-const SAMPLE_SCRIPT: &str = r#"# Start
-
-@bg school with fade
-+ Aki enters from left with dissolve
-
-"Cherry blossoms drift through the air."
-
-Aki: "Hello there!"
-Aki (happy): "I'm glad you came."
-
-$affection = 1
-
-? "What do you say?"
-| "You're wonderful!"
-    $affection += 3
-    -> GoodEnding
-| "Whatever."
-    $affection -= 1
-    -> BadEnding
-?
-
-# GoodEnding
-
-@bg sunset with fade_white
-
-Aki: "I think we'll be great friends."
-
-~~
-
-
-
-# BadEnding
-
-Aki: "Oh. I see."
-
-~~
-"#;
-
-/// GitHub 仓库链接
-const GITHUB_URL: &str = "https://github.com/AkizukiKokona/Akizuki-Rustgal";
+// 引入调色板与模板常量：颜色、字号、示例剧本、GitHub 链接、build 号等。
+use palette::*;
+use templates::*;
 
 /// Rust 官网链接（cargo 引导弹窗的「打开 rust-lang.org」按钮使用）。
+/// 仅编辑器使用，不属于通用模板，故保留在本文件。
 const RUST_LANG_URL: &str = "https://rust-lang.org";
 
 // ---------------------------------------------------------------------------
@@ -3621,7 +3568,9 @@ impl EditorApp {
     fn view_about_modal(&self) -> Element<'_, Message> {
         let body = column![
             text("Akizuki*Rustgal 剧本编辑器").size(18.0).color(COLOR_SECTION),
-            text("基于 iced 0.13 的视觉小说剧本编写工具").size(12.0).color(Color::from_rgb(0.7, 0.72, 0.78)),
+            text(format!("Build {} · 基于 iced 0.13 的视觉小说剧本编写工具", BUILD_NUMBER))
+                .size(12.0)
+                .color(Color::from_rgb(0.7, 0.72, 0.78)),
             Space::new(Length::Fill, 8),
             text(format!("GitHub: {}", GITHUB_URL)).size(12.0).color(COLOR_FLOW),
             Space::new(Length::Fill, 12),
