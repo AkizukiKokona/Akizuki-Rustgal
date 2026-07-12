@@ -15,7 +15,8 @@ members = [
 ]
 
 [workspace.package]
-version = "1.0.73"
+# patch 段与编辑器关于页 BUILD_NUMBER 保持一致（本轮 0090 → 0091）。
+version = "1.0.91"
 edition = "2024"
 license = "MIT"
 authors = ["Akizuki*Rustgal Team"]
@@ -62,11 +63,14 @@ image = { version = "0.25", default-features = false, features = ["png"] }
 pollster = "0.4"
 # bytemuck: 顶点数据零拷贝上传（wgpu vertex buffer）。
 bytemuck = { version = "1", features = ["derive"] }
-# iced 0.13：编辑器 GUI 框架（任务5 替换 eframe/egui）。受 Elm 启发的跨平台 GUI
-# 库，Elm 架构（State + Message + update + view）。iced 0.13 使用 wgpu 22 +
-# winit 0.29，与 akrs-render 共享同一锁文件条目，无冲突。默认 features 包含
-# wgpu 渲染器；关闭 tiny-skia（软件渲染兜底，本项目不需要）与 debug 叠层。
+# iced 0.13：编辑器 GUI 框架（替换 main 分支的 eframe/egui）。受 Elm 启发的
+# 跨平台 GUI 库，Elm 架构（State + Message + update + view）。iced 0.13 使用
+# wgpu 22 + winit 0.29，与 akrs-render 共享同一锁文件条目，无冲突。
 iced = "0.13"
+# rfd：原生文件对话框（打开/保存/选目录）。跨平台（Windows/macOS/Linux）。
+# Linux 默认用 xdg-portal（需要 libdbus），避免 GTK3 编译依赖。
+# 替代 main 分支自实现的文件浏览器，彻底避免"读不了文件"类 bug。
+rfd = "0.15"
 
 [profile.release]
 opt-level = 3

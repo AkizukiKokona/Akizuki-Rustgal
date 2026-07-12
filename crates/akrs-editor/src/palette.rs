@@ -1,31 +1,29 @@
-//! 语法高亮调色板与 UI 配色常量。
+//! 语法高亮调色板（不透明 RGB，源自规格文档的 RGBA 值）。
 //!
-//! 定义编辑器语法高亮所用的不透明 RGB 颜色，以及 `=>`/`<=` 配对高亮的背景色。
-//! 颜色值源自规格文档中的 RGBA 值（已丢弃 alpha 通道），与 main 分支 egui 版本保持一致。
-//!
-//! 注：iced 0.13 的 `Color::from_rgb8` 不是 `const fn`，无法用于 `const` 初始化；
-//! 这里改用等价的 `Color::from_rgb(r / 255.0, g / 255.0, b / 255.0)`（`from_rgb` 是 const），
-//! 计算结果与 `from_rgb8` 完全相同，并保留了原始的 8 位 RGB 数值。
+//! 所有颜色均为 sRGB，alpha=1.0。iced 0.13 中只有 `Color::from_rgb` /
+//! `Color::from_rgba` 是 `const fn`（浮点版本），`from_rgb8` / `from_rgba8`
+//! 不是 const。因此这里用 0.0–1.0 浮点形式构造，与 main 分支 egui 的
+//! 0–255 取值一一对应（`x / 255.0`）。
 
 use iced::Color;
 
-/// `#` 章节标题颜色（淡紫，对应规格 (0.9, 0.8, 1.0)）。
-pub const COLOR_SECTION: Color = Color::from_rgb(229.0 / 255.0, 204.0 / 255.0, 255.0 / 255.0);
-/// `->` `=>` `<=` `~~` 流程控制颜色（橙，对应规格 (1.0, 0.6, 0.3)）。
-pub const COLOR_FLOW: Color = Color::from_rgb(255.0 / 255.0, 153.0 / 255.0, 76.0 / 255.0);
-/// `@` 指令颜色（绿，对应规格 (0.3, 0.8, 0.3)）。
+/// 章节标题（`#` 开头）：(229, 204, 255)。
+pub const COLOR_SECTION: Color = Color::from_rgb(229.0 / 255.0, 204.0 / 255.0, 1.0);
+/// 流程标记（`->` `=>` `<=` `~~`）：(255, 153, 76)。
+pub const COLOR_FLOW: Color = Color::from_rgb(1.0, 153.0 / 255.0, 76.0 / 255.0);
+/// 指令（`@` 开头）：(76, 204, 76)。
 pub const COLOR_COMMAND: Color = Color::from_rgb(76.0 / 255.0, 204.0 / 255.0, 76.0 / 255.0);
-/// `+` `-` 角色方向颜色（蓝，对应规格 (0.3, 0.7, 1.0)）。
-pub const COLOR_DIRECTION: Color = Color::from_rgb(76.0 / 255.0, 178.0 / 255.0, 255.0 / 255.0);
-/// `$` 变量操作颜色（黄，对应规格 (1.0, 0.8, 0.3)）。
-pub const COLOR_VARIABLE: Color = Color::from_rgb(255.0 / 255.0, 204.0 / 255.0, 76.0 / 255.0);
-/// `?` `|` 选择分支颜色（紫，对应规格 (0.8, 0.3, 0.8)）。
+/// 角色方向（`+` `-` 开头）：(76, 178, 255)。
+pub const COLOR_DIRECTION: Color = Color::from_rgb(76.0 / 255.0, 178.0 / 255.0, 1.0);
+/// 变量（`$` 开头）：(255, 204, 76)。
+pub const COLOR_VARIABLE: Color = Color::from_rgb(1.0, 204.0 / 255.0, 76.0 / 255.0);
+/// 选择（`?` `|` 开头）：(204, 76, 204)。
 pub const COLOR_CHOICE: Color = Color::from_rgb(204.0 / 255.0, 76.0 / 255.0, 204.0 / 255.0);
-/// `//` 注释颜色（灰，对应规格 (0.4, 0.4, 0.4)）。
+/// 注释（`//`）：(102, 102, 102)。
 pub const COLOR_COMMENT: Color = Color::from_rgb(102.0 / 255.0, 102.0 / 255.0, 102.0 / 255.0);
-/// `"..."` 字符串颜色（浅黄，对应规格 (0.9, 0.9, 0.4)）。
+/// 字符串字面量（`"..."`）：(229, 229, 102)。
 pub const COLOR_STRING: Color = Color::from_rgb(229.0 / 255.0, 229.0 / 255.0, 102.0 / 255.0);
-/// 默认文字颜色（白）。
-pub const COLOR_DEFAULT: Color = Color::from_rgb(255.0 / 255.0, 255.0 / 255.0, 255.0 / 255.0);
-/// 配对高亮背景色：光标停在 `=>`/`<=` 时，该指令及其配对指令的背景（亮黄）。
-pub const COLOR_PAIR_HIGHLIGHT: Color = Color::from_rgb(255.0 / 255.0, 220.0 / 255.0, 0.0 / 255.0);
+/// 默认色（普通文本）：(255, 255, 255)。
+pub const COLOR_DEFAULT: Color = Color::from_rgb(1.0, 1.0, 1.0);
+/// 配对高亮背景（`=>`/`<=` 配对时的高亮色）：(255, 220, 0)。
+pub const COLOR_PAIR_HIGHLIGHT: Color = Color::from_rgb(1.0, 220.0 / 255.0, 0.0);

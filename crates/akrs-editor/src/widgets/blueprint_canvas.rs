@@ -1,622 +1,520 @@
-//! 蓝图节点编辑器的 iced canvas 画布模块。
+//! 蓝图节点画布：基于 [`iced::widget::canvas::Program`] 的自定义绘制与交互。
 //!
-//! 基于 [`iced::widget::canvas::Program`] 实现节点/连线/平移/缩放/拖拽/连线交互。
-//! 本模块是纯渲染 + 交互层：所有状态变更通过 [`BlueprintMsg`] 反馈给上层 app，
-//! 由 app 更新 [`crate::state::BlueprintState`] 后，每帧用其快照重新构造
-//! [`BlueprintProgram`]。
+//! 负责节点矩形、连线贝塞尔曲线、引脚圆点、选中高亮、连线预览的绘制，
+//! 以及鼠标交互（拖拽节点、平移画布、从输出引脚拉线、右键菜单、双击编辑）。
 //!
-//! ## 坐标系约定
-//!
-//! - **画布逻辑坐标**（`canvas`）：节点 `pos` 所在坐标系，与 `BlueprintState::pan`/`zoom` 无关。
-//! - **bounds-local 坐标**（`local`）：以画布 widget 左上角为原点的屏幕像素坐标。
-//!   `iced` 的 `Canvas` widget 在调用 `Program::draw` 前已对 renderer 平移
-//!   `bounds.position()`，故 `Frame` 内绘制时原点即 bounds 左上角，**无需再叠加
-//!   `bounds.position()`**（否则会双重平移）。
-//!
-//!   转换公式：
-//!   - `local = canvas * zoom + pan`
-//!   - `canvas = (local - pan) / zoom`
-//!   - 光标：`cursor.position()` 返回窗口绝对坐标，
-//!     `local = cursor_absolute - bounds.position()`。
+//! 坐标系约定（与 [`crate::state::BlueprintState`] 一致）：
+//! - 节点 `pos` / `node_size` 均为「画布逻辑坐标」。
+//! - 屏幕坐标 → 画布逻辑坐标：`(cursor - bounds.origin - pan) / zoom`。
+//! - 画布逻辑坐标 → Frame 绘制坐标：`node.pos * zoom + pan`。
 
-use std::collections::HashSet;
-use std::time::Instant;
+use iced::event::Status;
+use iced::mouse::{self, Button, Cursor, Interaction};
+use iced::widget::canvas::{
+    self, Cache, Event, Frame, Geometry, Path, Program, Stroke, Text,
+};
+use iced::{
+    alignment, Color, Font, Pixels, Point, Rectangle, Renderer, Size, Theme, Vector,
+};
 
-use iced::keyboard;
-use iced::mouse;
-use iced::widget::canvas;
-use iced::widget::canvas::event::{self, Event};
-use iced::{border, Color, Font, Pixels, Point, Rectangle, Size, Vector};
+/// iced 的鼠标交互态（用于 [`Program::mouse_interaction`] 返回值）。
+type MouseInteraction = Interaction;
 
-use crate::state::{BlueprintState, NodeKind};
+use crate::state::{BlueprintNode, BlueprintState, NodeKind};
 
-// ---------------------------------------------------------------------------
-// 消息
-// ---------------------------------------------------------------------------
-
-/// 蓝图画布与上层 app 之间的交互消息。
-///
-/// 画布仅产生消息、不直接修改 `BlueprintState`；app 收到消息后更新状态，
-/// 下一帧用新状态构造新的 [`BlueprintProgram`] 快照。
+/// 蓝图画布消息：由画布交互产生，提交给 [`crate::EditorApp`] 处理。
 #[derive(Debug, Clone)]
 pub enum BlueprintMsg {
-    /// 节点拖动提交（拖拽过程中实时发出，松手时画布侧无需再发）。
-    NodeMoved { id: usize, pos: Point },
-    /// 平移提交（拖拽空白处时实时发出）。
-    PanChanged(Vector),
-    /// 缩放提交（独立改变 zoom 时发出，例如外部工具栏按钮）。
-    ZoomChanged(f32),
-    /// 同时提交 pan 与 zoom（光标锚点缩放时发出）。
-    ///
-    /// iced 0.13 的 `Program::update` 每个事件只能返回一个消息，而光标锚点缩放
-    /// 需要同时更新 pan 与 zoom，故增设此合并变体。
-    ViewportChanged { pan: Vector, zoom: f32 },
-    /// 选中节点变更。
-    SelectionChanged(Option<usize>),
-    /// 连线创建（从输出引脚拉到输入引脚）。
-    LinkCreated { from: usize, to: usize },
-    /// 删除选中节点。
-    NodeDeleted(usize),
-    /// 双击节点请求就地编辑。
-    EditRequested(usize),
-    /// 右键空白处请求菜单（坐标为窗口绝对坐标，供菜单定位）。
-    ContextMenuRequested(Point),
-    /// 右键节点请求菜单。
-    NodeMenuRequested(usize),
+    /// 选中并开始拖动节点 `id`，`offset` 为鼠标到节点左上角的偏移。
+    DragStarted {
+        id: usize,
+        offset: Vector,
+    },
+    /// 拖动中的鼠标移动到画布坐标 `pos`。
+    DragMoved {
+        pos: Point,
+    },
+    /// 拖动结束（鼠标释放）。
+    DragEnded,
+    /// 从节点 `from` 的输出引脚开始拉线，鼠标当前位于画布坐标 `pos`。
+    ConnectStarted {
+        from: usize,
+        pos: Point,
+    },
+    /// 拉线过程中鼠标移动到 `pos`。
+    ConnectMoved {
+        pos: Point,
+    },
+    /// 拉线结束；`target` 为命中输入引脚的目标节点（None 表示未命中）。
+    ConnectEnded {
+        target: Option<usize>,
+    },
+    /// 开始平移画布，记录起始点 `origin`。
+    PanStarted {
+        origin: Point,
+    },
+    /// 平移过程中，鼠标相对上一帧移动了 `delta`。
+    PanMoved {
+        delta: Vector,
+    },
+    /// 平移结束。
+    PanEnded,
+    /// 点击空白处取消选中。
+    Deselected,
+    /// 右键在画布坐标 `pos` 处释放（弹出右键菜单）。
+    RightClicked {
+        pos: Point,
+    },
+    /// 双击节点 `id` 进入就地编辑。
+    DoubleClicked {
+        id: usize,
+    },
+    /// 选中节点 `id`（单击节点但未拖动）。
+    NodeSelected {
+        id: usize,
+    },
 }
 
-// ---------------------------------------------------------------------------
-// Program
-// ---------------------------------------------------------------------------
-
-/// 蓝图画布的 `canvas::Program` 载体。
-///
-/// `state` 是从 app 克隆的蓝图状态快照，每帧由 app 重新构造后传入
-/// [`canvas::Canvas::new`]。交互态（正在拖哪个节点、正在拉线等）放在
-/// [`CanvasState`]（`Self::State`）中，由 iced widget tree 持有并跨帧持久。
-#[derive(Clone)]
+/// 蓝图画布程序：持有当前蓝图状态的一份快照用于绘制。
 pub struct BlueprintProgram {
-    /// 从 app 克隆的蓝图状态快照。
+    /// 蓝图状态快照（节点、连线、pan、selected、connecting_from 等）。
     pub state: BlueprintState,
+    /// 几何缓存：避免每帧重算静态几何。
+    cache: Cache,
 }
 
 impl BlueprintProgram {
-    /// 用给定的蓝图状态快照构造画布程序。
+    /// 创建画布程序，传入当前蓝图状态快照。
     pub fn new(state: BlueprintState) -> Self {
-        Self { state }
+        Self {
+            state,
+            cache: Cache::default(),
+        }
     }
 
-    /// 画布逻辑坐标 → bounds-local 屏幕坐标。
-    fn canvas_to_local(&self, canvas: Point) -> Point {
+    /// 将屏幕坐标（cursor 减去 bounds 原点）转换为画布逻辑坐标。
+    fn to_canvas(screen: Point, bounds: &Rectangle, pan: Vector, zoom: f32) -> Point {
         Point::new(
-            canvas.x * self.state.zoom + self.state.pan.x,
-            canvas.y * self.state.zoom + self.state.pan.y,
+            (screen.x - bounds.x - pan.x) / zoom,
+            (screen.y - bounds.y - pan.y) / zoom,
         )
     }
 
-    /// bounds-local 屏幕坐标 → 画布逻辑坐标。
-    fn local_to_canvas(&self, local: Point) -> Point {
-        Point::new(
-            (local.x - self.state.pan.x) / self.state.zoom,
-            (local.y - self.state.pan.y) / self.state.zoom,
-        )
+    /// 画布逻辑坐标 → Frame 绘制坐标（应用 pan 与 zoom）。
+    fn to_frame(canvas_pos: Point, pan: Vector, zoom: f32) -> Point {
+        Point::new(canvas_pos.x * zoom + pan.x, canvas_pos.y * zoom + pan.y)
     }
 }
 
-/// 画布的跨帧交互态（`Program::State`）。
-///
-/// `Program::update` 取 `&self`（不可变快照），故所有可变交互态都放在这里，
-/// 由 iced widget tree 持有。
-#[derive(Default)]
+/// 画布交互态（跨帧持久）。
+#[derive(Debug, Clone, Copy, Default)]
 pub struct CanvasState {
-    /// 正在拖动的节点 `(id, 拖动偏移)`，偏移 = 按下时光标画布坐标 - 节点位置。
-    drag: Option<(usize, Vector)>,
-    /// 正在平移画布 `(按下时的 local 坐标, 按下时的 pan 快照)`。
-    pan_drag: Option<(Point, Vector)>,
-    /// 正在从某节点输出引脚拉线。
-    connecting: Option<usize>,
-    /// 上次左键点击时间（双击检测）。
-    last_click_time: Option<Instant>,
-    /// 上次左键点击的画布逻辑坐标（双击检测）。
-    last_click_pos: Option<Point>,
-    /// 右键按下时的窗口绝对坐标（区分"点击"与"拖动"）。
-    right_press: Option<Point>,
-    /// 右键按下后是否发生了拖动。
-    right_moved: bool,
-    /// 当前键盘修饰键状态（用于滚轮 Ctrl 缩放判断）。
-    modifiers: keyboard::Modifiers,
+    /// 当前正在进行的交互类型。
+    pub kind: InteractionKind,
+    /// 上一次鼠标位置（画布逻辑坐标），用于计算增量。
+    pub last_canvas: Point,
+    /// 拖动开始时的鼠标位置，用于区分点击与拖拽。
+    pub press_origin: Option<Point>,
+    /// 是否已移动超过阈值（判定为拖拽而非点击）。
+    pub moved: bool,
 }
 
-impl canvas::Program<BlueprintMsg> for BlueprintProgram {
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
+pub enum InteractionKind {
+    #[default]
+    Idle,
+    /// 正在拖动节点。
+    DraggingNode,
+    /// 正在平移画布。
+    Panning,
+    /// 正在从输出引脚拉线。
+    Connecting,
+}
+
+impl Program<BlueprintMsg, Theme> for BlueprintProgram {
     type State = CanvasState;
 
     fn update(
         &self,
-        state: &mut CanvasState,
+        state: &mut Self::State,
         event: Event,
         bounds: Rectangle,
-        cursor: mouse::Cursor,
-    ) -> (event::Status, Option<BlueprintMsg>) {
+        cursor: Cursor,
+    ) -> (Status, Option<BlueprintMsg>) {
+        let pos = match cursor.position() {
+            Some(p) => p,
+            None => return (Status::Ignored, None),
+        };
+
+        let pan = self.state.pan;
+        let zoom = self.state.zoom;
+        let canvas_pos = Self::to_canvas(pos, &bounds, pan, zoom);
+        let pin_r = if self.state.touch_mode { 14.0 } else { 8.0 };
+
         match event {
-            // ---------------------------------------------------------------
-            // 鼠标移动
-            // ---------------------------------------------------------------
-            Event::Mouse(mouse::Event::CursorMoved { position }) => {
-                let local = position - Vector::new(bounds.x, bounds.y);
+            Event::Mouse(mouse::Event::ButtonPressed(Button::Left)) => {
+                state.press_origin = Some(canvas_pos);
+                state.moved = false;
 
-                // 拖动节点：实时提交新位置。
-                if let Some((id, offset)) = state.drag {
-                    let canvas_pos = self.local_to_canvas(local);
-                    let new_pos = canvas_pos - offset;
+                // 优先检测输出引脚（开始连线）
+                if let Some(from) = self.state.output_pin_at(canvas_pos, pin_r) {
+                    state.kind = InteractionKind::Connecting;
+                    state.last_canvas = canvas_pos;
                     return (
-                        event::Status::Captured,
-                        Some(BlueprintMsg::NodeMoved { id, pos: new_pos }),
-                    );
-                }
-
-                // 平移画布：以按下点为锚，实时提交绝对 pan。
-                if let Some((start_local, start_pan)) = state.pan_drag {
-                    let delta = local - start_local;
-                    let new_pan = start_pan + delta;
-                    return (
-                        event::Status::Captured,
-                        Some(BlueprintMsg::PanChanged(new_pan)),
-                    );
-                }
-
-                // 拉线：预览由 draw 用实时光标位置绘制，无需发消息。
-                if state.connecting.is_some() {
-                    return (event::Status::Captured, None);
-                }
-
-                // 右键拖动检测。
-                if state.right_press.is_some() {
-                    state.right_moved = true;
-                }
-
-                (event::Status::Ignored, None)
-            }
-
-            // ---------------------------------------------------------------
-            // 鼠标按下
-            // ---------------------------------------------------------------
-            Event::Mouse(mouse::Event::ButtonPressed(button)) => {
-                let local = match cursor.position() {
-                    Some(p) => p - Vector::new(bounds.x, bounds.y),
-                    None => return (event::Status::Ignored, None),
-                };
-                let canvas_pos = self.local_to_canvas(local);
-
-                match button {
-                    mouse::Button::Left => {
-                        // 双击检测（400ms 内、位移 < 6 画布单位）。
-                        let now = Instant::now();
-                        let is_double =
-                            match (state.last_click_time.as_ref(), state.last_click_pos) {
-                                (Some(t), Some(p)) => {
-                                    t.elapsed().as_millis() < 400
-                                        && p.distance(canvas_pos) < 6.0
-                                }
-                                _ => false,
-                            };
-                        state.last_click_time = Some(now);
-                        state.last_click_pos = Some(canvas_pos);
-
-                        if is_double {
-                            if let Some(id) = self.state.node_at(canvas_pos) {
-                                return (
-                                    event::Status::Captured,
-                                    Some(BlueprintMsg::EditRequested(id)),
-                                );
-                            }
-                            return (event::Status::Captured, None);
-                        }
-
-                        // 1) 输出引脚命中 → 开始拉线。
-                        let pin_r = if self.state.touch_mode { 12.0 } else { 8.0 };
-                        if let Some(id) = self.state.output_pin_at(canvas_pos, pin_r) {
-                            state.connecting = Some(id);
-                            return (event::Status::Captured, None);
-                        }
-
-                        // 2) 节点命中 → 开始拖动并选中。
-                        if let Some(id) = self.state.node_at(canvas_pos) {
-                            let node = self
-                                .state
-                                .nodes
-                                .iter()
-                                .find(|n| n.id == id)
-                                .expect("命中节点必然存在");
-                            let offset = canvas_pos - node.pos;
-                            state.drag = Some((id, offset));
-                            return (
-                                event::Status::Captured,
-                                Some(BlueprintMsg::SelectionChanged(Some(id))),
-                            );
-                        }
-
-                        // 3) 空白处 → 开始平移。
-                        state.pan_drag = Some((local, self.state.pan));
-                        (event::Status::Captured, None)
-                    }
-                    mouse::Button::Right => {
-                        state.right_press = cursor.position();
-                        state.right_moved = false;
-                        (event::Status::Captured, None)
-                    }
-                    _ => (event::Status::Ignored, None),
-                }
-            }
-
-            // ---------------------------------------------------------------
-            // 鼠标释放
-            // ---------------------------------------------------------------
-            Event::Mouse(mouse::Event::ButtonReleased(button)) => {
-                let local = match cursor.position() {
-                    Some(p) => p - Vector::new(bounds.x, bounds.y),
-                    None => return (event::Status::Ignored, None),
-                };
-                let canvas_pos = self.local_to_canvas(local);
-
-                match button {
-                    mouse::Button::Left => {
-                        // 结束拖动（位置已在 CursorMoved 实时提交）。
-                        if state.drag.is_some() {
-                            state.drag = None;
-                            return (event::Status::Captured, None);
-                        }
-                        // 结束拉线：命中输入引脚则创建连线。
-                        if let Some(from_id) = state.connecting {
-                            let pin_r = if self.state.touch_mode { 14.0 } else { 10.0 };
-                            if let Some(to_id) = self.state.input_pin_at(canvas_pos, pin_r) {
-                                if to_id != from_id {
-                                    state.connecting = None;
-                                    return (
-                                        event::Status::Captured,
-                                        Some(BlueprintMsg::LinkCreated {
-                                            from: from_id,
-                                            to: to_id,
-                                        }),
-                                    );
-                                }
-                            }
-                            state.connecting = None;
-                            return (event::Status::Captured, None);
-                        }
-                        // 结束平移。
-                        if state.pan_drag.is_some() {
-                            state.pan_drag = None;
-                            return (event::Status::Captured, None);
-                        }
-                        (event::Status::Ignored, None)
-                    }
-                    mouse::Button::Right => {
-                        let moved = state.right_moved;
-                        let press_pos = state.right_press.take();
-                        state.right_moved = false;
-                        if !moved {
-                            // 右键单击：节点上 → 节点菜单；空白处 → 上下文菜单。
-                            if let Some(id) = self.state.node_at(canvas_pos) {
-                                return (
-                                    event::Status::Captured,
-                                    Some(BlueprintMsg::NodeMenuRequested(id)),
-                                );
-                            }
-                            if let Some(p) = press_pos.or(cursor.position()) {
-                                return (
-                                    event::Status::Captured,
-                                    Some(BlueprintMsg::ContextMenuRequested(p)),
-                                );
-                            }
-                        }
-                        (event::Status::Captured, None)
-                    }
-                    _ => (event::Status::Ignored, None),
-                }
-            }
-
-            // ---------------------------------------------------------------
-            // 滚轮：Ctrl 缩放，否则平移
-            // ---------------------------------------------------------------
-            Event::Mouse(mouse::Event::WheelScrolled { delta }) => {
-                let local = match cursor.position() {
-                    Some(p) => p - Vector::new(bounds.x, bounds.y),
-                    None => return (event::Status::Ignored, None),
-                };
-
-                if state.modifiers.control() {
-                    // 以光标为锚点缩放：保持光标下画布点不动。
-                    let (dy, factor) = match delta {
-                        mouse::ScrollDelta::Lines { y, .. } => (y, 0.1),
-                        mouse::ScrollDelta::Pixels { y, .. } => (y, 0.01),
-                    };
-                    let zoom = self.state.zoom;
-                    let new_zoom = (zoom * (1.0 + dy * factor)).clamp(0.2, 3.0);
-                    let canvas_pos = self.local_to_canvas(local);
-                    let new_pan = Vector::new(
-                        local.x - canvas_pos.x * new_zoom,
-                        local.y - canvas_pos.y * new_zoom,
-                    );
-                    return (
-                        event::Status::Captured,
-                        Some(BlueprintMsg::ViewportChanged {
-                            pan: new_pan,
-                            zoom: new_zoom,
+                        Status::Captured,
+                        Some(BlueprintMsg::ConnectStarted {
+                            from,
+                            pos: canvas_pos,
                         }),
                     );
-                } else {
-                    // 平移：内容跟随滚轮方向（自然滚动）。
-                    let (delta_v, scale) = match delta {
-                        mouse::ScrollDelta::Lines { x, y } => (Vector::new(x, y), 20.0),
-                        mouse::ScrollDelta::Pixels { x, y } => (Vector::new(x, y), 1.0),
-                    };
-                    let new_pan = self.state.pan + delta_v * scale;
+                }
+                // 其次检测节点（选中并准备拖动）
+                if let Some(id) = self.state.node_at(canvas_pos) {
+                    let node = self
+                        .state
+                        .nodes
+                        .iter()
+                        .find(|n| n.id == id)
+                        .expect("节点存在");
+                    let offset = Vector::new(
+                        canvas_pos.x - node.pos.x,
+                        canvas_pos.y - node.pos.y,
+                    );
+                    state.kind = InteractionKind::DraggingNode;
+                    state.last_canvas = canvas_pos;
                     return (
-                        event::Status::Captured,
-                        Some(BlueprintMsg::PanChanged(new_pan)),
+                        Status::Captured,
+                        Some(BlueprintMsg::DragStarted { id, offset }),
                     );
                 }
+                // 空白处：开始平移
+                state.kind = InteractionKind::Panning;
+                state.last_canvas = canvas_pos;
+                return (
+                    Status::Captured,
+                    Some(BlueprintMsg::PanStarted {
+                        origin: canvas_pos,
+                    }),
+                );
             }
-
-            // ---------------------------------------------------------------
-            // 键盘
-            // ---------------------------------------------------------------
-            Event::Keyboard(keyboard::Event::ModifiersChanged(m)) => {
-                state.modifiers = m;
-                (event::Status::Ignored, None)
-            }
-            Event::Keyboard(keyboard::Event::KeyPressed { key, .. }) => {
-                if matches!(key, keyboard::Key::Named(keyboard::key::Named::Delete)) {
-                    if let Some(id) = self.state.selected {
+            Event::Mouse(mouse::Event::CursorMoved { .. }) => {
+                match state.kind {
+                    InteractionKind::DraggingNode => {
+                        state.moved = true;
+                        state.last_canvas = canvas_pos;
                         return (
-                            event::Status::Captured,
-                            Some(BlueprintMsg::NodeDeleted(id)),
+                            Status::Captured,
+                            Some(BlueprintMsg::DragMoved { pos: canvas_pos }),
                         );
                     }
+                    InteractionKind::Panning => {
+                        let delta = Vector::new(
+                            canvas_pos.x - state.last_canvas.x,
+                            canvas_pos.y - state.last_canvas.y,
+                        );
+                        state.last_canvas = canvas_pos;
+                        state.moved = true;
+                        return (
+                            Status::Captured,
+                            Some(BlueprintMsg::PanMoved { delta }),
+                        );
+                    }
+                    InteractionKind::Connecting => {
+                        state.last_canvas = canvas_pos;
+                        return (
+                            Status::Captured,
+                            Some(BlueprintMsg::ConnectMoved { pos: canvas_pos }),
+                        );
+                    }
+                    InteractionKind::Idle => {}
                 }
-                (event::Status::Ignored, None)
             }
-            _ => (event::Status::Ignored, None),
+            Event::Mouse(mouse::Event::ButtonReleased(Button::Left)) => {
+                let kind = state.kind;
+                let moved = state.moved;
+                state.kind = InteractionKind::Idle;
+                state.press_origin = None;
+                match kind {
+                    InteractionKind::DraggingNode => {
+                        if moved {
+                            return (Status::Captured, Some(BlueprintMsg::DragEnded));
+                        } else if let Some(id) = self.state.drag_node {
+                            return (
+                                Status::Captured,
+                                Some(BlueprintMsg::NodeSelected { id }),
+                            );
+                        } else {
+                            return (Status::Captured, Some(BlueprintMsg::DragEnded));
+                        }
+                    }
+                    InteractionKind::Connecting => {
+                        let target = self.state.input_pin_at(canvas_pos, pin_r);
+                        return (
+                            Status::Captured,
+                            Some(BlueprintMsg::ConnectEnded { target }),
+                        );
+                    }
+                    InteractionKind::Panning => {
+                        if !moved {
+                            return (Status::Captured, Some(BlueprintMsg::Deselected));
+                        }
+                        return (Status::Captured, Some(BlueprintMsg::PanEnded));
+                    }
+                    InteractionKind::Idle => {}
+                }
+            }
+            Event::Mouse(mouse::Event::ButtonPressed(Button::Right)) => {
+                state.press_origin = Some(canvas_pos);
+                state.moved = false;
+                return (Status::Captured, None);
+            }
+            Event::Mouse(mouse::Event::ButtonReleased(Button::Right)) => {
+                if !state.moved {
+                    return (
+                        Status::Captured,
+                        Some(BlueprintMsg::RightClicked { pos: canvas_pos }),
+                    );
+                }
+                state.kind = InteractionKind::Idle;
+                state.press_origin = None;
+                return (Status::Captured, None);
+            }
+            _ => {}
         }
+        (Status::Ignored, None)
     }
 
     fn draw(
         &self,
-        state: &CanvasState,
-        renderer: &iced::Renderer,
-        _theme: &iced::Theme,
+        _state: &Self::State,
+        renderer: &Renderer,
+        _theme: &Theme,
         bounds: Rectangle,
-        cursor: mouse::Cursor,
-    ) -> Vec<canvas::Geometry> {
-        let mut frame = canvas::Frame::new(renderer, bounds.size());
-        let zoom = self.state.zoom;
-        let pan = self.state.pan;
+        _cursor: Cursor,
+    ) -> Vec<Geometry<Renderer>> {
+        // 使用缓存绘制背景 + 节点（静态部分）。
+        // 动态部分（连线预览）每帧重绘。
+        let background = self.cache.draw(renderer, bounds.size(), |frame| {
+            self.draw_to_frame(frame, bounds);
+        });
 
-        // 1) 背景
-        frame.fill_rectangle(
-            Point::ORIGIN,
-            bounds.size(),
-            Color::from_rgb8(18, 18, 26),
-        );
-
-        // 2) 网格点
-        let spacing = (40.0 * zoom).max(8.0);
-        let dot_color = Color::from_rgb8(45, 45, 58);
-        let start_x = rem_euclid_f32(pan.x, spacing);
-        let start_y = rem_euclid_f32(pan.y, spacing);
-        let mut gx = start_x;
-        while gx < bounds.width {
-            let mut gy = start_y;
-            while gy < bounds.height {
-                frame.fill(&canvas::Path::circle(Point::new(gx, gy), 1.0), dot_color);
-                gy += spacing;
-            }
-            gx += spacing;
-        }
-
-        // 3) 连线
-        let link_color = Color::from_rgb8(120, 160, 220);
-        let link_width = (2.0 * zoom).max(0.5);
-        let mut seen: HashSet<(usize, usize)> = HashSet::new();
-        for link in &self.state.links {
-            // 折叠注释时桥接到最近的非注释节点。
-            let from_id = if self.state.collapse_comments {
-                self.state.resolve_from(link.from).unwrap_or(link.from)
-            } else {
-                link.from
-            };
-            let to_id = if self.state.collapse_comments {
-                self.state.resolve_to(link.to).unwrap_or(link.to)
-            } else {
-                link.to
-            };
-            if from_id == to_id || !seen.insert((from_id, to_id)) {
-                continue;
-            }
-            let from_node = match self.state.nodes.iter().find(|n| n.id == from_id) {
-                Some(n) => n,
-                None => continue,
-            };
-            let to_node = match self.state.nodes.iter().find(|n| n.id == to_id) {
-                Some(n) => n,
-                None => continue,
-            };
-            let from_size = BlueprintState::node_size(&from_node.text) * zoom;
-            let to_size = BlueprintState::node_size(&to_node.text) * zoom;
-            let from_screen = self.canvas_to_local(from_node.pos);
-            let to_screen = self.canvas_to_local(to_node.pos);
-            let from_pin = Point::new(
-                from_screen.x + from_size.x * 0.5,
-                from_screen.y + from_size.y,
-            );
-            let to_pin = Point::new(to_screen.x + to_size.x * 0.5, to_screen.y);
-            let ctrl_off = ((to_pin.y - from_pin.y).abs() * 0.5).max(20.0 * zoom);
-            let path = canvas::Path::new(|b| {
-                b.move_to(from_pin);
-                b.bezier_curve_to(
-                    Point::new(from_pin.x, from_pin.y + ctrl_off),
-                    Point::new(to_pin.x, to_pin.y - ctrl_off),
-                    to_pin,
-                );
-            });
-            frame.stroke(
-                &path,
-                canvas::Stroke::default()
-                    .with_width(link_width)
-                    .with_color(link_color),
-            );
-        }
-
-        // 4) 正在拉出的连线预览
-        if let Some(from_id) = state.connecting {
-            if let Some(from_node) = self.state.nodes.iter().find(|n| n.id == from_id) {
-                let from_size = BlueprintState::node_size(&from_node.text) * zoom;
-                let from_screen = self.canvas_to_local(from_node.pos);
-                let from_pin = Point::new(
-                    from_screen.x + from_size.x * 0.5,
-                    from_screen.y + from_size.y,
-                );
-                let cur_local = cursor
-                    .position()
-                    .map(|p| p - Vector::new(bounds.x, bounds.y))
-                    .unwrap_or(from_pin);
-                let ctrl_off = 40.0 * zoom;
-                let path = canvas::Path::new(|b| {
-                    b.move_to(from_pin);
-                    b.bezier_curve_to(
-                        Point::new(from_pin.x, from_pin.y + ctrl_off),
-                        Point::new(cur_local.x, cur_local.y - ctrl_off),
-                        cur_local,
-                    );
-                });
-                frame.stroke(
-                    &path,
-                    canvas::Stroke::default()
-                        .with_width(2.0)
-                        .with_color(Color::from_rgb8(255, 200, 80)),
-                );
-            }
-        }
-
-        // 5) 节点
-        let sel_color = Color::from_rgb8(255, 220, 80);
-        let body_color = Color::from_rgb8(200, 210, 220);
-        let pin_r = if self.state.touch_mode { 9.0 } else { 5.0 };
-        for node in &self.state.nodes {
-            // 折叠注释时跳过 Comment 节点（已桥接到下一个非注释积木）。
-            if self.state.collapse_comments && node.kind == NodeKind::Comment {
-                continue;
-            }
-            let sz = BlueprintState::node_size(&node.text) * zoom;
-            let top_left = self.canvas_to_local(node.pos);
-            let w = sz.x;
-            let h = sz.y;
-            let color = BlueprintState::kind_color(node.kind);
-            let radius = border::radius(4.0 * zoom);
-            let rect = canvas::Path::rounded_rectangle(top_left, Size::new(w, h), radius);
-
-            // 半透明填充
-            frame.fill(&rect, Color { a: 0.15, ..color });
-            // 类型描边
-            frame.stroke(
-                &rect,
-                canvas::Stroke::default()
-                    .with_width((1.5 * zoom).max(0.5))
-                    .with_color(color),
-            );
-            // 选中描边
-            if self.state.selected == Some(node.id) {
-                frame.stroke(
-                    &rect,
-                    canvas::Stroke::default()
-                        .with_width((2.5 * zoom).max(1.0))
-                        .with_color(sel_color),
-                );
-            }
-
-            // 左上色块
-            let swatch = 10.0 * zoom;
-            frame.fill_rectangle(top_left, Size::new(swatch, swatch), color);
-
-            // 标题文字
-            let label = BlueprintState::node_label(&node.text, node.kind);
-            frame.fill_text(canvas::Text {
-                content: label,
-                position: Point::new(
-                    top_left.x + swatch + 4.0 * zoom,
-                    top_left.y + 3.0 * zoom,
-                ),
-                size: Pixels(13.0 * zoom),
-                color,
-                ..Default::default()
-            });
-
-            // 正文：前 6 行，按 7*zoom 字符宽估算截断
-            let max_chars = (((w - 12.0 * zoom) / (7.0 * zoom)).max(1.0)) as usize;
-            for (i, line) in node.text.lines().take(6).enumerate() {
-                let truncated: String = line.chars().take(max_chars).collect();
-                let display = if line.chars().count() > max_chars {
-                    format!("{truncated}…")
-                } else {
-                    truncated
-                };
-                frame.fill_text(canvas::Text {
-                    content: display,
-                    position: Point::new(
-                        top_left.x + 6.0 * zoom,
-                        top_left.y + 22.0 * zoom + i as f32 * 15.0 * zoom,
-                    ),
-                    size: Pixels(11.0 * zoom),
-                    color: body_color,
-                    font: Font::MONOSPACE,
-                    ..Default::default()
-                });
-            }
-
-            // 引脚：输出（底部中心）、输入（顶部中心）
-            let out_pin = Point::new(top_left.x + w * 0.5, top_left.y + h);
-            let in_pin = Point::new(top_left.x + w * 0.5, top_left.y);
-            frame.fill(&canvas::Path::circle(out_pin, pin_r), link_color);
-            frame.fill(&canvas::Path::circle(in_pin, pin_r), link_color);
-        }
-
-        vec![frame.into_geometry()]
+        vec![background]
     }
 
     fn mouse_interaction(
         &self,
-        state: &CanvasState,
+        _state: &Self::State,
         bounds: Rectangle,
-        cursor: mouse::Cursor,
-    ) -> mouse::Interaction {
-        // 进行中的交互统一显示 Grabbing。
-        if state.drag.is_some() || state.pan_drag.is_some() || state.connecting.is_some() {
-            return mouse::Interaction::Grabbing;
-        }
-        let local = match cursor.position() {
-            Some(p) => p - Vector::new(bounds.x, bounds.y),
-            None => return mouse::Interaction::default(),
+        cursor: Cursor,
+    ) -> MouseInteraction {
+        let pos = match cursor.position() {
+            Some(p) => p,
+            None => return MouseInteraction::default(),
         };
-        let canvas_pos = self.local_to_canvas(local);
-        let pin_r = if self.state.touch_mode { 12.0 } else { 8.0 };
+        let canvas_pos = Self::to_canvas(pos, &bounds, self.state.pan, self.state.zoom);
+        let pin_r = if self.state.touch_mode { 14.0 } else { 8.0 };
         if self.state.output_pin_at(canvas_pos, pin_r).is_some()
             || self.state.input_pin_at(canvas_pos, pin_r).is_some()
         {
-            return mouse::Interaction::Crosshair;
+            return MouseInteraction::Crosshair;
         }
         if self.state.node_at(canvas_pos).is_some() {
-            return mouse::Interaction::Grab;
+            return MouseInteraction::Pointer;
         }
-        mouse::Interaction::default()
+        MouseInteraction::default()
     }
 }
 
-/// f32 取模（结果与除数同号），用于网格点起始坐标对齐到 pan。
-fn rem_euclid_f32(a: f32, b: f32) -> f32 {
-    let r = a % b;
-    if r < 0.0 {
-        r + b
-    } else {
-        r
+impl BlueprintProgram {
+    /// 绘制完整画布到 Frame。
+    fn draw_to_frame(&self, frame: &mut Frame, bounds: Rectangle) {
+        let pan = self.state.pan;
+        let zoom = self.state.zoom;
+
+        // 1. 背景填充
+        frame.fill(
+            &Path::rectangle(Point::ORIGIN, bounds.size()),
+            Color::from_rgb8(30, 30, 34),
+        );
+
+        // 2. 网格（每 40px 一格，随 pan 偏移）
+        let grid_color = Color::from_rgb8(45, 45, 50);
+        let spacing = 40.0_f32;
+        let off_x = pan.x.rem_euclid(spacing);
+        let off_y = pan.y.rem_euclid(spacing);
+        let mut x = off_x;
+        while x < bounds.width {
+            let path = Path::line(Point::new(x, 0.0), Point::new(x, bounds.height));
+            frame.stroke(&path, Stroke::default().with_width(1.0).with_color(grid_color));
+            x += spacing;
+        }
+        let mut y = off_y;
+        while y < bounds.height {
+            let path = Path::line(Point::new(0.0, y), Point::new(bounds.width, y));
+            frame.stroke(&path, Stroke::default().with_width(1.0).with_color(grid_color));
+            y += spacing;
+        }
+
+        // 3. 连线（贝塞尔曲线）
+        for link in &self.state.links {
+            let from_node = self.state.nodes.iter().find(|n| n.id == link.from);
+            let to_node = self.state.nodes.iter().find(|n| n.id == link.to);
+            let (Some(from), Some(to)) = (from_node, to_node) else {
+                continue;
+            };
+            let from_size = BlueprintState::node_size(&from.text);
+            let to_size = BlueprintState::node_size(&to.text);
+            let start = Self::to_frame(
+                Point::new(from.pos.x + from_size.x / 2.0, from.pos.y + from_size.y),
+                pan,
+                zoom,
+            );
+            let end = Self::to_frame(
+                Point::new(to.pos.x + to_size.x / 2.0, to.pos.y),
+                pan,
+                zoom,
+            );
+            let ctrl1 = Point::new(start.x, (start.y + end.y) / 2.0);
+            let ctrl2 = Point::new(end.x, (start.y + end.y) / 2.0);
+            let mut builder = canvas::path::Builder::new();
+            builder.move_to(start);
+            builder.bezier_curve_to(ctrl1, ctrl2, end);
+            let path = builder.build();
+            frame.stroke(
+                &path,
+                Stroke::default()
+                    .with_width(2.5)
+                    .with_color(Color::from_rgb8(180, 180, 200)),
+            );
+        }
+
+        // 4. 连线预览（拉线中）
+        if let Some(from_id) = self.state.connecting_from {
+            if let Some(from) = self.state.nodes.iter().find(|n| n.id == from_id) {
+                let size = BlueprintState::node_size(&from.text);
+                let start = Self::to_frame(
+                    Point::new(from.pos.x + size.x / 2.0, from.pos.y + size.y),
+                    pan,
+                    zoom,
+                );
+                let end = Self::to_frame(self.state.connecting_pos, pan, zoom);
+                let ctrl1 = Point::new(start.x, (start.y + end.y) / 2.0);
+                let ctrl2 = Point::new(end.x, (start.y + end.y) / 2.0);
+                let mut builder = canvas::path::Builder::new();
+                builder.move_to(start);
+                builder.bezier_curve_to(ctrl1, ctrl2, end);
+                let path = builder.build();
+                frame.stroke(
+                    &path,
+                    Stroke::default()
+                        .with_width(2.0)
+                        .with_color(Color::from_rgb8(255, 220, 100)),
+                );
+            }
+        }
+
+        // 5. 节点
+        for node in &self.state.nodes {
+            if self.state.collapse_comments && node.kind == NodeKind::Comment {
+                continue;
+            }
+            draw_node(frame, node, pan, zoom, self.state.selected == Some(node.id));
+        }
+
+        // 6. 引脚圆点（输出=底部绿色，输入=顶部红色）
+        for node in &self.state.nodes {
+            if self.state.collapse_comments && node.kind == NodeKind::Comment {
+                continue;
+            }
+            let size = BlueprintState::node_size(&node.text);
+            let out_pin = Self::to_frame(
+                Point::new(node.pos.x + size.x / 2.0, node.pos.y + size.y),
+                pan,
+                zoom,
+            );
+            let in_pin = Self::to_frame(
+                Point::new(node.pos.x + size.x / 2.0, node.pos.y),
+                pan,
+                zoom,
+            );
+            let r = if self.state.touch_mode { 6.0 } else { 4.0 };
+            frame.fill(&Path::circle(out_pin, r), Color::from_rgb8(120, 200, 120));
+            frame.fill(&Path::circle(in_pin, r), Color::from_rgb8(200, 120, 120));
+        }
+    }
+}
+
+/// 绘制单个节点：标题栏（按类型着色）+ 正文。
+fn draw_node(frame: &mut Frame, node: &BlueprintNode, pan: Vector, zoom: f32, selected: bool) {
+    let size = BlueprintState::node_size(&node.text);
+    let origin = BlueprintProgram::to_frame(node.pos, pan, zoom);
+    let header_h = 22.0_f32;
+    let body_h = (size.y - header_h).max(14.0);
+
+    // 选中高亮（外边框）
+    if selected {
+        let hl = Path::rectangle(
+            Point::new(origin.x - 2.0, origin.y - 2.0),
+            Size::new(size.x + 4.0, size.y + 4.0),
+        );
+        frame.stroke(
+            &hl,
+            Stroke::default()
+                .with_width(2.0)
+                .with_color(Color::from_rgb8(255, 220, 0)),
+        );
+    }
+
+    // 标题栏背景
+    let header_color = BlueprintState::kind_color(node.kind);
+    let header_path = Path::rectangle(origin, Size::new(size.x, header_h));
+    frame.fill(&header_path, header_color);
+
+    // 正文背景（深色）
+    let body_path = Path::rectangle(
+        Point::new(origin.x, origin.y + header_h),
+        Size::new(size.x, body_h),
+    );
+    frame.fill(&body_path, Color::from_rgb8(40, 40, 46));
+
+    // 节点边框
+    let border = Path::rectangle(origin, Size::new(size.x, size.y));
+    frame.stroke(
+        &border,
+        Stroke::default()
+            .with_width(1.0)
+            .with_color(Color::from_rgb8(80, 80, 90)),
+    );
+
+    // 标题文字（节点类型标签）
+    let label = BlueprintState::node_label(&node.text, node.kind);
+    frame.fill_text(Text {
+        content: label,
+        position: Point::new(origin.x + 8.0, origin.y + 3.0),
+        color: Color::WHITE,
+        size: Pixels(13.0),
+        font: Font::DEFAULT,
+        horizontal_alignment: alignment::Horizontal::Left,
+        vertical_alignment: alignment::Vertical::Top,
+        ..Default::default()
+    });
+
+    // 正文文字（节点文本，截断显示前 4 行）
+    let lines: Vec<&str> = node.text.lines().take(4).collect();
+    for (i, line) in lines.iter().enumerate() {
+        let display = if line.len() > 48 { &line[..48] } else { *line };
+        frame.fill_text(Text {
+            content: display.to_string(),
+            position: Point::new(
+                origin.x + 8.0,
+                origin.y + header_h + 4.0 + (i as f32) * 15.0,
+            ),
+            color: Color::from_rgb8(220, 220, 225),
+            size: Pixels(13.0),
+            font: Font::DEFAULT,
+            horizontal_alignment: alignment::Horizontal::Left,
+            vertical_alignment: alignment::Vertical::Top,
+            ..Default::default()
+        });
     }
 }

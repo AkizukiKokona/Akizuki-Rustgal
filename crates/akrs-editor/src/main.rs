@@ -1,24 +1,19 @@
-//! akrs-editor binary entry point.
+//! akrs-editor 二进制入口。
 //!
-//! Thin wrapper that delegates to [`akrs_editor::run_editor`]. Adding this
-//! file turns `akrs-editor` from a pure library crate into a lib+bin crate,
-//! so `cargo build -p akrs-editor` produces an executable
-//! (`akrs-editor` / `akrs-editor.exe`) without changing the public library API.
+//! 薄封装，委托给 [`akrs_editor::run_editor`]。保留此文件使 `akrs-editor`
+//! 从纯库 crate 变为 lib+bin crate，`cargo build -p akrs-editor` 即产出
+//! 可执行文件（`akrs-editor` / `akrs-editor.exe`），不改动公开库 API。
 
 #![cfg_attr(target_os = "windows", windows_subsystem = "windows")]
 
 fn main() {
-    std::panic::set_hook(Box::new(|panic_info| {
-        let msg = format!("{}", panic_info);
-        let full = format!(
-            "Akizuki*Rustgal 编辑器发生致命错误（panic）\n\n{}\n\n请将此信息反馈给开发者。",
-            msg
-        );
-        let _ = std::fs::write("editor-panic.log", &full);
-        eprintln!("{}", full);
-    }));
+    // 初始化日志（env_logger 默认 warn+，设 RUST_LOG=debug 可看调试日志）。
+    let _ = env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("warn"))
+        .format_timestamp_secs()
+        .try_init();
+
     if let Err(e) = akrs_editor::run_editor() {
-        eprintln!("Editor exited with error: {e:?}");
+        eprintln!("[editor] 运行出错: {e:?}");
         std::process::exit(1);
     }
 }

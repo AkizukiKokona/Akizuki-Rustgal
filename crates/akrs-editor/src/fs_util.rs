@@ -238,3 +238,22 @@ pub fn check_cargo() -> bool {
         .status()
         .is_ok()
 }
+
+/// 扫描目录中所有扩展名匹配 `exts` 的文件名（相对路径，已排序）。
+///
+/// 若目录不存在则返回空 Vec。扩展名比较不区分大小写。
+/// 用于编辑器右栏的立绘 / 背景 / 音乐预览面板。
+pub fn scan_dir(dir: &Path, exts: &[&str]) -> Vec<String> {
+    let mut items = Vec::new();
+    if let Ok(entries) = fs::read_dir(dir) {
+        for entry in entries.flatten() {
+            let name = entry.file_name().to_string_lossy().into_owned();
+            let lower = name.to_lowercase();
+            if exts.iter().any(|ext| lower.ends_with(ext)) {
+                items.push(name);
+            }
+        }
+    }
+    items.sort();
+    items
+}

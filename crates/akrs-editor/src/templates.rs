@@ -45,6 +45,7 @@ Aki: "I think we'll be great friends."
 ~~
 
 
+
 # BadEnding
 
 Aki: "Oh. I see."
@@ -62,8 +63,8 @@ pub const UNDO_LIMIT: usize = 100;
 /// 超过该时长后下一次提交视为新的可撤销步骤。
 pub const UNDO_IDLE_SECS: f32 = 0.6;
 
-/// 关于页面显示的 build 号（main 最新为 0089，本轮递增到 0090）。
-pub const BUILD_NUMBER: &str = "0090";
+/// 关于页面显示的 build 号。本轮递增一次（0091 → 0092）。
+pub const BUILD_NUMBER: &str = "0092";
 
 /// 蓝图右键菜单中可选的节点模板：(标签, 简短描述, 模板文本)。
 pub const NODE_TEMPLATES: &[(&str, &str, &str)] = &[

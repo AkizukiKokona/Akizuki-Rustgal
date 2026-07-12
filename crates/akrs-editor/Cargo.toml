@@ -23,6 +23,10 @@ image = { version = "0.25", default-features = false, features = ["png"] }
 # log + env_logger：编辑器入口初始化统一日志。
 log = { workspace = true }
 env_logger = { workspace = true }
+# rfd：原生文件对话框（打开/保存/选目录）。替代 main 分支自实现的文件浏览器，
+# 彻底避免自实现带来的"读不了文件"类 bug。使用同步 API（pick_file 等），
+# 不引入异步运行时依赖。
+rfd = { workspace = true }
 
 [build-dependencies]
 winres = "0.1"
