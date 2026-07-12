@@ -40,7 +40,7 @@ fn main() {
             let title = CString::new("akrs-editor panic").unwrap();
             let body = CString::new(full).unwrap();
             unsafe {
-                extern "system" {
+                unsafe extern "system" {
                     fn MessageBoxA(
                         hwnd: *mut std::ffi::c_void,
                         text: *const i8,
