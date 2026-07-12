@@ -4580,7 +4580,21 @@ pub fn run_editor() -> Result<(), Box<dyn std::error::Error>> {
     window.icon = icon;
 
     let app = iced::application(
-        "Akizuki*Rustgal 剧本编辑器",
+        |app: &EditorApp| {
+            // 动态窗口标题：打开文件时显示「文件名 - Akizuki*Rustgal 剧本编辑器」，
+            // 未打开文件时显示固定标题。iced 0.13 无 window::set_title，
+            // 通过 Title trait 闭包让 iced 每帧从状态推导标题。
+            match &app.current_file {
+                Some(path) => {
+                    let name = path
+                        .file_name()
+                        .map(|n| n.to_string_lossy().into_owned())
+                        .unwrap_or_default();
+                    format!("{} - Akizuki*Rustgal 剧本编辑器", name)
+                }
+                None => "Akizuki*Rustgal 剧本编辑器".to_string(),
+            }
+        },
         EditorApp::update,
         EditorApp::view,
     );
