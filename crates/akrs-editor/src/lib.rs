@@ -804,6 +804,45 @@ const NODE_TEMPLATES: &[(&str, &str, &str)] = &[
     ("结局", "故事结束", "end"),
 ];
 
+/// 渲染单个积木卡片的内部内容（色块 + 标签 + 描述 + 模板文本）。
+/// 供积木面板与拖拽预览复用，保证「所见即所得」——拖拽时看到的预览与面板里完全一致。
+/// 调用方负责提供包裹的 `Frame`（填色 + 边框）。
+fn paint_block_card(ui: &mut egui::Ui, label: &str, desc: &str, template: &str, color: egui::Color32) {
+    ui.horizontal(|ui| {
+        // 色块标识节点类型
+        let (rect, _) = ui.allocate_exact_size(
+            egui::Vec2::new(10.0, 10.0),
+            egui::Sense::hover(),
+        );
+        ui.painter().rect_filled(rect, 2.0, color);
+        ui.vertical(|ui| {
+            ui.horizontal(|ui| {
+                ui.label(egui::RichText::new(label).strong().color(color));
+                ui.label(
+                    egui::RichText::new(desc)
+                        .small()
+                        .color(egui::Color32::from_rgb(140, 145, 160)),
+                );
+            });
+            ui.label(
+                egui::RichText::new(template)
+                    .small()
+                    .monospace()
+                    .color(egui::Color32::from_rgb(180, 185, 195)),
+            );
+        });
+    });
+}
+
+/// 构造积木卡片用的 Frame：半透明色填充 + 彩色边框 + 内边距。
+fn block_card_frame(ui: &egui::Ui, color: egui::Color32, outer_y: f32) -> egui::Frame {
+    egui::Frame::group(ui.style())
+        .fill(color.linear_multiply(0.15))
+        .stroke(egui::Stroke::new(1.0, color))
+        .inner_margin(egui::Margin::same(6.0))
+        .outer_margin(egui::Margin::symmetric(0.0, outer_y))
+}
+
 /// 记录哪些剧本文件已经在蓝图模式下做过首次自动布局整理。
 /// 持久化到编辑器数据目录，避免每次进入蓝图模式都重新打乱用户手动调整过的布局。
 /// 用纯文本文件存储（每行一个规范化路径），不依赖 serde。
@@ -2609,24 +2648,20 @@ impl EditorApp {
         if self.drag_template.is_some() {
             ui.ctx().set_cursor_icon(egui::CursorIcon::Grabbing);
             if let Some(idx) = self.drag_template {
-                let (label, _desc, template) = NODE_TEMPLATES[idx];
+                let (label, desc, template) = NODE_TEMPLATES[idx];
                 let kind = BlueprintState::detect_kind(template);
                 let color = BlueprintState::kind_color(kind);
-                // 浮动预览跟随光标，提示正在拖拽的积木
+                // 浮动预览跟随光标：所见即所得——直接渲染积木卡片本身（与面板里完全一致），
+                // 而非仅显示标签文字。半透明以区别于已放置的节点。
                 egui::Area::new(egui::Id::new("bp_drag_preview"))
                     .order(egui::Order::Foreground)
                     .fixed_pos(mouse_pos + egui::vec2(12.0, 12.0))
                     .interactable(false)
                     .show(ui.ctx(), |ui| {
-                        egui::Frame::group(ui.style())
-                            .fill(color)
-                            .inner_margin(egui::Margin::symmetric(8.0, 3.0))
+                        block_card_frame(ui, color, 0.0)
+                            .fill(color.linear_multiply(0.25))
                             .show(ui, |ui| {
-                                ui.label(
-                                    egui::RichText::new(label)
-                                        .color(egui::Color32::WHITE)
-                                        .strong(),
-                                );
+                                paint_block_card(ui, label, desc, template, color);
                             });
                     });
                 // 释放：在画布内添加节点，否则取消
@@ -3143,38 +3178,9 @@ impl EditorApp {
             for (idx, (label, desc, template)) in NODE_TEMPLATES.iter().enumerate() {
                 let kind = BlueprintState::detect_kind(template);
                 let color = BlueprintState::kind_color(kind);
-                let frame = egui::Frame::group(ui.style())
-                    .fill(color.linear_multiply(0.15))
-                    .stroke(egui::Stroke::new(1.0, color))
-                    .inner_margin(egui::Margin::same(6.0))
-                    .outer_margin(egui::Margin::symmetric(0.0, 3.0));
+                let frame = block_card_frame(ui, color, 3.0);
                 let resp = frame.show(ui, |ui| {
-                    ui.horizontal(|ui| {
-                        // 色块标识节点类型
-                        let (rect, _) = ui.allocate_exact_size(
-                            egui::Vec2::new(10.0, 10.0),
-                            egui::Sense::hover(),
-                        );
-                        ui.painter().rect_filled(rect, 2.0, color);
-                        ui.vertical(|ui| {
-                            ui.horizontal(|ui| {
-                                ui.label(
-                                    egui::RichText::new(*label).strong().color(color),
-                                );
-                                ui.label(
-                                    egui::RichText::new(*desc)
-                                        .small()
-                                        .color(egui::Color32::from_rgb(140, 145, 160)),
-                                );
-                            });
-                            ui.label(
-                                egui::RichText::new(*template)
-                                    .small()
-                                    .monospace()
-                                    .color(egui::Color32::from_rgb(180, 185, 195)),
-                            );
-                        });
-                    });
+                    paint_block_card(ui, label, desc, template, color);
                 });
                 // 拖拽添加：用 Sense::drag 检测拖拽开始，记录模板索引，画布上释放即添加。
                 let drag_resp = resp.response.interact(egui::Sense::drag());
