@@ -275,6 +275,10 @@ pub struct EditorApp {
     status: String,
     /// 格式化后的编译诊断信息（错误 / 警告 / 提示）。
     diagnostics: Vec<String>,
+    /// `=>`/`<=` 流程标记缓存（文本变更时重算，view_outline 只读取）。
+    flow_marks: Vec<FlowMark>,
+    /// 流程标记配对索引缓存（与 flow_marks 同步更新）。
+    flow_pairs: Vec<Option<usize>>,
     /// 上一次 tick 的时刻，用于计算引擎的增量时间 dt。
     last_time: Option<Instant>,
     /// 是否显示首次启动欢迎面板。
@@ -543,6 +547,8 @@ impl Default for EditorApp {
             engine: None,
             status: "就绪".to_string(),
             diagnostics: Vec::new(),
+            flow_marks: Vec::new(),
+            flow_pairs: Vec::new(),
             last_time: None,
             show_welcome: true,
             show_about: false,
@@ -586,11 +592,24 @@ impl Default for EditorApp {
             blueprint_edit_text: String::new(),
         };
         app.refresh_file_list();
+        app.recompute_flow_cache();
         app
     }
 }
 
 impl EditorApp {
+    // -- 辅助方法：流程标记缓存 -------------------------------------------
+
+    /// 重新计算 flow marks 与 pairs 缓存。
+    ///
+    /// 应在所有改变 `editor_content` 文本的 update 分支后调用，避免 `view_outline`
+    /// 每帧重新扫描全文（iced 的 view 是 `&self` 不可变借用，无法在 view 中更新缓存）。
+    fn recompute_flow_cache(&mut self) {
+        let content = self.editor_content.text();
+        self.flow_marks = scan_flow_marks(&content);
+        self.flow_pairs = compute_flow_pairs(&self.flow_marks);
+    }
+
     // -- 辅助方法：插入语法 -----------------------------------------------
 
     /// 智能插入语法：本期不接入系统剪贴板（iced 无直接读取剪贴板的同步 API），
@@ -599,6 +618,7 @@ impl EditorApp {
         let mut s = self.editor_content.text();
         s.push_str(&format!("{}\n", syntax));
         self.editor_content = text_editor::Content::with_text(&s);
+        self.recompute_flow_cache();
         self.status = "语法已追加到脚本末尾".to_string();
     }
 
@@ -616,6 +636,7 @@ impl EditorApp {
         }
         let replaced = current.replace(target, replacement);
         self.editor_content = text_editor::Content::with_text(&replaced);
+        self.recompute_flow_cache();
         true
     }
 
@@ -703,6 +724,7 @@ impl EditorApp {
         self.file_name_input = "untitled.akrs".to_string();
         self.engine = None;
         self.diagnostics.clear();
+        self.recompute_flow_cache();
         self.show_welcome = false;
         self.status = "新文件（未保存）".to_string();
     }
@@ -765,6 +787,7 @@ impl EditorApp {
                 self.editor_content = text_editor::Content::with_text(&content);
                 self.current_file = Some(path.to_path_buf());
                 self.file_name_input = name.clone();
+                self.recompute_flow_cache();
                 // 如果文件在 work_dir 下，刷新文件列表并切换工作目录到文件所在目录
                 if let Some(parent) = path.parent() {
                     self.work_dir = parent.to_path_buf();
@@ -806,6 +829,7 @@ impl EditorApp {
         self.file_name_input = "sample.akrs".to_string();
         self.engine = None;
         self.diagnostics.clear();
+        self.recompute_flow_cache();
         self.show_welcome = false;
         self.status = "已加载示例剧本".to_string();
     }
@@ -1477,13 +1501,14 @@ impl EditorApp {
     // -- 资源扫描 ---------------------------------------------------------
 
     /// 扫描 `assets/characters/` 下的 PNG 立绘（不含扩展名）。
-    fn scan_sprites(&mut self) {
+    fn scan_sprites(&mut self, force: bool) {
         // 优先用 project_dir（项目根），回退到 work_dir。
         // 打开单个文件时 work_dir 会被覆盖为文件所在目录（如 scripts/），
         // 此时 assets/ 在项目根而非 work_dir 下。
         let base = self.project_dir.as_ref().unwrap_or(&self.work_dir);
         let dir = base.join("assets").join("characters");
-        if self.sprite_preview.scanned_dir.as_ref() == Some(&dir) {
+        // force=true 时跳过缓存守卫强制重扫（刷新按钮使用）。
+        if !force && self.sprite_preview.scanned_dir.as_ref() == Some(&dir) {
             return;
         }
         self.sprite_preview.available.clear();
@@ -1506,10 +1531,10 @@ impl EditorApp {
     }
 
     /// 扫描 `assets/bg/` 下的 PNG 背景（不含扩展名）。
-    fn scan_bgs(&mut self) {
+    fn scan_bgs(&mut self, force: bool) {
         let base = self.project_dir.as_ref().unwrap_or(&self.work_dir);
         let dir = base.join("assets").join("bg");
-        if self.bg_preview.scanned_dir.as_ref() == Some(&dir) {
+        if !force && self.bg_preview.scanned_dir.as_ref() == Some(&dir) {
             return;
         }
         self.bg_preview.available.clear();
@@ -1532,10 +1557,10 @@ impl EditorApp {
     }
 
     /// 扫描 `assets/music/` 下的音乐文件（不含扩展名）。
-    fn scan_music(&mut self) {
+    fn scan_music(&mut self, force: bool) {
         let base = self.project_dir.as_ref().unwrap_or(&self.work_dir);
         let dir = base.join("assets").join("music");
-        if self.music_preview.scanned_dir.as_ref() == Some(&dir) {
+        if !force && self.music_preview.scanned_dir.as_ref() == Some(&dir) {
             return;
         }
         self.music_preview.available.clear();
@@ -1623,8 +1648,8 @@ impl EditorApp {
             if name.is_empty() {
                 return;
             }
-            // 确保立绘列表已扫描
-            self.scan_sprites();
+            // 确保立绘列表已扫描（用缓存，不强制重扫）
+            self.scan_sprites(false);
             let matched = self.sprite_preview.available.iter()
                 .find(|s| *s == &name || s.starts_with(&format!("{}.", name)))
                 .cloned();
@@ -1674,7 +1699,7 @@ impl EditorApp {
                     if res_name.is_empty() {
                         return;
                     }
-                    self.scan_bgs();
+                    self.scan_bgs(false);
                     let matched = self.bg_preview.available.iter()
                         .find(|s| *s == &res_name || s.starts_with(&format!("{}.", res_name)))
                         .cloned();
@@ -1691,7 +1716,7 @@ impl EditorApp {
                     if res_name.is_empty() {
                         return;
                     }
-                    self.scan_music();
+                    self.scan_music(false);
                     let matched = self.music_preview.available.iter()
                         .find(|s| *s == &res_name || s.starts_with(&format!("{}.", res_name)))
                         .cloned();
@@ -2118,7 +2143,13 @@ impl EditorApp {
                 if self.ctrl_held && matches!(action, text_editor::Action::Move(_)) {
                     self.jump_to_preview_from_cursor();
                 } else {
+                    // 仅在编辑类 action（Insert/Delete/Enter/Backspace/Paste）后重算
+                    // flow 缓存，纯光标移动（Move/Select/Click）不触发重算。
+                    let is_edit = action.is_edit();
                     self.editor_content.perform(action);
+                    if is_edit {
+                        self.recompute_flow_cache();
+                    }
                 }
             }
             Message::ModifiersChanged(ctrl) => {
@@ -2253,9 +2284,9 @@ impl EditorApp {
             Message::PreviewTabChanged(tab) => {
                 self.preview_tab = tab;
                 match tab {
-                    PreviewTab::Sprite => self.scan_sprites(),
-                    PreviewTab::Background => self.scan_bgs(),
-                    PreviewTab::Music => self.scan_music(),
+                    PreviewTab::Sprite => self.scan_sprites(false),
+                    PreviewTab::Background => self.scan_bgs(false),
+                    PreviewTab::Music => self.scan_music(false),
                     _ => {}
                 }
             }
@@ -2340,9 +2371,9 @@ impl EditorApp {
                 }
                 self.show_project_warning = false;
             }
-            Message::ScanSprites => self.scan_sprites(),
-            Message::ScanBgs => self.scan_bgs(),
-            Message::ScanMusic => self.scan_music(),
+            Message::ScanSprites => self.scan_sprites(true),
+            Message::ScanBgs => self.scan_bgs(true),
+            Message::ScanMusic => self.scan_music(true),
             Message::SpriteSelected(s) => {
                 self.sprite_preview.selected = s.clone();
                 self.load_sprite_texture(&s);
@@ -2539,6 +2570,7 @@ impl EditorApp {
             Message::BlueprintSyncToScript => {
                 let text = self.blueprint.to_script();
                 self.editor_content = text_editor::Content::with_text(&text);
+                self.recompute_flow_cache();
                 self.status = "已将蓝图写回脚本".to_string();
             }
             Message::BlueprintZoomIn => {
@@ -3810,8 +3842,9 @@ impl EditorApp {
             .into();
         }
 
-        let marks = scan_flow_marks(&content);
-        let pairs = compute_flow_pairs(&marks);
+        // 读取缓存（在 update 中文本变更时已重算），避免每帧全文扫描。
+        let marks = &self.flow_marks;
+        let pairs = &self.flow_pairs;
         let lines: Vec<&str> = content.split('\n').collect();
         let indent_w: f32 = 16.0;
 
