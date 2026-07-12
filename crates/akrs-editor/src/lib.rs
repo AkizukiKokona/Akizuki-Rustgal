@@ -967,6 +967,18 @@ pub struct EditorApp {
     zoom_input: String,
     /// 上次保存/加载时的内容快照，用于判断是否有未保存修改。
     saved_content: String,
+    /// 撤销历史栈（旧→新），每项是某次提交时的编辑器内容快照。
+    undo_stack: Vec<String>,
+    /// 重做历史栈（旧→新），撤销后可重做的内容快照。
+    redo_stack: Vec<String>,
+    /// 上一次提交到历史栈的编辑器内容（用于检测变化）。
+    last_committed: String,
+    /// 当前是否有未提交到历史栈的编辑（连续输入合并用）。
+    edit_dirty: bool,
+    /// 最后一次编辑（内容变化）的时间戳（秒），用于空闲合并提交。
+    last_edit_time: f64,
+    /// 撤销/重做正在执行中，本帧跳过变化检测，避免把 undo/redo 本身又压入历史。
+    undo_redo_in_progress: bool,
     /// 是否正在等待退出确认对话框（点叉退出且有未保存修改时置 true）。
     pending_exit: bool,
     /// 用户已在对话框确认退出（保存或放弃），on_close_event 据此放行关闭。
@@ -1192,6 +1204,12 @@ impl Default for EditorApp {
             drag_template: None,
             zoom_input: "100".to_string(),
             saved_content: String::new(),
+            undo_stack: Vec::new(),
+            redo_stack: Vec::new(),
+            last_committed: String::new(),
+            edit_dirty: false,
+            last_edit_time: 0.0,
+            undo_redo_in_progress: false,
             pending_exit: false,
             force_close: false,
         };
@@ -1202,6 +1220,68 @@ impl Default for EditorApp {
 
 impl EditorApp {
     // -- 辅助方法：插入语法 -----------------------------------------------
+
+    // -- 辅助方法：撤销 / 重做 -----------------------------------------------
+
+    /// 历史栈最大容量，超出丢弃最旧项。
+    const UNDO_LIMIT: usize = 100;
+    /// 空闲合并提交阈值（秒）：用户停止输入超过此时长后，把当前内容提交到撤销栈。
+    const UNDO_IDLE_SECS: f64 = 0.6;
+
+    /// 把当前编辑器内容提交到撤销历史栈。
+    /// 仅当内容相对上次提交有变化时才入栈，并清空重做栈（新编辑使重做失效）。
+    /// 容量超过 `UNDO_LIMIT` 时丢弃最旧项。
+    fn commit_history(&mut self) {
+        if self.editor_content != self.last_committed {
+            self.undo_stack.push(self.last_committed.clone());
+            if self.undo_stack.len() > Self::UNDO_LIMIT {
+                self.undo_stack.remove(0);
+            }
+            self.redo_stack.clear();
+            self.last_committed = self.editor_content.clone();
+        }
+        self.edit_dirty = false;
+    }
+
+    /// 撤销：先把当前未提交编辑入栈，再弹出上一个历史状态。
+    fn undo(&mut self) {
+        // 先提交当前编辑，确保连续输入能被撤销到上一个稳定状态。
+        self.commit_history();
+        if let Some(prev) = self.undo_stack.pop() {
+            self.redo_stack.push(self.last_committed.clone());
+            self.editor_content = prev.clone();
+            self.last_committed = prev;
+            self.undo_redo_in_progress = true;
+            self.status = "已撤销".to_string();
+        } else {
+            self.status = "没有可撤销的操作".to_string();
+        }
+    }
+
+    /// 重做：把当前内容压回撤销栈，弹出重做栈顶恢复。
+    fn redo(&mut self) {
+        if let Some(next) = self.redo_stack.pop() {
+            self.undo_stack.push(self.last_committed.clone());
+            if self.undo_stack.len() > Self::UNDO_LIMIT {
+                self.undo_stack.remove(0);
+            }
+            self.editor_content = next.clone();
+            self.last_committed = next;
+            self.undo_redo_in_progress = true;
+            self.status = "已重做".to_string();
+        } else {
+            self.status = "没有可重做的操作".to_string();
+        }
+    }
+
+    /// 加载/新建/打开文件等整体内容替换时重置历史基线：
+    /// 清空撤销与重做栈，把 last_committed 同步为新内容，避免跨文件撤销穿越。
+    fn reset_history(&mut self) {
+        self.undo_stack.clear();
+        self.redo_stack.clear();
+        self.last_committed = self.editor_content.clone();
+        self.edit_dirty = false;
+    }
 
     // -- 辅助方法：查找并替换 -----------------------------------------------
 
@@ -1246,6 +1326,7 @@ impl EditorApp {
         self.engine = None;
         self.diagnostics.clear();
         self.show_welcome = false;
+        self.reset_history();
         self.status = "新文件（未保存）".to_string();
     }
 
@@ -1316,6 +1397,7 @@ impl EditorApp {
                 self.engine = None;
                 self.diagnostics.clear();
                 self.show_welcome = false;
+                self.reset_history();
                 self.status = format!("已打开 {}", name);
             }
             Err(e) => {
@@ -1345,6 +1427,7 @@ impl EditorApp {
         self.engine = None;
         self.diagnostics.clear();
         self.show_welcome = false;
+        self.reset_history();
         self.status = "已加载示例剧本".to_string();
     }
 
@@ -2259,8 +2342,29 @@ impl EditorApp {
                             }
                         }
                     }
+            }
+        });
+
+        // ---- 撤销/重做历史追踪 ----
+        // 检测 editor_content 相对 last_committed 的变化：
+        // - 有变化：标记 dirty 并刷新 last_edit_time（连续输入会不断刷新，从而合并为一条历史）。
+        // - 空闲超过 UNDO_IDLE_SECS：自动提交，把上一个稳定状态压入撤销栈。
+        // undo/redo 本身修改了 editor_content，本帧通过 undo_redo_in_progress 跳过检测，
+        // 并在帧末复位该标志（下一帧恢复正常追踪）。
+        let now = ui.input(|i| i.time);
+        if self.undo_redo_in_progress {
+            self.undo_redo_in_progress = false;
+        } else {
+            if self.editor_content != self.last_committed {
+                if !self.edit_dirty {
+                    self.edit_dirty = true;
                 }
-            });
+                self.last_edit_time = now;
+            }
+            if self.edit_dirty && now - self.last_edit_time > Self::UNDO_IDLE_SECS {
+                self.commit_history();
+            }
+        }
     }
 
     /// 切换蓝图模式与文本模式。
@@ -4390,11 +4494,26 @@ impl eframe::App for EditorApp {
             ins4: bool,
             toggle_blueprint: bool,
             toggle_translation: bool,
+            undo: bool,
+            redo: bool,
         }
         let sc = ctx.input(|i| {
             let mut f = ShortcutFlags::default();
             for event in &i.events {
                 if let egui::Event::Key { key, pressed: true, modifiers, .. } = event {
+                    // 撤销/重做单独处理：Ctrl+Z 撤销，Ctrl+Y 或 Ctrl+Shift+Z 重做。
+                    if modifiers.ctrl && !modifiers.shift && *key == egui::Key::Z {
+                        f.undo = true;
+                        continue;
+                    }
+                    if modifiers.ctrl
+                        && ((*key == egui::Key::Y && !modifiers.shift)
+                            || (*key == egui::Key::Z && modifiers.shift))
+                    {
+                        f.redo = true;
+                        continue;
+                    }
+                    // 其余快捷键要求 Ctrl 按下且无 Shift。
                     if !modifiers.ctrl || modifiers.shift {
                         continue;
                     }
@@ -4416,6 +4535,12 @@ impl eframe::App for EditorApp {
             }
             f
         });
+        if sc.undo {
+            self.undo();
+        }
+        if sc.redo {
+            self.redo();
+        }
         if sc.new_file {
             self.new_file();
         }
@@ -4818,6 +4943,8 @@ impl eframe::App for EditorApp {
                                 ("Ctrl+O", "打开文件"),
                                 ("Ctrl+S", "保存文件"),
                                 ("Ctrl+R", "运行剧本"),
+                                ("Ctrl+Z", "撤销编辑"),
+                                ("Ctrl+Y / Ctrl+Shift+Z", "重做编辑"),
                                 ("Ctrl+H", "显示此帮助窗口"),
                             ];
                             for (key, desc) in &file_shortcuts {
