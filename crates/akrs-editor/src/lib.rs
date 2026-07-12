@@ -1468,11 +1468,12 @@ impl EditorApp {
             recent_col = recent_col.push(item);
         }
 
+        // scrollable 的内容不能在垂直滚动方向 Fill（iced 0.13 断言），
+        // 改为 Shrink（默认），让内容自然展开，scrollable 负责滚动。
         let content = column![file_input, file_list_col, recent_col]
             .spacing(6)
             .padding(8)
-            .width(Length::Fill)
-            .height(Length::Fill);
+            .width(Length::Fill);
 
         container(scrollable(content))
             .width(220)
