@@ -627,6 +627,53 @@ impl EditorApp {
         self.editor_content.text().matches(target).count()
     }
 
+    /// 查找下一个匹配并将光标移动到匹配位置（选中匹配文本）。
+    ///
+    /// 从当前光标位置之后开始搜索，若到文末未找到则环绕到文首继续搜索。
+    /// 通过组合 `DocumentStart` + `Down` + `Right` + `Select(Right)` 来到达
+    /// 目标位置并选中文本（iced 0.13 text_editor 无绝对定位 API）。
+    fn find_next_and_select(&mut self, target: &str) -> bool {
+        if target.is_empty() {
+            return false;
+        }
+        let text = self.editor_content.text().to_string();
+        let (cur_line, cur_col) = self.editor_content.cursor_position();
+        let cur_offset = line_col_to_offset(&text, cur_line, cur_col);
+
+        // 从当前光标的下一个字符开始搜索，避免重复匹配当前选中文本。
+        let search_from = cur_offset.saturating_add(1);
+        let next = text[search_from..]
+            .find(target)
+            .map(|p| p + search_from)
+            .or_else(|| text.find(target)); // 环绕搜索
+
+        let match_offset = match next {
+            Some(p) => p,
+            None => return false,
+        };
+
+        let (target_line, target_col) = offset_to_line_col(&text, match_offset);
+        let target_len = target.chars().count();
+
+        // 移动光标：先回到文档开头，再逐行下移、逐字右移到匹配起始位置。
+        self.editor_content
+            .perform(text_editor::Action::Move(text_editor::Motion::DocumentStart));
+        for _ in 0..target_line {
+            self.editor_content
+                .perform(text_editor::Action::Move(text_editor::Motion::Down));
+        }
+        for _ in 0..target_col {
+            self.editor_content
+                .perform(text_editor::Action::Move(text_editor::Motion::Right));
+        }
+        // 选中匹配文本：逐字向右扩展选区。
+        for _ in 0..target_len {
+            self.editor_content
+                .perform(text_editor::Action::Select(text_editor::Motion::Right));
+        }
+        true
+    }
+
     // -- 文件操作（全部可失败，不 panic）-----------------------------------
 
     /// 重新扫描 `work_dir` 中的 `.akrs` 文件。
@@ -2345,11 +2392,12 @@ impl EditorApp {
             }
             Message::FindReplaceReplacement(s) => self.find_replace_replacement = s,
             Message::FindNext => {
-                // 查找下一个：简单实现——统计命中数并在状态栏显示
+                // 查找下一个：移动光标到匹配位置并选中文本
                 let target = self.find_replace_target.clone();
-                let count = self.find_count(&target);
-                if count > 0 {
-                    self.status = format!("找到 {} 处「{}」", count, target);
+                let found = self.find_next_and_select(&target);
+                if found {
+                    let count = self.find_count(&target);
+                    self.status = format!("找到「{}」（共 {} 处）", target, count);
                 } else {
                     self.status = format!("未找到「{}」", target);
                 }
@@ -4724,6 +4772,45 @@ fn load_png_handle(path: &Path) -> Result<iced::widget::image::Handle, String> {
 // format_errors / phase_label 已移至 parse.rs 模块，此处通过 `use parse::{...}` 导入。
 // line_base_color / AkrsHighlighter / AkrsHighlightSettings /
 // akrs_highlight_to_format 已移至 highlight.rs 模块，此处通过 `use highlight::{...}` 导入。
+
+/// 将（行号, 字符列号）转换为字节偏移。
+///
+/// `cursor_position()` 返回的列号按 `char` 计数，本函数按 `char_indices` 同步
+/// 跟踪字节偏移与字符列号，确保返回值可直接用于 `str` 切片与 `find`。
+fn line_col_to_offset(text: &str, line: usize, col: usize) -> usize {
+    let mut current_line = 0usize;
+    let mut current_col = 0usize;
+    for (byte_idx, ch) in text.char_indices() {
+        if current_line == line && current_col == col {
+            return byte_idx;
+        }
+        if ch == '\n' {
+            current_line += 1;
+            current_col = 0;
+        } else {
+            current_col += 1;
+        }
+    }
+    text.len()
+}
+
+/// 将字节偏移转换为（行号, 字符列号）。
+fn offset_to_line_col(text: &str, offset: usize) -> (usize, usize) {
+    let mut line = 0usize;
+    let mut col = 0usize;
+    for (byte_idx, ch) in text.char_indices() {
+        if byte_idx >= offset {
+            break;
+        }
+        if ch == '\n' {
+            line += 1;
+            col = 0;
+        } else {
+            col += 1;
+        }
+    }
+    (line, col)
+}
 
 // ---------------------------------------------------------------------------
 // `=>` / `<=` 流程标记配对辅助
