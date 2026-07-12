@@ -2764,39 +2764,49 @@ impl EditorApp {
                 node.pos.y * zoom + pan.y + canvas_rect.min.y,
             );
             let rect = egui::Rect::from_min_size(screen_pos, size);
-            let header_color = BlueprintState::kind_color(node.kind);
+            let color = BlueprintState::kind_color(node.kind);
             let is_selected = bp.selected == Some(node.id);
 
-            // 节点背景
-            clipped.rect_filled(rect, 3.0 * zoom, egui::Color32::from_rgb(38, 38, 48));
-            // 标题栏
-            let header_h = 22.0 * zoom;
-            let header_rect =
-                egui::Rect::from_min_size(screen_pos, egui::Vec2::new(size.x, header_h));
-            clipped.rect_filled(header_rect, 3.0 * zoom, header_color);
-            // 选中边框
+            // 节点背景：半透明色填充（与积木卡片一致），圆角。
+            clipped.rect_filled(rect, 4.0 * zoom, color.linear_multiply(0.15));
+            // 彩色边框（节点本身的「方框」）。
+            clipped.rect_stroke(
+                rect,
+                4.0 * zoom,
+                egui::Stroke::new(1.5 * zoom, color),
+            );
+            // 选中时叠加黄色加粗边框。
             if is_selected {
                 clipped.rect_stroke(
                     rect,
-                    3.0 * zoom,
-                    egui::Stroke::new(2.0 * zoom, egui::Color32::from_rgb(255, 220, 80)),
+                    4.0 * zoom,
+                    egui::Stroke::new(2.5 * zoom, egui::Color32::from_rgb(255, 220, 80)),
                 );
             }
-            // 标题文字
+            // 左上色块标识类型（与积木卡片同款）。
+            let header_h = 22.0 * zoom;
+            let swatch_size = 10.0 * zoom;
+            let pad = 8.0 * zoom;
+            let swatch_rect = egui::Rect::from_min_size(
+                egui::pos2(screen_pos.x + pad, screen_pos.y + (header_h - swatch_size) * 0.5),
+                egui::Vec2::new(swatch_size, swatch_size),
+            );
+            clipped.rect_filled(swatch_rect, 2.0 * zoom, color);
+            // 标题文字：强调色，左对齐于色块右侧。
             let label = BlueprintState::node_label(&node.text, node.kind);
             clipped.text(
-                header_rect.center(),
-                egui::Align2::CENTER_CENTER,
+                egui::pos2(swatch_rect.right() + 6.0 * zoom, screen_pos.y + header_h * 0.5),
+                egui::Align2::LEFT_CENTER,
                 &label,
-                egui::FontId::proportional(12.0 * zoom),
-                egui::Color32::WHITE,
+                egui::FontId::proportional(13.0 * zoom),
+                color,
             );
             // 折叠注释时：若该积木吸附了注释，在标题栏右侧绘制注释标记，并支持悬停查看。
             if collapse {
                 let comments = bp.comments_for_node(node.id);
                 if !comments.is_empty() {
                     let badge_text = format!("注{}", comments.len());
-                    let badge_pos = egui::pos2(header_rect.right() - 4.0 * zoom, header_rect.center().y);
+                    let badge_pos = egui::pos2(rect.right() - pad, screen_pos.y + header_h * 0.5);
                     clipped.text(
                         badge_pos,
                         egui::Align2::RIGHT_CENTER,
@@ -2806,7 +2816,7 @@ impl EditorApp {
                     );
                     // 悬停显示注释全文（用不可见交互区域承载 tooltip）。
                     let badge_rect = egui::Rect::from_min_size(
-                        egui::pos2(header_rect.right() - 40.0 * zoom, header_rect.top()),
+                        egui::pos2(rect.right() - 40.0 * zoom, screen_pos.y),
                         egui::Vec2::new(40.0 * zoom, header_h),
                     );
                     let tooltip = comments.join("\n");
@@ -2839,14 +2849,14 @@ impl EditorApp {
                     .collect::<Vec<_>>()
                     .join("\n");
                 clipped.text(
-                    egui::pos2(screen_pos.x + 8.0 * zoom, screen_pos.y + 26.0 * zoom),
+                    egui::pos2(screen_pos.x + pad, screen_pos.y + header_h + 4.0 * zoom),
                     egui::Align2::LEFT_TOP,
                     &preview,
                     egui::FontId::monospace(11.0 * zoom),
                     egui::Color32::from_rgb(200, 210, 220),
                 );
             }
-            // 输入引脚（顶部中心）
+            // 输入引脚（顶部中心）——保留上下引脚用于连线。
             let in_pin = egui::pos2(rect.center().x, rect.top());
             clipped.circle_filled(in_pin, 5.0 * zoom, egui::Color32::from_rgb(100, 180, 255));
             clipped.circle_stroke(
