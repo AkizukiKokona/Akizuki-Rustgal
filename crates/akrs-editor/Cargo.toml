@@ -12,6 +12,9 @@ egui = { workspace = true }
 # 用于在编辑器中解码 PNG 立绘以供预览（不启动游戏进程）。
 # 复用 workspace 的 image 0.25，避免与 akrs-render 锁文件碎片化。
 image = { workspace = true }
+# serde / serde_json：用于编辑器设置（editor_settings.json）的序列化与反序列化。
+serde = { workspace = true }
+serde_json = { workspace = true }
 
 [build-dependencies]
 winres = "0.1"

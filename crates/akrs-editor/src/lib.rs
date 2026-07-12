@@ -118,6 +118,19 @@ enum PreviewTab {
     Blocks,
 }
 
+/// 左栏（资源文件系统分类）的标签页。
+#[derive(PartialEq, Clone, Copy)]
+enum LeftPanelTab {
+    /// 脚本文件（`.akrs`，保持原有逻辑）。
+    Script,
+    /// 立绘资源（`assets/characters/` 下的 PNG）。
+    Sprite,
+    /// 背景资源（`assets/bg/` 下的 PNG/JPG/JPEG）。
+    Background,
+    /// 音乐资源（`assets/music/` 下的 OGG/MP3/WAV）。
+    Music,
+}
+
 /// 立绘预览状态：允许作者在不启动游戏的情况下调整立绘位置与大小，
 /// 并生成对应的 `.akrs` 语法。
 ///
@@ -555,6 +568,59 @@ impl BlueprintState {
         self.links.push(BlueprintLink { from, to });
     }
 
+    /// 沿入线回溯，收集上游所有节点（深度优先）。
+    /// 返回的引用借用自 `self.nodes`，调用方需注意借用生命周期。
+    fn upstream_nodes(&self, start_id: usize) -> Vec<&BlueprintNode> {
+        let mut result = Vec::new();
+        let mut visited = std::collections::HashSet::new();
+        let mut stack = vec![start_id];
+        while let Some(id) = stack.pop() {
+            if !visited.insert(id) {
+                continue;
+            }
+            // 找入线：to == id 的 link 的 from 即上游节点
+            for link in &self.links {
+                if link.to == id {
+                    if let Some(n) = self.nodes.iter().find(|n| n.id == link.from) {
+                        result.push(n);
+                        stack.push(n.id);
+                    }
+                }
+            }
+        }
+        result
+    }
+
+    /// 从上游节点中提取立绘角色名（从 `+` 开头的立绘上场节点）。
+    /// 返回 (角色名列表, 是否有直接连接的上游)。
+    /// 角色名列表为 owned，调用后不持有 self 的借用。
+    fn sprite_names_from_upstream(&self, start_id: usize) -> (Vec<String>, bool) {
+        let upstream = self.upstream_nodes(start_id);
+        let has_direct = !upstream.is_empty();
+        let names: Vec<String> = upstream
+            .iter()
+            .filter(|n| n.kind == NodeKind::Direction && n.text.trim_start().starts_with('+'))
+            .filter_map(|n| {
+                // + 心夏 at 0.5,1.0 size 1.0 → 心夏
+                let t = n.text.trim_start().trim_start_matches('+').trim();
+                t.split_whitespace().next().map(|s| s.to_string())
+            })
+            .collect();
+        (names, has_direct)
+    }
+
+    /// 从全画布所有立绘上场节点（`+` 开头）提取角色名。
+    fn all_sprite_names(&self) -> Vec<String> {
+        self.nodes
+            .iter()
+            .filter(|n| n.kind == NodeKind::Direction && n.text.trim_start().starts_with('+'))
+            .filter_map(|n| {
+                let t = n.text.trim_start().trim_start_matches('+').trim();
+                t.split_whitespace().next().map(|s| s.to_string())
+            })
+            .collect()
+    }
+
     /// 根据文本推断节点类型。
     fn detect_kind(text: &str) -> NodeKind {
         let t = text.trim_start();
@@ -770,6 +836,109 @@ impl BlueprintState {
             egui::pos2(to_pin.x, channel_y),
             to_pin,
         ]
+    }
+
+    /// 判断两个节点是否在不同章节（以 NodeKind::Section 节点为分界）。
+    /// 章节节点本身属于"新章节开始"，其前驱属于上一章节。
+    /// 用于决定连线用正交折线（章节内）还是贝塞尔曲线（跨章节）。
+    fn is_cross_section_link(&self, from_id: usize, to_id: usize) -> bool {
+        // 找到 from 和 to 在 nodes 中的索引
+        let from_idx = self.nodes.iter().position(|n| n.id == from_id);
+        let to_idx = self.nodes.iter().position(|n| n.id == to_id);
+        match (from_idx, to_idx) {
+            (Some(fi), Some(ti)) => {
+                // 检查 from 和 to 之间是否隔了一个 Section 节点：
+                // 若两者不相邻，则看中间是否有 Section 节点；
+                // 若相邻，则当 to 本身是 Section 节点（且 from 在前）时算跨章节。
+                let lo = fi.min(ti);
+                let hi = fi.max(ti);
+                if hi > lo + 1 {
+                    self.nodes[lo + 1..hi]
+                        .iter()
+                        .any(|n| n.kind == NodeKind::Section)
+                } else {
+                    self.nodes[ti].kind == NodeKind::Section && fi < ti
+                }
+            }
+            _ => false,
+        }
+    }
+
+    /// 三次贝塞尔曲线上的点（t∈[0,1]）。
+    fn bezier_point(
+        p0: egui::Pos2,
+        p1: egui::Pos2,
+        p2: egui::Pos2,
+        p3: egui::Pos2,
+        t: f32,
+    ) -> egui::Pos2 {
+        let u = 1.0 - t;
+        let tt = t * t;
+        let uu = u * u;
+        // egui 中 Pos2 未实现 Add<Pos2>（仅 Pos2 + Vec2），转 Vec2 加权求和后再转回
+        (p0.to_vec2() * (uu * u)
+            + p1.to_vec2() * (3.0 * uu * t)
+            + p2.to_vec2() * (3.0 * u * tt)
+            + p3.to_vec2() * (tt * t))
+            .to_pos2()
+    }
+
+    /// 计算跨章节连线的贝塞尔曲线路径，绕开所有节点矩形。
+    /// 返回 4 个点（起点、2 个控制点、终点），用于 CubicBezierShape。
+    /// 坐标空间：逻辑坐标（不含 zoom/pan）。仅在首尾引脚处允许接触节点，
+    /// 曲线中段必须不穿过任何障碍节点矩形（采样 100 点检测）。
+    fn route_bezier_around(
+        &self,
+        from_pin: egui::Pos2, // 逻辑坐标
+        to_pin: egui::Pos2,   // 逻辑坐标
+        skip_ids: &[usize],   // 排除的节点ID（源和目标节点本身）
+    ) -> [egui::Pos2; 4] {
+        // 默认控制点：从 from 向下延伸，到 to 向上延伸（S 形曲线），
+        // 走向与章节内正交折线不同，避免视觉重合。
+        let vertical_offset = ((to_pin.y - from_pin.y).abs() * 0.5).max(50.0);
+        let mut ctrl1 = egui::pos2(from_pin.x, from_pin.y + vertical_offset);
+        let mut ctrl2 = egui::pos2(to_pin.x, to_pin.y - vertical_offset);
+
+        // 收集障碍节点矩形（逻辑坐标）：排除源/目标节点；
+        // 折叠注释时注释节点不参与阻挡检测。
+        let obstacles: Vec<egui::Rect> = self
+            .nodes
+            .iter()
+            .filter(|n| !skip_ids.contains(&n.id))
+            .filter(|n| !(self.collapse_comments && n.kind == NodeKind::Comment))
+            .map(|n| {
+                let size = BlueprintState::node_size(&n.text);
+                egui::Rect::from_min_size(n.pos, size)
+            })
+            .collect();
+
+        // 采样曲线上的点，检查是否穿过任何障碍矩形
+        let curve_intersects = |c1: egui::Pos2, c2: egui::Pos2| -> bool {
+            for t in (0..=100).map(|i| i as f32 / 100.0) {
+                let p = Self::bezier_point(from_pin, c1, c2, to_pin, t);
+                if obstacles.iter().any(|r| r.contains(p)) {
+                    return true;
+                }
+            }
+            false
+        };
+
+        // 若默认曲线穿过节点，逐步增大垂直偏移使曲线绕开（上限 500）
+        let mut offset = vertical_offset;
+        while curve_intersects(ctrl1, ctrl2) && offset < 500.0 {
+            offset += 50.0;
+            ctrl1 = egui::pos2(from_pin.x, from_pin.y + offset);
+            ctrl2 = egui::pos2(to_pin.x, to_pin.y - offset);
+        }
+
+        // 增大偏移仍然穿过时，让控制点向右侧偏移，使曲线绕到侧面
+        if curve_intersects(ctrl1, ctrl2) {
+            let side_offset = 100.0;
+            ctrl1 = egui::pos2(from_pin.x + side_offset, from_pin.y + offset);
+            ctrl2 = egui::pos2(to_pin.x + side_offset, to_pin.y - offset);
+        }
+
+        [from_pin, ctrl1, ctrl2, to_pin]
     }
 
     /// 返回节点的友好显示文本（去掉脚本前缀符号，不暴露代码语法）。
@@ -1395,6 +1564,89 @@ impl BlueprintLayoutDone {
 }
 
 // ---------------------------------------------------------------------------
+// 编辑器设置（持久化到 editor_settings.json）
+// ---------------------------------------------------------------------------
+
+/// 编辑器设置：持久化到编辑器数据目录的 `editor_settings.json`。
+///
+/// 包含启动行为与退出行为相关开关，以及上次打开的文件路径（用于启动时自动恢复）。
+#[derive(serde::Serialize, serde::Deserialize, Clone)]
+struct EditorSettings {
+    /// 进入编辑器默认打开上一次文件（默认 true）。
+    #[serde(default = "EditorSettings::default_true")]
+    open_last_file_on_startup: bool,
+    /// 退出时自动保存文件不询问（默认 false）。
+    #[serde(default)]
+    auto_save_on_exit: bool,
+    /// 进入编辑器自动启动蓝图模式（默认 true）。
+    #[serde(default = "EditorSettings::default_true")]
+    auto_blueprint_on_startup: bool,
+    /// 上次打开的文件规范化路径（用于启动时自动恢复），无则为 None。
+    #[serde(default)]
+    last_file: Option<String>,
+}
+
+impl EditorSettings {
+    /// serde 默认值辅助函数：返回 true。
+    fn default_true() -> bool {
+        true
+    }
+
+    /// 设置文件路径：`{数据目录}/akrs-editor/editor_settings.json`。
+    fn path() -> Option<PathBuf> {
+        dirs_data_dir().map(|d| d.join("akrs-editor").join("editor_settings.json"))
+    }
+
+    /// 从磁盘加载设置；文件缺失或解析失败时返回默认值。
+    fn load() -> Self {
+        let path = match Self::path() {
+            Some(p) => p,
+            None => return Self::default(),
+        };
+        std::fs::read_to_string(&path)
+            .ok()
+            .and_then(|s| serde_json::from_str(&s).ok())
+            .unwrap_or_default()
+    }
+
+    /// 将设置写入磁盘（覆盖式）。
+    fn save(&self) {
+        let path = match Self::path() {
+            Some(p) => p,
+            None => return,
+        };
+        if let Some(parent) = path.parent() {
+            let _ = std::fs::create_dir_all(parent);
+        }
+        if let Ok(json) = serde_json::to_string_pretty(self) {
+            let _ = std::fs::write(&path, json);
+        }
+    }
+
+    /// 记录上次打开的文件路径并立即持久化。
+    fn set_last_file(&mut self, path: &Path) {
+        let key = std::fs::canonicalize(path)
+            .map(|p| p.to_string_lossy().into_owned())
+            .unwrap_or_else(|_| path.to_string_lossy().into_owned());
+        if self.last_file.as_deref() != Some(key.as_str()) {
+            self.last_file = Some(key);
+            self.save();
+        }
+    }
+}
+
+impl Default for EditorSettings {
+    fn default() -> Self {
+        Self {
+            open_last_file_on_startup: true,
+            auto_save_on_exit: false,
+            auto_blueprint_on_startup: true,
+            last_file: None,
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
 // 编辑器应用状态
 // ---------------------------------------------------------------------------
 
@@ -1533,6 +1785,22 @@ pub struct EditorApp {
     pending_exit: bool,
     /// 用户已在对话框确认退出（保存或放弃），on_close_event 据此放行关闭。
     force_close: bool,
+    /// 左栏当前标签页（脚本 / 立绘 / 背景 / 音乐）。
+    left_panel_tab: LeftPanelTab,
+    /// 立绘资源文件列表（含扩展名，扫描自 `assets/characters/`）。
+    resource_sprites: Vec<String>,
+    /// 背景资源文件列表（含扩展名，扫描自 `assets/bg/`）。
+    resource_backgrounds: Vec<String>,
+    /// 音乐资源文件列表（含扩展名，扫描自 `assets/music/`）。
+    resource_musics: Vec<String>,
+    /// 双击左栏图片资源时触发的预览弹窗目标路径（`None` 表示未打开）。
+    resource_preview_path: Option<PathBuf>,
+    /// 资源预览弹窗的纹理缓存（与 `resource_preview_path` 对应，避免每帧重新解码）。
+    resource_preview_texture: Option<TextureHandle>,
+    /// 编辑器设置（持久化到 editor_settings.json）。
+    editor_settings: EditorSettings,
+    /// 是否显示「编辑器设置」弹窗。
+    show_editor_settings: bool,
 }
 
 /// 可翻译行的类型。
@@ -1704,6 +1972,7 @@ impl Default for EditorApp {
         let work_dir = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
         let recent_projects = RecentProjects::load();
         let dismissed_warnings = DismissedWarnings::load();
+        let editor_settings = EditorSettings::load();
         let mut app = Self {
             editor_content: String::new(),
             current_file: None,
@@ -1770,8 +2039,37 @@ impl Default for EditorApp {
             undo_redo_in_progress: false,
             pending_exit: false,
             force_close: false,
+            left_panel_tab: LeftPanelTab::Script,
+            resource_sprites: Vec::new(),
+            resource_backgrounds: Vec::new(),
+            resource_musics: Vec::new(),
+            resource_preview_path: None,
+            resource_preview_texture: None,
+            editor_settings,
+            show_editor_settings: false,
         };
         app.refresh_file_list();
+
+        // 启动行为应用：根据编辑器设置自动恢复上次文件并进入蓝图模式。
+        // open_last_file_on_startup：若启用且记录了上次文件路径且文件仍存在，则自动打开。
+        let mut opened_file = false;
+        if app.editor_settings.open_last_file_on_startup {
+            if let Some(last) = app.editor_settings.last_file.clone() {
+                let path = PathBuf::from(&last);
+                if path.exists() {
+                    app.open_file_path(&path);
+                    opened_file = app.current_file.is_some();
+                }
+            }
+        }
+        // auto_blueprint_on_startup：若启动时成功打开了文件且设置启用，则自动进入蓝图模式。
+        // toggle_blueprint_mode 内部会检测空内容并拒绝，所以仅在有内容时调用。
+        if opened_file && app.editor_settings.auto_blueprint_on_startup
+            && !app.editor_content.trim().is_empty()
+        {
+            app.toggle_blueprint_mode();
+        }
+
         app
     }
 }
@@ -1957,6 +2255,8 @@ impl EditorApp {
                 self.show_welcome = false;
                 self.reset_history();
                 self.status = format!("已打开 {}", name);
+                // 记录上次打开的文件路径，供下次启动时自动恢复。
+                self.editor_settings.set_last_file(path);
             }
             Err(e) => {
                 self.status = format!("打开失败：{}", e);
@@ -2005,6 +2305,8 @@ impl EditorApp {
         let path = self.work_dir.join(&name);
         match std::fs::write(&path, &self.editor_content) {
             Ok(()) => {
+                // 记录上次保存的文件路径，供下次启动时自动恢复。
+                self.editor_settings.set_last_file(&path);
                 self.current_file = Some(path);
                 self.file_name_input = name.clone();
                 self.saved_content = self.editor_content.clone();
@@ -3522,28 +3824,44 @@ impl EditorApp {
                 );
                 let to_pin_logic =
                     egui::pos2(to.pos.x + to_size_logic.x / 2.0, to.pos.y);
-                // 正交路由：绕开中间节点（排除源/目标节点本身）
-                let path = bp.route_link(from_pin_logic, to_pin_logic, &[from_id, to_id]);
                 // 逻辑坐标转屏幕坐标
-                let screen_path: Vec<egui::Pos2> = path
-                    .iter()
-                    .map(|p| {
-                        egui::pos2(
-                            p.x * zoom + pan.x + canvas_rect.min.x,
-                            p.y * zoom + pan.y + canvas_rect.min.y,
-                        )
-                    })
-                    .collect();
-                clipped.add(egui::epaint::PathShape {
-                    points: screen_path,
-                    closed: false,
-                    fill: egui::Color32::TRANSPARENT,
-                    stroke: egui::Stroke::new(
-                        2.0 * zoom,
-                        egui::Color32::from_rgb(120, 160, 220),
+                let to_screen = |p: egui::Pos2| {
+                    egui::pos2(
+                        p.x * zoom + pan.x + canvas_rect.min.x,
+                        p.y * zoom + pan.y + canvas_rect.min.y,
                     )
-                    .into(),
-                });
+                };
+                // 跨章节连线用贝塞尔曲线（绕开所有节点），章节内连线用正交折线 route_link
+                if bp.is_cross_section_link(from_id, to_id) {
+                    // 跨章节：贝塞尔曲线，笔触稍粗、色调略浅以区分章节内连线
+                    let [p0, p1, p2, p3] =
+                        bp.route_bezier_around(from_pin_logic, to_pin_logic, &[from_id, to_id]);
+                    clipped.add(egui::epaint::CubicBezierShape {
+                        points: [to_screen(p0), to_screen(p1), to_screen(p2), to_screen(p3)],
+                        closed: false,
+                        fill: egui::Color32::TRANSPARENT,
+                        stroke: egui::Stroke::new(
+                            2.5 * zoom,
+                            egui::Color32::from_rgb(140, 180, 235),
+                        )
+                        .into(),
+                    });
+                } else {
+                    // 章节内：正交折线 route_link（绕开中间节点，排除源/目标节点本身）
+                    let path = bp.route_link(from_pin_logic, to_pin_logic, &[from_id, to_id]);
+                    let screen_path: Vec<egui::Pos2> =
+                        path.iter().map(|p| to_screen(*p)).collect();
+                    clipped.add(egui::epaint::PathShape {
+                        points: screen_path,
+                        closed: false,
+                        fill: egui::Color32::TRANSPARENT,
+                        stroke: egui::Stroke::new(
+                            2.0 * zoom,
+                            egui::Color32::from_rgb(120, 160, 220),
+                        )
+                        .into(),
+                    });
+                }
             }
         }
 
@@ -3730,8 +4048,10 @@ impl EditorApp {
             );
         }
 
-        // ---- 就地编辑选中节点（双击进入，独立浮动面板编辑，按节点类型显示填空式编辑器）----
-        // 面板固定在画布右上角，不受节点尺寸限制；点击面板内部不会取消编辑。
+        // ---- 就地编辑选中节点（双击进入，按节点类型显示填空式编辑器）----
+        // 面板在节点附近就地显示：默认在节点右侧，空间不足时放左侧；
+        // 宽度按当前节点类型的最宽 ComboBox 选项自适应；底部超出画布时上移避让。
+        // 点击面板内部不会取消编辑。
         if let Some(edit_id) = self.blueprint.editing_node {
             // 切换编辑节点时（双击新节点 / 重新进入），从节点文本重新解析填充编辑状态
             if self.bp_edit_id != Some(edit_id) {
@@ -3740,12 +4060,21 @@ impl EditorApp {
                     self.bp_edit_id = Some(edit_id);
                 }
             }
-            // 检查节点是否仍存在
-            let node_exists = self.blueprint.nodes.iter().any(|n| n.id == edit_id);
-            if node_exists {
-                // 独立浮动编辑面板（画布右上角），不受节点尺寸限制
-                let panel_pos = egui::pos2(canvas_rect.right() - 260.0, canvas_rect.top() + 10.0);
-                let panel_width = 240.0;
+            // 获取节点位置与文本（拷贝/克隆，尽早结束对 self.blueprint 的借用，
+            // 以便后续在面板闭包内调用 &mut self 方法 bp_writeback 等）
+            let node_data = self
+                .blueprint
+                .nodes
+                .iter()
+                .find(|n| n.id == edit_id)
+                .map(|n| (n.pos, n.text.clone()));
+            if let Some((node_pos, node_text)) = node_data {
+                // 节点屏幕位置与尺寸（与节点绘制公式一致）
+                let node_size_screen = BlueprintState::node_size(&node_text) * zoom;
+                let node_screen_pos = egui::pos2(
+                    node_pos.x * zoom + pan.x + canvas_rect.min.x,
+                    node_pos.y * zoom + pan.y + canvas_rect.min.y,
+                );
                 // 准备资源列表（克隆避免借用冲突）
                 let sprites = self.sprite_preview.available.clone();
                 let bgs = self.bg_preview.available.clone();
@@ -3756,6 +4085,77 @@ impl EditorApp {
                     "slide_left", "slide_right", "slide_up", "slide_down",
                     "wipe_left", "wipe_right", "blur", "instant",
                 ];
+                // 立绘下场角色名推断：从上游节点提取（克隆为 owned 避免借用冲突）
+                // - upstream_names：沿入线回溯找到的立绘上场角色名
+                // - has_direct：是否有上游连接（用于不可用位置警告）
+                // - all_sprite_names_canvas：全画布所有立绘上场角色名（回退/标注在用）
+                let (upstream_names, has_direct) =
+                    self.blueprint.sprite_names_from_upstream(edit_id);
+                let all_sprite_names_canvas = self.blueprint.all_sprite_names();
+                // 面板宽度自适应：按当前节点类型会展示的 ComboBox 选项最宽项估算。
+                // 用 painter.layout_no_wrap 测量文本像素宽，加上下拉按钮与内边距余量，
+                // 限制在 [220, 360] 避免过窄或过宽。块作用域让 measure/借用提前结束。
+                let panel_width = {
+                    let font_id = egui::FontId::proportional(14.0);
+                    let measure = |txt: &str| {
+                        ui.painter()
+                            .layout_no_wrap(txt.to_string(), font_id.clone(), egui::Color32::WHITE)
+                            .size()
+                            .x
+                    };
+                    // 选出当前编辑分支会用到的候选项（与下方 match 中 ComboBox 选项一致）
+                    let candidates: Vec<String> = match self.bp_edit.kind {
+                        NodeKind::Direction => {
+                            let is_enter = self.bp_edit.text.trim_start().starts_with('+');
+                            if is_enter {
+                                sprites.clone()
+                            } else if !upstream_names.is_empty() {
+                                upstream_names.clone()
+                            } else {
+                                let mut v = all_sprite_names_canvas.clone();
+                                for s in &sprites {
+                                    if !v.contains(s) {
+                                        v.push(s.clone());
+                                    }
+                                }
+                                v
+                            }
+                        }
+                        NodeKind::Command => {
+                            let cmd: String = self
+                                .bp_edit
+                                .text
+                                .trim_start()
+                                .strip_prefix('@')
+                                .unwrap_or("")
+                                .trim_start()
+                                .chars()
+                                .take_while(|c| !c.is_whitespace())
+                                .collect();
+                            match cmd.as_str() {
+                                "bg" => {
+                                    let mut v = bgs.clone();
+                                    for t in transitions {
+                                        v.push(t.to_string());
+                                    }
+                                    v
+                                }
+                                "music" => musics.clone(),
+                                _ => Vec::new(),
+                            }
+                        }
+                        NodeKind::Flow | NodeKind::Visit => sections.clone(),
+                        _ => Vec::new(),
+                    };
+                    let mut content_w = 0.0f32;
+                    for c in &candidates {
+                        let w = measure(c);
+                        if w > content_w {
+                            content_w = w;
+                        }
+                    }
+                    (content_w + 56.0).clamp(220.0, 360.0)
+                };
                 // 面板内可用正文宽度（用于 ComboBox 宽度与 TextEdit desired_width）
                 let inner_w = panel_width - 16.0;
                 // 兜底编辑器用的 body_rect（仅用到宽度）
@@ -3763,6 +4163,25 @@ impl EditorApp {
                     egui::Pos2::ZERO,
                     egui::Vec2::new(inner_w, 80.0),
                 );
+                // 面板位置：默认在节点右侧；右侧空间不足则放左侧
+                let panel_height_est = 120.0; // 估算高度，用于边界避让
+                let right_space = canvas_rect.right() - (node_screen_pos.x + node_size_screen.x);
+                let panel_x = if right_space >= panel_width + 10.0 {
+                    node_screen_pos.x + node_size_screen.x + 10.0
+                } else {
+                    node_screen_pos.x - panel_width - 10.0
+                };
+                // 避让画布上下边界：面板底部超出则上移；上移后仍超出顶部则贴顶
+                let mut panel_y = node_screen_pos.y;
+                if panel_y + panel_height_est > canvas_rect.bottom() {
+                    panel_y = canvas_rect.bottom() - panel_height_est - 10.0;
+                }
+                if panel_y < canvas_rect.top() {
+                    panel_y = canvas_rect.top() + 10.0;
+                }
+                // 左侧不要溢出画布
+                let panel_x = panel_x.max(canvas_rect.left() + 10.0);
+                let panel_pos = egui::pos2(panel_x, panel_y);
                 let panel_response = egui::Area::new(egui::Id::new("bp_edit_panel"))
                     .order(egui::Order::Foreground)
                     .fixed_pos(panel_pos)
@@ -3772,8 +4191,7 @@ impl EditorApp {
                                 ui.set_min_width(panel_width);
                                 ui.set_max_width(panel_width);
                                 ui.vertical(|ui| {
-                                    ui.label(egui::RichText::new("编辑节点").strong());
-                                    ui.separator();
+                                    // 去掉重复的"编辑节点"小标题（节点标题栏已有）
                                     match self.bp_edit.kind {
                                 NodeKind::Direction => {
                                     let is_enter = self.bp_edit.text.trim_start().starts_with('+');
@@ -3789,10 +4207,16 @@ impl EditorApp {
                                             })
                                             .show_ui(ui, |ui| {
                                                 for s in &sprites {
+                                                    // 标注已在画布上使用的立绘
+                                                    let label = if all_sprite_names_canvas.contains(s) {
+                                                        format!("{}（在用）", s)
+                                                    } else {
+                                                        s.clone()
+                                                    };
                                                     ui.selectable_value(
                                                         &mut self.bp_edit.sprite_name,
                                                         s.clone(),
-                                                        s,
+                                                        label,
                                                     );
                                                 }
                                             });
@@ -3827,7 +4251,30 @@ impl EditorApp {
                                             }
                                         });
                                     } else {
-                                        // 立绘下场：角色名（无小标题）
+                                        // 立绘下场：角色名从上游推断（无小标题）
+                                        // 上游找到立绘上场→用上游角色名；
+                                        // 否则回退全画布角色名 + 资源文件列表
+                                        let candidates: Vec<String> = if !upstream_names.is_empty() {
+                                            upstream_names.clone()
+                                        } else {
+                                            let mut v = all_sprite_names_canvas.clone();
+                                            for s in &sprites {
+                                                if !v.contains(s) {
+                                                    v.push(s.clone());
+                                                }
+                                            }
+                                            v
+                                        };
+                                        // 上游有连接但未找到立绘上场：不可用位置警告 + 断开按钮
+                                        if has_direct && upstream_names.is_empty() {
+                                            ui.label(
+                                                egui::RichText::new("警告：上游节点未找到立绘上场，请检查连线")
+                                                    .color(egui::Color32::from_rgb(255, 150, 100)),
+                                            );
+                                            if ui.button("断开入线连接").clicked() {
+                                                self.blueprint.links.retain(|l| l.to != edit_id);
+                                            }
+                                        }
                                         let before = self.bp_edit.sprite_name.clone();
                                         egui::ComboBox::from_id_salt("bp_edit_sprite_exit")
                                             .width(inner_w)
@@ -3837,11 +4284,11 @@ impl EditorApp {
                                                 self.bp_edit.sprite_name.as_str()
                                             })
                                             .show_ui(ui, |ui| {
-                                                for s in &sprites {
+                                                for name in &candidates {
                                                     ui.selectable_value(
                                                         &mut self.bp_edit.sprite_name,
-                                                        s.clone(),
-                                                        s,
+                                                        name.clone(),
+                                                        name,
                                                     );
                                                 }
                                             });
@@ -4752,6 +5199,100 @@ impl EditorApp {
             ui.colored_label(
                 egui::Color32::from_rgb(255, 150, 150),
                 "故事已结束。",
+            );
+        }
+    }
+
+    /// 渲染左栏资源文件列表（立绘 / 背景 / 音乐通用）。
+    ///
+    /// `dir_name` 是 `assets/` 下的子目录名（`characters` / `bg` / `music`），
+    /// `extensions` 是允许的扩展名列表（小写比较，不区分大小写匹配）。
+    /// 每帧重新扫描目录以反映最新内容；底部提供「上传资源」按钮（暂以状态栏
+    /// 提示引导用户手动复制文件，避免引入新的原生对话框依赖）。双击图片资源
+    /// 在弹窗中预览，双击音乐资源调用系统文件管理器打开所在目录。
+    fn show_resource_list(&mut self, ui: &mut egui::Ui, dir_name: &str, extensions: &[&str]) {
+        // 扫描 assets/{dir_name}/ 目录，按扩展名过滤。
+        let dir = self.project_root().join("assets").join(dir_name);
+        let mut names: Vec<String> = Vec::new();
+        if let Ok(entries) = std::fs::read_dir(&dir) {
+            names = entries
+                .filter_map(|e| e.ok())
+                .filter_map(|e| {
+                    let p = e.path();
+                    if p
+                        .extension()
+                        .is_some_and(|ext| extensions.iter().any(|x| ext.eq_ignore_ascii_case(x)))
+                    {
+                        p.file_name().map(|n| n.to_string_lossy().into_owned())
+                    } else {
+                        None
+                    }
+                })
+                .collect();
+            names.sort();
+        }
+
+        // 把扫描结果回写到对应字段（便于外部读取，此处用 match 分派避免
+        // `&mut self` 与字段 `&mut` 借用冲突）。
+        match dir_name {
+            "characters" => self.resource_sprites = names.clone(),
+            "bg" => self.resource_backgrounds = names.clone(),
+            "music" => self.resource_musics = names.clone(),
+            _ => {}
+        }
+
+        ui.heading(dir_name);
+        ui.label(format!("目录：{}", dir.display()));
+        ui.separator();
+
+        // 文件列表
+        egui::ScrollArea::vertical().show(ui, |ui| {
+            if names.is_empty() {
+                ui.label("（无资源文件）");
+            }
+            for name in &names {
+                let resp = ui.selectable_label(false, name.as_str());
+                if resp.double_clicked() {
+                    let full_path = dir.join(name);
+                    if dir_name == "music" {
+                        // 双击音乐：在系统文件管理器中打开所在目录（选中文件）。
+                        #[cfg(target_os = "linux")]
+                        {
+                            let _ = std::process::Command::new("xdg-open")
+                                .arg(&full_path)
+                                .spawn();
+                        }
+                        #[cfg(target_os = "windows")]
+                        {
+                            let _ = std::process::Command::new("explorer")
+                                .arg("/select,")
+                                .arg(&full_path)
+                                .spawn();
+                        }
+                        #[cfg(target_os = "macos")]
+                        {
+                            let _ = std::process::Command::new("open")
+                                .arg("-R")
+                                .arg(&full_path)
+                                .spawn();
+                        }
+                        self.status = format!("在系统中打开：{}", name);
+                    } else {
+                        // 双击图片：弹出预览窗口（清空纹理缓存以触发重新解码）。
+                        self.resource_preview_path = Some(full_path);
+                        self.resource_preview_texture = None;
+                    }
+                }
+            }
+        });
+
+        ui.separator();
+        // 上传资源按钮：为避免引入 rfd 等新依赖，暂以状态栏提示引导用户
+        // 手动复制文件到对应资源目录，下次刷新（重新进入标签页）即可看到。
+        if ui.button("上传资源").clicked() {
+            self.status = format!(
+                "请手动复制文件到 {} 目录后重新切到此标签页以刷新列表",
+                dir.display()
             );
         }
     }
@@ -5715,8 +6256,18 @@ impl eframe::App for EditorApp {
         // eframe 0.29 移除了 on_close_event 回调，改用 viewport close_requested 事件。
         if ctx.input(|i| i.viewport().close_requested()) {
             if !self.force_close && self.is_dirty() {
-                self.pending_exit = true;
-                ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
+                if self.editor_settings.auto_save_on_exit {
+                    // 自动保存模式：尝试保存后放行关闭；保存失败则回退到确认对话框，
+                    // 避免静默丢失用户修改。
+                    self.save_file();
+                    if self.is_dirty() {
+                        self.pending_exit = true;
+                        ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
+                    }
+                } else {
+                    self.pending_exit = true;
+                    ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
+                }
             }
         }
 
@@ -5883,124 +6434,8 @@ impl eframe::App for EditorApp {
 
         // ---- 顶部工具栏 --------------------------------------------------
         egui::TopBottomPanel::top("toolbar").show(ctx, |ui| {
-            ui.horizontal_wrapped(|ui| {
-                if ui.button("打开项目").clicked() {
-                    self.open_dir_picker();
-                }
-                if ui.button("项目设置").clicked() {
-                    self.show_project_settings = true;
-                }
-                ui.separator();
-                if ui.button("新建").on_hover_text("快捷键：Ctrl+N").clicked() {
-                    self.new_file();
-                }
-                if ui.button("打开").on_hover_text("快捷键：Ctrl+O").clicked() {
-                    self.open_file_picker(FilePickerMode::Open);
-                }
-                // 保存：未打开/无内容剧本时禁用（无内容可保存）。
-                if ui.add_enabled(!self.editor_content.trim().is_empty(), egui::Button::new("保存"))
-                    .on_hover_text("快捷键：Ctrl+S")
-                    .clicked()
-                {
-                    self.save_file();
-                }
-                ui.separator();
-                // 快速插入语法按钮（收进下拉菜单，节省工具栏空间）
-                // 蓝图模式下点击直接添加节点到画布；文本模式下追加到脚本末尾。
-                // 无剧本内容时禁用（与蓝图模式按钮守卫一致）。
-                let insert_label = if self.blueprint_mode { "插入节点" } else { "插入语法" };
-                let can_edit = !self.editor_content.trim().is_empty() || self.blueprint_mode;
-                ui.add_enabled_ui(can_edit, |ui| {
-                ui.menu_button(insert_label, |ui| {
-                    let insert_buttons = [
-                        ("立绘上场", "+ 角色", "立绘上场（0.5秒淡入）(Ctrl+1)"),
-                        ("立绘下场", "- 角色", "立绘下场（0.5秒淡出）(Ctrl+2)"),
-                        ("差分更换立绘", "+ 角色 (新pose) swap", "差分更换立绘（仅换pose，无过渡，位置/大小不变）"),
-                        ("章节标题", "# 章节", "章节标题 (Ctrl+3)"),
-                        ("背景指令", "@bg 背景", "背景指令 (Ctrl+4)"),
-                        ("选择分支", "? 选项", "选择分支"),
-                        ("变量操作", "$变量", "变量操作"),
-                        ("结局声明", "ending \"true_end\" epilogue \"scripts/epilogue.akrs\" button \"尾声之后\"", "隐藏结局声明（彩蛋：定义尾声剧本与按钮文本）"),
-                        ("解锁结局", "unlock \"true_end\"", "解锁隐藏结局标记（执行后主页显示尾声按钮）"),
-                    ];
-                    for (label, syntax, tooltip) in &insert_buttons {
-                        if ui.button(*label).on_hover_text(*tooltip).clicked() {
-                            if self.blueprint_mode {
-                                let kind = BlueprintState::detect_kind(syntax);
-                                let pos = self.blueprint.next_placement_pos();
-                                self.blueprint.add_node(kind, pos, syntax.to_string());
-                                self.status = format!("已添加节点：{}", syntax);
-                            } else {
-                                self.editor_content.push_str(&format!("{}\n", syntax));
-                                self.status = format!("已插入：{}", syntax);
-                            }
-                            ui.close_menu();
-                        }
-                    }
-                });
-                }); // add_enabled_ui(can_edit)
-                ui.separator();
-                // 运行：无剧本内容时禁用（无内容可运行）。
-                if ui.add_enabled(!self.editor_content.trim().is_empty(), egui::Button::new("运行"))
-                    .on_hover_text("快捷键：Ctrl+R")
-                    .clicked()
-                {
-                    self.run_script();
-                }
-                if self.engine.is_some() {
-                    if ui.button("停止").clicked() {
-                        self.engine = None;
-                        self.status = "预览已停止".to_string();
-                    }
-                }
-                ui.separator();
-                if ui.button("预览游戏").clicked() {
-                    self.start_game_preview();
-                }
-                if ui.button("打包").clicked() {
-                    self.build.show = true;
-                }
-                ui.separator();
-                if ui.button("导入rpy").clicked() {
-                    self.show_rpy_import = true;
-                    self.rpy_import_warnings.clear();
-                    self.rpy_import_source = None;
-                    // 默认保存到项目的 scripts 目录，或工作目录
-                    if self.project_loaded {
-                        self.rpy_import_target = self.project_root().join("scripts").join("imported.akrs");
-                    } else {
-                        self.rpy_import_target = self.work_dir.join("imported.akrs");
-                    }
-                }
-                ui.separator();
-                if ui.button("首页").clicked() {
-                    self.show_welcome = true;
-                    self.engine = None;
-                    self.status = "就绪".to_string();
-                }
-                if ui.button("帮助").clicked() {
-                    self.show_shortcuts = true;
-                }
-                if ui.button("关于").clicked() {
-                    self.show_about = true;
-                }
-                ui.separator();
-                // 对照翻译：无剧本内容时禁用（无可翻译内容）。
-                // 已进入对照翻译模式时「退出」按钮始终可用，避免被困在模式里。
-                if self.translation_mode {
-                    if ui.button("退出对照翻译").on_hover_text("快捷键：Ctrl+T").clicked() {
-                        self.toggle_translation_mode();
-                    }
-                } else {
-                    if ui.add_enabled(!self.editor_content.trim().is_empty(), egui::Button::new("对照翻译"))
-                        .on_hover_text("快捷键：Ctrl+T")
-                        .clicked()
-                    {
-                        self.toggle_translation_mode();
-                    }
-                }
-                ui.separator();
-                // 蓝图模式切换按钮（在工具栏右上方，便于在文本模式与可视化节点模式间切换）
+            ui.horizontal(|ui| {
+                // 蓝图模式切换按钮（最前面，独立按钮）。
                 // 未打开剧本时禁用（避免空画布无意义操作）。
                 let can_blueprint = !self.editor_content.trim().is_empty() || self.blueprint_mode;
                 if self.blueprint_mode {
@@ -6018,6 +6453,158 @@ impl eframe::App for EditorApp {
                         self.toggle_blueprint_mode();
                     }
                 }
+
+                // 对照翻译按钮（第二位，独立按钮）。
+                // 无剧本内容时禁用（无可翻译内容）。
+                // 已进入对照翻译模式时「退出」按钮始终可用，避免被困在模式里。
+                if self.translation_mode {
+                    if ui.button("退出对照翻译").on_hover_text("快捷键：Ctrl+T").clicked() {
+                        self.toggle_translation_mode();
+                    }
+                } else {
+                    if ui.add_enabled(!self.editor_content.trim().is_empty(), egui::Button::new("对照翻译"))
+                        .on_hover_text("快捷键：Ctrl+T")
+                        .clicked()
+                    {
+                        self.toggle_translation_mode();
+                    }
+                }
+
+                ui.separator();
+
+                // 菜单下拉按钮：集中收纳项目/文件/编译/其他操作，避免工具栏臃肿。
+                ui.menu_button("菜单", |ui| {
+                    // ---- 项目相关 ----
+                    ui.label(egui::RichText::new("项目").strong());
+                    if ui.button("打开项目").clicked() {
+                        self.open_dir_picker();
+                        ui.close_menu();
+                    }
+                    if ui.button("项目设置").clicked() {
+                        self.show_project_settings = true;
+                        ui.close_menu();
+                    }
+                    ui.separator();
+
+                    // ---- 文件操作 ----
+                    ui.label(egui::RichText::new("文件").strong());
+                    if ui.button("新建").on_hover_text("快捷键：Ctrl+N").clicked() {
+                        self.new_file();
+                        ui.close_menu();
+                    }
+                    if ui.button("打开").on_hover_text("快捷键：Ctrl+O").clicked() {
+                        self.open_file_picker(FilePickerMode::Open);
+                        ui.close_menu();
+                    }
+                    // 保存：未打开/无内容剧本时禁用（无内容可保存）。
+                    if ui.add_enabled(!self.editor_content.trim().is_empty(), egui::Button::new("保存"))
+                        .on_hover_text("快捷键：Ctrl+S")
+                        .clicked()
+                    {
+                        self.save_file();
+                        ui.close_menu();
+                    }
+                    if ui.button("导入rpy").clicked() {
+                        self.show_rpy_import = true;
+                        self.rpy_import_warnings.clear();
+                        self.rpy_import_source = None;
+                        // 默认保存到项目的 scripts 目录，或工作目录
+                        if self.project_loaded {
+                            self.rpy_import_target = self.project_root().join("scripts").join("imported.akrs");
+                        } else {
+                            self.rpy_import_target = self.work_dir.join("imported.akrs");
+                        }
+                        ui.close_menu();
+                    }
+                    ui.separator();
+
+                    // ---- 编译相关 ----
+                    ui.label(egui::RichText::new("编译").strong());
+                    if ui.button("预览游戏").clicked() {
+                        self.start_game_preview();
+                        ui.close_menu();
+                    }
+                    if ui.button("打包").clicked() {
+                        self.build.show = true;
+                        ui.close_menu();
+                    }
+                    // 运行：无剧本内容时禁用（无内容可运行）。
+                    if ui.add_enabled(!self.editor_content.trim().is_empty(), egui::Button::new("运行"))
+                        .on_hover_text("快捷键：Ctrl+R")
+                        .clicked()
+                    {
+                        self.run_script();
+                        ui.close_menu();
+                    }
+                    // 停止：仅在有运行中的预览引擎时显示。
+                    if self.engine.is_some() {
+                        if ui.button("停止").clicked() {
+                            self.engine = None;
+                            self.status = "预览已停止".to_string();
+                            ui.close_menu();
+                        }
+                    }
+                    ui.separator();
+
+                    // ---- 其他 ----
+                    if ui.button("首页").clicked() {
+                        self.show_welcome = true;
+                        self.engine = None;
+                        self.status = "就绪".to_string();
+                        ui.close_menu();
+                    }
+                    if ui.button("帮助").clicked() {
+                        self.show_shortcuts = true;
+                        ui.close_menu();
+                    }
+                    if ui.button("关于").clicked() {
+                        self.show_about = true;
+                        ui.close_menu();
+                    }
+                    ui.separator();
+                    if ui.button("编辑器设置").clicked() {
+                        self.show_editor_settings = true;
+                        ui.close_menu();
+                    }
+                });
+
+                ui.separator();
+
+                // 快速插入语法按钮（收进下拉菜单，节省工具栏空间）
+                // 蓝图模式下点击直接添加节点到画布；文本模式下追加到脚本末尾。
+                // 无剧本内容时禁用（与蓝图模式按钮守卫一致）。
+                let insert_label = if self.blueprint_mode { "插入节点" } else { "插入语法" };
+                let can_edit = !self.editor_content.trim().is_empty() || self.blueprint_mode;
+                ui.add_enabled_ui(can_edit, |ui| {
+                    ui.menu_button(insert_label, |ui| {
+                        let insert_buttons = [
+                            ("立绘上场", "+ 角色", "立绘上场（0.5秒淡入）(Ctrl+1)"),
+                            ("立绘下场", "- 角色", "立绘下场（0.5秒淡出）(Ctrl+2)"),
+                            ("差分更换立绘", "+ 角色 (新pose) swap", "差分更换立绘（仅换pose，无过渡，位置/大小不变）"),
+                            ("章节标题", "# 章节", "章节标题 (Ctrl+3)"),
+                            ("背景指令", "@bg 背景", "背景指令 (Ctrl+4)"),
+                            ("选择分支", "? 选项", "选择分支"),
+                            ("变量操作", "$变量", "变量操作"),
+                            ("结局声明", "ending \"true_end\" epilogue \"scripts/epilogue.akrs\" button \"尾声之后\"", "隐藏结局声明（彩蛋：定义尾声剧本与按钮文本）"),
+                            ("解锁结局", "unlock \"true_end\"", "解锁隐藏结局标记（执行后主页显示尾声按钮）"),
+                        ];
+                        for (label, syntax, tooltip) in &insert_buttons {
+                            if ui.button(*label).on_hover_text(*tooltip).clicked() {
+                                if self.blueprint_mode {
+                                    let kind = BlueprintState::detect_kind(syntax);
+                                    let pos = self.blueprint.next_placement_pos();
+                                    self.blueprint.add_node(kind, pos, syntax.to_string());
+                                    self.status = format!("已添加节点：{}", syntax);
+                                } else {
+                                    self.editor_content.push_str(&format!("{}\n", syntax));
+                                    self.status = format!("已插入：{}", syntax);
+                                }
+                                ui.close_menu();
+                            }
+                        }
+                    });
+                });
+
                 ui.separator();
                 ui.label(format!("文件：{}", self.file_name_input));
             });
@@ -6054,47 +6641,70 @@ impl eframe::App for EditorApp {
             }
         });
 
-        // ---- 左栏：文件列表 ---------------------------------------------
+        // ---- 左栏：资源文件系统分类标签页 ---------------------------------
         egui::SidePanel::left("files")
             .resizable(true)
             .default_width(210.0)
             .show(ctx, |ui| {
-                ui.heading("文件");
-                ui.label(format!("目录：{}", self.work_dir.display()));
+                // 顶部水平标签页切换：脚本 / 立绘 / 背景 / 音乐
                 ui.horizontal(|ui| {
-                    ui.label("文件名：");
-                    ui.text_edit_singleline(&mut self.file_name_input);
-                });
-                ui.horizontal(|ui| {
-                    if ui.button("新建").clicked() {
-                        self.new_file();
-                    }
-                    if ui.button("保存").clicked() {
-                        self.save_file();
-                    }
-                    if ui.button("刷新").clicked() {
-                        self.refresh_file_list();
-                    }
+                    ui.selectable_value(&mut self.left_panel_tab, LeftPanelTab::Script, "脚本");
+                    ui.selectable_value(&mut self.left_panel_tab, LeftPanelTab::Sprite, "立绘");
+                    ui.selectable_value(&mut self.left_panel_tab, LeftPanelTab::Background, "背景");
+                    ui.selectable_value(&mut self.left_panel_tab, LeftPanelTab::Music, "音乐");
                 });
                 ui.separator();
-                ui.label("打开文件：");
-                egui::ScrollArea::vertical().show(ui, |ui| {
-                    if self.file_list.is_empty() {
-                        ui.label("（无 .akrs 文件）");
+
+                match self.left_panel_tab {
+                    LeftPanelTab::Script => {
+                        // 保留原有的脚本文件列表逻辑
+                        ui.heading("文件");
+                        ui.label(format!("目录：{}", self.work_dir.display()));
+                        ui.horizontal(|ui| {
+                            ui.label("文件名：");
+                            ui.text_edit_singleline(&mut self.file_name_input);
+                        });
+                        ui.horizontal(|ui| {
+                            if ui.button("新建").clicked() {
+                                self.new_file();
+                            }
+                            if ui.button("保存").clicked() {
+                                self.save_file();
+                            }
+                            if ui.button("刷新").clicked() {
+                                self.refresh_file_list();
+                            }
+                        });
+                        ui.separator();
+                        ui.label("打开文件：");
+                        egui::ScrollArea::vertical().show(ui, |ui| {
+                            if self.file_list.is_empty() {
+                                ui.label("（无 .akrs 文件）");
+                            }
+                            // 克隆以便在迭代时修改 `self`。
+                            let files = self.file_list.clone();
+                            for name in &files {
+                                let selected = self
+                                    .current_file
+                                    .as_ref()
+                                    .and_then(|p| p.file_name())
+                                    .is_some_and(|n| n == name.as_str());
+                                if ui.selectable_label(selected, name.as_str()).clicked() {
+                                    self.open_file(name);
+                                }
+                            }
+                        });
                     }
-                    // 克隆以便在迭代时修改 `self`。
-                    let files = self.file_list.clone();
-                    for name in &files {
-                        let selected = self
-                            .current_file
-                            .as_ref()
-                            .and_then(|p| p.file_name())
-                            .is_some_and(|n| n == name.as_str());
-                        if ui.selectable_label(selected, name.as_str()).clicked() {
-                            self.open_file(name);
-                        }
+                    LeftPanelTab::Sprite => {
+                        self.show_resource_list(ui, "characters", &["png"]);
                     }
-                });
+                    LeftPanelTab::Background => {
+                        self.show_resource_list(ui, "bg", &["png", "jpg", "jpeg"]);
+                    }
+                    LeftPanelTab::Music => {
+                        self.show_resource_list(ui, "music", &["ogg", "mp3", "wav"]);
+                    }
+                }
             });
 
         // ---- 右栏：预览 --------------------------------------------------
@@ -7326,6 +7936,95 @@ impl eframe::App for EditorApp {
                         }
                     });
                 });
+        }
+
+        // ---- 编辑器设置弹窗 --------------------------------------------------
+        if self.show_editor_settings {
+            let mut open = true;
+            egui::Window::new("编辑器设置")
+                .open(&mut open)
+                .collapsible(false)
+                .resizable(false)
+                .anchor(egui::Align2::CENTER_CENTER, egui::Vec2::ZERO)
+                .show(ctx, |ui| {
+                    ui.add_space(6.0);
+                    ui.checkbox(&mut self.editor_settings.open_last_file_on_startup, "进入编辑器默认打开上一次文件");
+                    ui.checkbox(&mut self.editor_settings.auto_save_on_exit, "退出时自动保存文件不询问");
+                    ui.checkbox(&mut self.editor_settings.auto_blueprint_on_startup, "进入编辑器自动启动蓝图模式");
+                    ui.separator();
+                    ui.horizontal(|ui| {
+                        if ui.button("保存").clicked() {
+                            self.editor_settings.save();
+                            self.show_editor_settings = false;
+                        }
+                        if ui.button("取消").clicked() {
+                            self.show_editor_settings = false;
+                        }
+                    });
+                });
+            if !open {
+                self.show_editor_settings = false;
+            }
+        }
+
+        // ---- 资源预览弹窗（双击左栏图片资源触发）-------------------------
+        if let Some(path) = self.resource_preview_path.clone() {
+            let mut open = true;
+            egui::Window::new("资源预览")
+                .open(&mut open)
+                .collapsible(false)
+                .resizable(true)
+                .default_width(640.0)
+                .default_height(480.0)
+                .anchor(egui::Align2::CENTER_CENTER, egui::Vec2::ZERO)
+                .show(ctx, |ui| {
+                    if let Some(name) = path.file_name() {
+                        ui.label(format!("文件：{}", name.to_string_lossy()));
+                    }
+                    ui.separator();
+                    // 纹理未缓存时尝试解码；成功后缓存避免每帧重新解码，
+                    // 失败则显示错误（下一帧仍会重试，便于外部修复文件后即时看到）。
+                    if self.resource_preview_texture.is_none() {
+                        match image::open(&path) {
+                            Ok(img) => {
+                                let rgba = img.to_rgba8();
+                                let (w, h) = (rgba.width() as usize, rgba.height() as usize);
+                                let color_image =
+                                    ColorImage::from_rgba_unmultiplied([w, h], rgba.as_raw());
+                                let handle = ui.ctx().load_texture(
+                                    "resource_preview",
+                                    color_image,
+                                    Default::default(),
+                                );
+                                self.resource_preview_texture = Some(handle);
+                            }
+                            Err(e) => {
+                                ui.label(format!("无法加载图片：{}", e));
+                            }
+                        }
+                    }
+                    if let Some(handle) = &self.resource_preview_texture {
+                        let tex_size = handle.size();
+                        let tex_w = tex_size[0] as f32;
+                        let tex_h = tex_size[1] as f32;
+                        if tex_w > 0.0 && tex_h > 0.0 {
+                            // 等比缩放到预览区可容纳尺寸（不超过 600×420），不放大。
+                            let max_w = 600.0;
+                            let max_h = 420.0;
+                            let scale = (max_w / tex_w).min(max_h / tex_h).min(1.0);
+                            let display_size = egui::Vec2::new(tex_w * scale, tex_h * scale);
+                            ui.add(
+                                egui::Image::from_texture(
+                                    egui::load::SizedTexture::new(handle.id(), display_size),
+                                ),
+                            );
+                        }
+                    }
+                });
+            if !open {
+                self.resource_preview_path = None;
+                self.resource_preview_texture = None;
+            }
         }
     }
 
