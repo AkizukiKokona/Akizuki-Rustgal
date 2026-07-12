@@ -3126,30 +3126,31 @@ impl EditorApp {
                 continue;
             }
 
-            // 计算该行缩进级别与显示内容/颜色。
-            let (indent_level, text_opt, color) = if let Some(mi) = mark_here {
+            // 计算该行缩进级别、显示内容、颜色与类型描述。
+            // 逻辑（depth/配对/裸 `?` 跳过/非结构行跳过）保持不变，仅改渲染样式。
+            let (indent_level, text_opt, color, kind_desc) = if let Some(mi) = mark_here {
                 let m = &marks[mi];
                 match m.kind {
                     FlowKind::Visit => {
                         let t = m.target.as_deref().unwrap_or("");
-                        (depth, Some(format!("=> {}", t)), COLOR_FLOW)
+                        (depth, Some(format!("=> {}", t)), COLOR_FLOW, "访问子章节")
                     }
                     FlowKind::Return => {
                         // 配对 <= 对齐其 =>（depth-1）；孤立 <= 留在当前 depth。
                         let lvl = if pairs[mi].is_some() { depth - 1 } else { depth };
-                        (lvl, Some("<=".to_string()), COLOR_FLOW)
+                        (lvl, Some("<=".to_string()), COLOR_FLOW, "返回")
                     }
                 }
             } else if let Some(rest) = trimmed.strip_prefix('#') {
-                (depth, Some(format!("# {}", rest.trim())), COLOR_SECTION)
+                (depth, Some(format!("# {}", rest.trim())), COLOR_SECTION, "章节")
             } else if let Some(rest) = trimmed.strip_prefix('?') {
                 let r = rest.trim();
                 if r.is_empty() {
                     continue; // 裸 `?` 终止符不显示
                 }
-                (depth, Some(format!("? {}", r)), COLOR_CHOICE)
+                (depth, Some(format!("? {}", r)), COLOR_CHOICE, "选项提示")
             } else if let Some(rest) = trimmed.strip_prefix('|') {
-                (depth, Some(format!("| {}", rest.trim())), COLOR_CHOICE)
+                (depth, Some(format!("| {}", rest.trim())), COLOR_CHOICE, "选项")
             } else {
                 continue; // 对话/旁白/指令/变量等不显示
             };
@@ -3168,9 +3169,35 @@ impl EditorApp {
 
             if let Some(text) = text_opt {
                 let indent_level = indent_level.max(0) as usize;
-                ui.horizontal(|ui| {
-                    ui.add_space(indent_level as f32 * indent_w);
-                    ui.label(egui::RichText::new(text).monospace().color(color));
+                // 采用与积木面板一致的卡片风格：填色边框 + 左侧色块 + 强调标题 + 灰色类型描述。
+                // 用 outer_margin.left 实现按 depth 缩进，卡片右侧仍占满可用宽度。
+                let frame = egui::Frame::group(ui.style())
+                    .fill(color.linear_multiply(0.15))
+                    .stroke(egui::Stroke::new(1.0, color))
+                    .inner_margin(egui::Margin::same(6.0))
+                    .outer_margin(egui::Margin {
+                        left: indent_level as f32 * indent_w,
+                        right: 0.0,
+                        top: 2.0,
+                        bottom: 2.0,
+                    });
+                frame.show(ui, |ui| {
+                    ui.horizontal(|ui| {
+                        // 色块标识类型
+                        let (rect, _) = ui.allocate_exact_size(
+                            egui::Vec2::new(10.0, 10.0),
+                            egui::Sense::hover(),
+                        );
+                        ui.painter().rect_filled(rect, 2.0, color);
+                        // 主文本（强调色）
+                        ui.label(egui::RichText::new(&text).strong().color(color));
+                        // 右侧类型描述（小号灰字）
+                        ui.label(
+                            egui::RichText::new(kind_desc)
+                                .small()
+                                .color(egui::Color32::from_rgb(140, 145, 160)),
+                        );
+                    });
                 });
                 shown += 1;
             }
