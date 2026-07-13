@@ -838,27 +838,21 @@ impl BlueprintState {
         ]
     }
 
-    /// 判断两个节点是否在不同章节（以 NodeKind::Section 节点为分界）。
-    /// 章节节点本身属于"新章节开始"，其前驱属于上一章节。
-    /// 用于决定连线用正交折线（章节内）还是贝塞尔曲线（跨章节）。
+    /// 判断两个节点是否在不同章节（即不同列）。
+    /// auto_layout 按章节分列，同列节点居中对齐后中心 x 一致。
+    /// 基于节点 x 坐标判断是否跨列，比基于 Vec 索引更可靠：
+    /// 折叠注释后连线桥接了 Comment 节点，Vec 索引法会误判。
     fn is_cross_section_link(&self, from_id: usize, to_id: usize) -> bool {
-        // 找到 from 和 to 在 nodes 中的索引
-        let from_idx = self.nodes.iter().position(|n| n.id == from_id);
-        let to_idx = self.nodes.iter().position(|n| n.id == to_id);
-        match (from_idx, to_idx) {
-            (Some(fi), Some(ti)) => {
-                // 检查 from 和 to 之间是否隔了一个 Section 节点：
-                // 若两者不相邻，则看中间是否有 Section 节点；
-                // 若相邻，则当 to 本身是 Section 节点（且 from 在前）时算跨章节。
-                let lo = fi.min(ti);
-                let hi = fi.max(ti);
-                if hi > lo + 1 {
-                    self.nodes[lo + 1..hi]
-                        .iter()
-                        .any(|n| n.kind == NodeKind::Section)
-                } else {
-                    self.nodes[ti].kind == NodeKind::Section && fi < ti
-                }
+        let from = self.nodes.iter().find(|n| n.id == from_id);
+        let to = self.nodes.iter().find(|n| n.id == to_id);
+        match (from, to) {
+            (Some(f), Some(t)) => {
+                let f_size = Self::node_size(&f.text);
+                let t_size = Self::node_size(&t.text);
+                let f_cx = f.pos.x + f_size.x / 2.0;
+                let t_cx = t.pos.x + t_size.x / 2.0;
+                // 中心 x 差值大于 20 认为是跨列（同列节点居中对齐后中心 x 一致）
+                (f_cx - t_cx).abs() > 20.0
             }
             _ => false,
         }
@@ -887,18 +881,16 @@ impl BlueprintState {
     /// 返回 4 个点（起点、2 个控制点、终点），用于 CubicBezierShape。
     /// 坐标空间：逻辑坐标（不含 zoom/pan）。仅在首尾引脚处允许接触节点，
     /// 曲线中段必须不穿过任何障碍节点矩形（采样 100 点检测）。
+    ///
+    /// 控制点策略：放在 from 和 to 的 y 中点（不向外延伸），
+    /// 这样曲线从 from 平滑弯向 to，不会绕大圈。
+    /// 若穿过节点，从障碍节点的上方/下方找最近的空隙穿过。
     fn route_bezier_around(
         &self,
         from_pin: egui::Pos2, // 逻辑坐标
         to_pin: egui::Pos2,   // 逻辑坐标
         skip_ids: &[usize],   // 排除的节点ID（源和目标节点本身）
     ) -> [egui::Pos2; 4] {
-        // 默认控制点：从 from 向下延伸，到 to 向上延伸（S 形曲线），
-        // 走向与章节内正交折线不同，避免视觉重合。
-        let vertical_offset = ((to_pin.y - from_pin.y).abs() * 0.5).max(50.0);
-        let mut ctrl1 = egui::pos2(from_pin.x, from_pin.y + vertical_offset);
-        let mut ctrl2 = egui::pos2(to_pin.x, to_pin.y - vertical_offset);
-
         // 收集障碍节点矩形（逻辑坐标）：排除源/目标节点；
         // 折叠注释时注释节点不参与阻挡检测。
         let obstacles: Vec<egui::Rect> = self
@@ -913,32 +905,61 @@ impl BlueprintState {
             .collect();
 
         // 采样曲线上的点，检查是否穿过任何障碍矩形
-        let curve_intersects = |c1: egui::Pos2, c2: egui::Pos2| -> bool {
+        let curve_ok = |c1: egui::Pos2, c2: egui::Pos2| -> bool {
             for t in (0..=100).map(|i| i as f32 / 100.0) {
                 let p = Self::bezier_point(from_pin, c1, c2, to_pin, t);
                 if obstacles.iter().any(|r| r.contains(p)) {
-                    return true;
+                    return false;
                 }
             }
-            false
+            true
         };
 
-        // 若默认曲线穿过节点，逐步增大垂直偏移使曲线绕开（上限 500）
-        let mut offset = vertical_offset;
-        while curve_intersects(ctrl1, ctrl2) && offset < 500.0 {
-            offset += 50.0;
-            ctrl1 = egui::pos2(from_pin.x, from_pin.y + offset);
-            ctrl2 = egui::pos2(to_pin.x, to_pin.y - offset);
+        // 生成控制点：两个控制点的 y 坐标相同（在 from 和 to 的 y 中间），
+        // x 分别保持 from 和 to 的 x，形成平滑 S 形曲线。
+        let make_ctrls = |y: f32| -> [egui::Pos2; 2] {
+            [egui::pos2(from_pin.x, y), egui::pos2(to_pin.x, y)]
+        };
+
+        // 默认：控制点在 from 和 to 的 y 中点
+        let mid_y = (from_pin.y + to_pin.y) * 0.5;
+        let default_ctrls = make_ctrls(mid_y);
+        if curve_ok(default_ctrls[0], default_ctrls[1]) {
+            return [from_pin, default_ctrls[0], default_ctrls[1], to_pin];
         }
 
-        // 增大偏移仍然穿过时，让控制点向右侧偏移，使曲线绕到侧面
-        if curve_intersects(ctrl1, ctrl2) {
-            let side_offset = 100.0;
-            ctrl1 = egui::pos2(from_pin.x + side_offset, from_pin.y + offset);
-            ctrl2 = egui::pos2(to_pin.x + side_offset, to_pin.y - offset);
+        // 默认曲线穿过节点，收集 x 范围内障碍节点的 top/bottom，
+        // 尝试从障碍上方或下方的空隙穿过。
+        let x_min = from_pin.x.min(to_pin.x);
+        let x_max = from_pin.x.max(to_pin.x);
+        let gap = 15.0; // 与障碍节点的垂直间距
+
+        let mut candidates: Vec<f32> = Vec::new();
+        for r in &obstacles {
+            // 只考虑 x 范围与曲线水平跨度有重叠的障碍
+            if r.right() > x_min && r.left() < x_max {
+                candidates.push(r.top() - gap);    // 障碍上方
+                candidates.push(r.bottom() + gap); // 障碍下方
+            }
         }
 
-        [from_pin, ctrl1, ctrl2, to_pin]
+        // 按离 mid_y 近到远排序，优先选择最短绕行
+        candidates.sort_by(|a, b| {
+            (a - mid_y)
+                .abs()
+                .partial_cmp(&(b - mid_y).abs())
+                .unwrap_or(std::cmp::Ordering::Equal)
+        });
+
+        for &y in &candidates {
+            let ctrls = make_ctrls(y);
+            if curve_ok(ctrls[0], ctrls[1]) {
+                return [from_pin, ctrls[0], ctrls[1], to_pin];
+            }
+        }
+
+        // 全部候选都穿过，退化为默认中点（允许穿过，至少视觉平滑）
+        [from_pin, default_ctrls[0], default_ctrls[1], to_pin]
     }
 
     /// 返回节点的友好显示文本（去掉脚本前缀符号，不暴露代码语法）。
