@@ -568,6 +568,19 @@ impl BlueprintState {
         self.links.push(BlueprintLink { from, to });
     }
 
+    /// 添加一条连线（去重，允许多入线）。
+    /// 与 [`add_link`] 不同，不删除目标节点的旧入线，
+    /// 支持多条入线汇入同一节点（如多个分支跳转到同一收束章节）。
+    fn push_link(&mut self, from: usize, to: usize) {
+        if from == to {
+            return;
+        }
+        if self.links.iter().any(|l| l.from == from && l.to == to) {
+            return;
+        }
+        self.links.push(BlueprintLink { from, to });
+    }
+
     /// 沿入线回溯，收集上游所有节点（深度优先）。
     /// 返回的引用借用自 `self.nodes`，调用方需注意借用生命周期。
     fn upstream_nodes(&self, start_id: usize) -> Vec<&BlueprintNode> {
@@ -1012,18 +1025,27 @@ impl BlueprintState {
         }
     }
 
-    /// 从脚本文本生成蓝图节点（自动布局 + 顺序连线）。
+    /// 从脚本文本生成蓝图节点（自动布局 + 语义连线）。
+    ///
+    /// 连线规则（智能识别章节始末，不依赖终止语句）：
+    /// - `#` 章节节点（始）：不与上一行顺序连，入线来自指向它的跳转语句
+    /// - `-> 目标` / `=> 目标`（跳转）：与 prev 顺序连（入线），连到 `# 目标` 章节（出线），
+    ///   不顺序连下一行；找不到目标章节时回退顺序连
+    /// - `~~` / `end` / `ending` / `unlock`（终止）：与 prev 顺序连（入线），不顺序连下一行
+    /// - `?` Choice：与 prev 顺序连（入线），连到后续所有 `|` 选项（出线），继续顺序连下一行
+    /// - `|` 选项 `-> 目标`：入线来自 Choice（已连），连到 `# 目标` 章节（出线）
+    /// - 其他普通节点：与 prev 顺序连
+    ///
     /// 选择块结尾的 `?` 不生成节点（to_script 会自动补上）。
-    /// 生成后调用 auto_layout 整理布局，避免节点堆叠。
     fn from_script(&mut self, text: &str) {
         self.nodes.clear();
         self.links.clear();
         self.next_id = 0;
         self.selected = None;
 
-        // 先生成所有节点（位置暂为默认），同时建立顺序连线。
-        let mut prev_id: Option<usize> = None;
-        let mut in_choice = false; // 是否在选择块内（用于跳过结尾 ?）
+        // 第一遍：生成所有节点，记录 (id, kind, text) 供第二遍语义连线。
+        let mut entries: Vec<(usize, NodeKind, String)> = Vec::new();
+        let mut in_choice = false;
         for line in text.lines() {
             if line.trim().is_empty() {
                 continue;
@@ -1035,15 +1057,122 @@ impl BlueprintState {
                 continue;
             }
             let id = self.add_node(kind, egui::Pos2::ZERO, line.to_string());
-            // 与上一个节点顺序连线（含章节节点→本章第一个积木，保持流程连贯）。
-            if let Some(prev) = prev_id {
-                self.links.push(BlueprintLink { from: prev, to: id });
-            }
-            prev_id = Some(id);
+            entries.push((id, kind, line.trim().to_string()));
             if kind == NodeKind::Choice {
                 in_choice = true;
             }
         }
+
+        // 辅助：提取跳转目标（-> 目标 / => 目标）
+        let jump_target = |t: &str| -> Option<String> {
+            let s = t.trim();
+            if s.starts_with("->") || s.starts_with("=>") {
+                Some(s[2..].trim().to_string())
+            } else {
+                None
+            }
+        };
+        // 辅助：提取选项跳转目标（| "文本" -> 目标）
+        let option_target = |t: &str| -> Option<String> {
+            let s = t.trim();
+            if s.starts_with('|') {
+                s.find("->").map(|i| s[i + 2..].trim().to_string())
+            } else {
+                None
+            }
+        };
+        // 辅助：查找章节节点（# 章节名 [显示标题]），匹配目标名
+        let find_section = |target: &str| -> Option<usize> {
+            entries.iter().find_map(|(id, kind, text)| {
+                if *kind == NodeKind::Section {
+                    // 章节名 = # 后第一个空白分隔的 token（去掉显示标题）
+                    let t = text.trim_start_matches('#').trim();
+                    let name = t.split_whitespace().next().unwrap_or(t);
+                    if name == target {
+                        Some(*id)
+                    } else {
+                        None
+                    }
+                } else {
+                    None
+                }
+            })
+        };
+
+        // 第二遍：按节点类型语义连线
+        let mut prev_id: Option<usize> = None;
+        let mut i = 0;
+        while i < entries.len() {
+            let (id, kind, ref text) = entries[i];
+            let id = id;
+            let kind = kind;
+            let text: &str = text;
+
+            match kind {
+                NodeKind::Section => {
+                    // 章节节点（始）：不与上一行顺序连，入线来自跳转语句
+                    prev_id = Some(id);
+                }
+                NodeKind::Choice => {
+                    // ? 选择块：与 prev 顺序连（入线），连到后续所有 | 选项（出线）
+                    if let Some(prev) = prev_id {
+                        self.push_link(prev, id);
+                    }
+                    let mut j = i + 1;
+                    while j < entries.len() && entries[j].1 == NodeKind::ChoiceOption {
+                        self.push_link(id, entries[j].0);
+                        j += 1;
+                    }
+                    // Choice 连选项 + 顺序连下一行：prev 更新为 Choice
+                    prev_id = Some(id);
+                }
+                NodeKind::ChoiceOption => {
+                    // | 选项：入线来自 Choice（已连），出线连到 -> 目标章节
+                    if let Some(tg) = option_target(text) {
+                        if let Some(sec_id) = find_section(&tg) {
+                            self.push_link(id, sec_id);
+                        }
+                        // 找不到目标章节：选项无出线（断开）
+                    }
+                    // | 选项不更新 prev（下一节点不与 | 顺序连）
+                }
+                NodeKind::Flow | NodeKind::Visit => {
+                    // -> / => 跳转：与 prev 顺序连（入线），连到目标章节（出线）
+                    if let Some(prev) = prev_id {
+                        self.push_link(prev, id);
+                    }
+                    let target = jump_target(text);
+                    let mut linked = false;
+                    if let Some(tg) = &target {
+                        if let Some(sec_id) = find_section(tg) {
+                            self.push_link(id, sec_id);
+                            linked = true;
+                        }
+                    }
+                    if linked {
+                        prev_id = None; // 成功连目标，不顺序连下一行
+                    } else {
+                        prev_id = Some(id); // 找不到目标，回退顺序连下一行
+                    }
+                }
+                NodeKind::Wait | NodeKind::StoryEnd | NodeKind::Ending | NodeKind::Unlock => {
+                    // ~~ / end / ending / unlock：与 prev 顺序连（入线），不顺序连下一行
+                    if let Some(prev) = prev_id {
+                        self.push_link(prev, id);
+                    }
+                    prev_id = None; // 流程终止
+                }
+                _ => {
+                    // 普通节点：与 prev 顺序连
+                    if let Some(prev) = prev_id {
+                        self.push_link(prev, id);
+                    }
+                    prev_id = Some(id);
+                }
+            }
+            i += 1;
+        }
+
         // 生成完毕后统一整理布局。
         self.auto_layout();
     }
