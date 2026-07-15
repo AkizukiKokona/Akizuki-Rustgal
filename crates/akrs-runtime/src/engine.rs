@@ -31,7 +31,7 @@
 
 use crate::game_state::{SceneState, ChoiceOptionState};
 use crate::save_load::{SaveManager, SceneSnapshot};
-use crate::settings::{Settings, SkipMode};
+use crate::settings::{Settings, SettingsError, SkipMode};
 use crate::translator::{Translator, UiTranslator};
 use crate::transition::TransitionManager;
 
@@ -278,11 +278,6 @@ impl Engine {
             script_error: None,
             crash_info: None,
         };
-        // 全局持久化状态（已读历史、已解锁结局）在引擎构造时即从磁盘加载，
-        // 这样所有通过 Engine::new 重建引擎的路径（返回标题 / 故事结束 /
-        // 进入尾声 / 降级重建）都能自动继承这些状态，无需渲染层逐处补调用。
-        // 注意：settings 与 translations_dir 由调用方按需恢复（它们可能
-        // 被玩家在运行时修改，不应被磁盘旧值覆盖）。
         engine.load_read_history();
         engine.load_endings();
         Ok(engine)
@@ -332,7 +327,6 @@ impl Engine {
             script_error: Some(error_msg),
             crash_info: None,
         };
-        // 降级模式同样继承全局持久化状态（已读历史、已解锁结局）。
         engine.load_read_history();
         engine.load_endings();
         engine
@@ -495,7 +489,7 @@ impl Engine {
         if path.exists() {
             self.translator = Translator::from_file(&path);
         } else {
-            eprintln!("[Engine] 语言文件不存在：{:?}，使用原文", path);
+            log::warn!("[Engine] 语言文件不存在：{:?}，使用原文", path);
             self.translator = Translator::new();
         }
         self.settings.language = lang_code.to_string();
@@ -514,7 +508,7 @@ impl Engine {
         if path.exists() {
             self.translator = Translator::from_file(&path);
         } else {
-            eprintln!("[Engine] 语言文件不存在：{:?}，使用原文", path);
+            log::warn!("[Engine] 语言文件不存在：{:?}，使用原文", path);
             self.translator = Translator::new();
         }
     }
@@ -528,7 +522,7 @@ impl Engine {
             match UiTranslator::from_file(&path, lang_code.to_string()) {
                 Ok(t) => self.ui_translator = t,
                 Err(e) => {
-                    eprintln!("[Engine] UI 翻译文件加载失败：{}", e);
+                    log::warn!("[Engine] UI 翻译文件加载失败：{}", e);
                     self.ui_translator = UiTranslator::new();
                 }
             }
@@ -551,7 +545,7 @@ impl Engine {
             match UiTranslator::from_file(&path, lang) {
                 Ok(t) => self.ui_translator = t,
                 Err(e) => {
-                    eprintln!("[Engine] UI 翻译文件加载失败：{}", e);
+                    log::warn!("[Engine] UI 翻译文件加载失败：{}", e);
                     self.ui_translator = UiTranslator::new();
                 }
             }
@@ -699,7 +693,7 @@ impl Engine {
     }
 
     /// Persist the current settings to `saves/settings.json`.
-    pub fn save_settings(&self) -> Result<(), String> {
+    pub fn save_settings(&self) -> Result<(), SettingsError> {
         let path = Settings::default_path();
         // Ensure the saves directory exists.
         if let Some(parent) = path.parent() {
@@ -988,7 +982,7 @@ impl Engine {
             self.scene_snapshot(),
         ) {
             Ok(_) => events.push(EngineEvent::Saved { slot }),
-            Err(e) => events.push(EngineEvent::Error { message: e }),
+            Err(e) => events.push(EngineEvent::Error { message: e.to_string() }),
         }
         events
     }
@@ -1060,7 +1054,7 @@ impl Engine {
                 events.push(EngineEvent::Loaded { slot });
             }
             Err(e) => {
-                events.push(EngineEvent::Error { message: e });
+                events.push(EngineEvent::Error { message: e.to_string() });
             }
         }
         events
@@ -1226,7 +1220,7 @@ impl Engine {
             self.scene_snapshot(),
         ) {
             Ok(_) => {}
-            Err(e) => events.push(EngineEvent::Error { message: e }),
+            Err(e) => events.push(EngineEvent::Error { message: e.to_string() }),
         }
         events
     }
@@ -1272,7 +1266,7 @@ impl Engine {
                 self.process_events_into(&mut events);
             }
             Err(e) => {
-                events.push(EngineEvent::Error { message: e });
+                events.push(EngineEvent::Error { message: e.to_string() });
             }
         }
         events
@@ -1295,7 +1289,7 @@ impl Engine {
     pub fn delete_autosave(&mut self) -> Vec<EngineEvent> {
         let mut events = Vec::new();
         if let Err(e) = self.saves.delete_autosave() {
-            events.push(EngineEvent::Error { message: e });
+            events.push(EngineEvent::Error { message: e.to_string() });
         }
         events
     }
@@ -1324,7 +1318,7 @@ impl Engine {
             self.scene_snapshot(),
         ) {
             Ok(_) => {}
-            Err(e) => events.push(EngineEvent::Error { message: e }),
+            Err(e) => events.push(EngineEvent::Error { message: e.to_string() }),
         }
         events
     }
@@ -1370,7 +1364,7 @@ impl Engine {
                 self.process_events_into(&mut events);
             }
             Err(e) => {
-                events.push(EngineEvent::Error { message: e });
+                events.push(EngineEvent::Error { message: e.to_string() });
             }
         }
         events
@@ -1389,7 +1383,7 @@ impl Engine {
     pub fn delete_continue(&mut self) -> Vec<EngineEvent> {
         let mut events = Vec::new();
         if let Err(e) = self.saves.delete_continue() {
-            events.push(EngineEvent::Error { message: e });
+            events.push(EngineEvent::Error { message: e.to_string() });
         }
         events
     }
@@ -1413,7 +1407,7 @@ impl Engine {
             self.scene_snapshot(),
         ) {
             Ok(_) => events.push(EngineEvent::Saved { slot: usize::MAX - 2 }),
-            Err(e) => events.push(EngineEvent::Error { message: e }),
+            Err(e) => events.push(EngineEvent::Error { message: e.to_string() }),
         }
         events
     }
@@ -1460,7 +1454,7 @@ impl Engine {
                 events.push(EngineEvent::Loaded { slot: usize::MAX - 2 });
             }
             Err(e) => {
-                events.push(EngineEvent::Error { message: e });
+                events.push(EngineEvent::Error { message: e.to_string() });
             }
         }
         events
@@ -1602,14 +1596,11 @@ impl Engine {
                     return;
                 }
                 VmEvent::Flow { target, title } => {
-                    // 章节单向跳转：更新当前章节名。
-                    // 仅当目标章节带显示标题（`# name title`）时才设置待处理
-                    // 章节通知——无标题的章节跳转（如分支 `-> 分支A`）不显示
-                    // toast，避免每次分支选择都弹通知。
+                    // 章节单向跳转：更新当前章节名，并设置待处理章节通知。
+                    // 渲染层每帧调用 take_chapter_notify() 取走后播放
+                    // 全屏淡入淡出 + 顶部章节通知。
                     self.current_section_name = target.clone();
-                    if title.is_some() {
-                        self.pending_chapter_notify = Some(ChapterNotify { name: target, title });
-                    }
+                    self.pending_chapter_notify = Some(ChapterNotify { name: target, title });
                     // Non-blocking: continue to next event
                 }
                 VmEvent::Visit { target, title } => {
@@ -1787,24 +1778,7 @@ impl Engine {
         // 保持位置/大小/透明度等全部不变。
         if action.kind == DirectionKind::Swap {
             let new_pose = action.pose.clone();
-            if self.transition.is_active() {
-                // 过渡进行中：不能直接改现场 scene（现场是过渡前旧状态，
-                // swap point 会用 pending 覆盖，导致 swap 丢失）。
-                // 合并到 pending：以 enter 形式合并（pose 更新等价于同名角色重新入场），
-                // swap point 时由 apply_changes 的 character_enter_at_with 覆盖 pose。
-                let pose = action.pose.clone();
-                let position = action.position;
-                let transform = action.transform;
-                self.transition.merge_into_pending(
-                    None,
-                    vec![(action.character.clone(), pose, position, transform)],
-                    vec![],
-                    None,
-                );
-                events.push(EngineEvent::CharacterEntered {
-                    name: action.character,
-                });
-            } else if let Some(char_state) = self.scene.characters.iter_mut().find(|c| c.name == action.character) {
+            if let Some(char_state) = self.scene.characters.iter_mut().find(|c| c.name == action.character) {
                 char_state.pose = new_pose;
                 events.push(EngineEvent::CharacterEntered {
                     name: action.character,

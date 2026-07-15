@@ -145,11 +145,10 @@
   "error.reason.render": "渲染層出現異常，資源載入或繪製失敗。",
   "error.reason.settings": "設定檔案解析失敗，設定可能已損毀。",
   "error.reason.fatal": "發生未知致命錯誤，建議匯出日誌並重新啟動引擎。",
-
   "gpu.warning_prefix": "[GPU 警告]",
-  "gpu.software_renderer": "偵測到軟體渲染（{renderer}）。效能與畫面正確性可能受影響，建議使用支援 OpenGL 3.3+ 的硬體 GPU。",
+  "gpu.software_renderer": "偵測到軟體渲染（{renderer}）。效能與畫面正確性可能受影響，建議使用支援硬體加速的 GPU。",
   "gpu.llvmpipe": "偵測到 LLVMpipe 軟體渲染器。此渲染器已知會導致畫面異常（如立繪重疊），請使用硬體 GPU。",
-  "gpu.vmware": "偵測到 VMware 虛擬 GPU（{renderer}）。虛擬 GPU 可能無法完整支援 OpenGL 特性，導致畫面異常。",
-  "gpu.old_opengl": "OpenGL 版本過低（{version}）。建議使用 3.3+ 版本，舊版本可能導致畫面問題。",
+  "gpu.vmware": "偵測到 VMware 虛擬 GPU（{renderer}）。虛擬 GPU 可能無法完整支援圖形特性，導致畫面異常。",
+  "gpu.old_opengl": "偵測到 {version} 後端。此後端圖形特性支援有限，可能導致畫面問題，建議使用 Vulkan/DX12/Metal。",
   "gpu.unknown_renderer": "無法識別 GPU 渲染器。如遇畫面異常，請更新顯示卡驅動程式。"
 }

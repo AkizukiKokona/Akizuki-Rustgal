@@ -94,7 +94,7 @@ jobs:
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
         with:
-          toolchain: "1.92.0"
+          toolchain: "1.96.1"
           targets: ${{ matrix.target }}
 
       - name: Cache cargo
@@ -167,7 +167,6 @@ jobs:
             chmod +x "$STAGE/启动编辑器.sh"
           fi
           cp assets/fonts/SourceHanSansSC-Regular-2.otf "$STAGE/assets/fonts/" 2>/dev/null || true
-          cp LICENSE "$STAGE/" 2>/dev/null || true
           printf 'Akizuki*Rustgal Editor — 开发测试版 (%s)\n版本: %s\n\nWindows: 双击 启动编辑器.bat\nLinux/macOS: ./启动编辑器.sh\n' "${{ matrix.platform }}" "${{ steps.ver.outputs.version }}" > "$STAGE/README.txt"
 
       - name: Archive

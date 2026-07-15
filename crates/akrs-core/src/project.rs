@@ -1,6 +1,19 @@
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 
+/// 项目配置持久化错误。
+///
+/// 用 `thiserror` 派生 `Error`/`Display`，替代原先的 `Result<(), String>`。
+#[derive(Debug, thiserror::Error)]
+pub enum ProjectError {
+    /// 序列化 project.json 失败（serde_json 错误）。
+    #[error("序列化失败：{0}")]
+    Serialize(serde_json::Error),
+    /// 写入 project.json 失败（IO 错误）。
+    #[error("写入失败：{0}")]
+    Write(std::io::Error),
+}
+
 /// 项目配置：存储游戏项目的所有个性化设置，
 /// 包括标题、作者、窗口设置、默认语言、版本号等。
 ///
@@ -55,6 +68,63 @@ pub struct ProjectConfig {
     /// 留空则不弹出。玩家可在弹窗里选「不再显示」（仅本地生效，存于编辑器数据目录）。
     #[serde(default)]
     pub warning: String,
+    /// 关于页配置（图片、文本、颜色）。
+    #[serde(default)]
+    pub about: AboutConfig,
+}
+
+/// 游戏关于页配置（图片、文本、颜色）。
+/// 所有字段带 `#[serde(default)]`，旧项目文件缺失时回退默认值。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AboutConfig {
+    /// 关于页图片路径（相对 `assets/` 目录，如 `about/logo.png`）。
+    /// 留空时若 `sync_logo=true` 则用 `kokona.png`，否则画占位框。
+    #[serde(default)]
+    pub image: String,
+    /// 是否自动同步 logo（用 `kokona.png` 作为关于页图片），默认 true。
+    #[serde(default = "default_about_sync_logo")]
+    pub sync_logo: bool,
+    /// 关于页显示的文本行（每行一个字符串）。
+    /// 第 1 行粗体显示，其余正常。留空则回退默认 5 行。
+    #[serde(default = "default_about_lines")]
+    pub lines: Vec<String>,
+    /// 关于页文本颜色 `[R, G, B, A]`（0-255）。
+    /// 第 1 行（粗体）颜色。
+    #[serde(default = "default_about_bold_color")]
+    pub bold_color: [u8; 4],
+    /// 其余行颜色。
+    #[serde(default = "default_about_normal_color")]
+    pub normal_color: [u8; 4],
+    /// 第 4、5 行（如有）颜色。
+    #[serde(default = "default_about_accent_color")]
+    pub accent_color: [u8; 4],
+}
+
+fn default_about_sync_logo() -> bool { true }
+fn default_about_lines() -> Vec<String> {
+    vec![
+        "Akizuki*Rustgal".to_string(),
+        "简单好用的视觉小说引擎".to_string(),
+        String::new(), // 版本行留空，运行时自动填充版本号
+        "心夏麻麻可爱喵".to_string(),
+        "最喜欢心夏麻麻了喵".to_string(),
+    ]
+}
+fn default_about_bold_color() -> [u8; 4] { [255, 242, 153, 255] }   // 浅黄
+fn default_about_normal_color() -> [u8; 4] { [204, 217, 242, 255] } // 浅蓝灰
+fn default_about_accent_color() -> [u8; 4] { [230, 179, 204, 255] } // 粉色
+
+impl Default for AboutConfig {
+    fn default() -> Self {
+        Self {
+            image: String::new(),
+            sync_logo: true,
+            lines: default_about_lines(),
+            bold_color: default_about_bold_color(),
+            normal_color: default_about_normal_color(),
+            accent_color: default_about_accent_color(),
+        }
+    }
 }
 
 /// 游戏主题配色：RGBA 通道均为 0–255。
@@ -135,6 +205,7 @@ impl Default for ProjectConfig {
             title_music: String::new(),
             theme: ThemeColors::default(),
             warning: String::new(),
+            about: AboutConfig::default(),
         }
     }
 }
@@ -151,12 +222,10 @@ impl ProjectConfig {
     }
 
     /// 保存到项目目录下的 project.json。
-    pub fn save(&self, project_dir: &Path) -> Result<(), String> {
+    pub fn save(&self, project_dir: &Path) -> Result<(), ProjectError> {
         let path = project_dir.join("project.json");
-        let content = serde_json::to_string_pretty(self)
-            .map_err(|e| format!("序列化失败：{}", e))?;
-        std::fs::write(&path, content)
-            .map_err(|e| format!("写入失败：{}", e))?;
+        let content = serde_json::to_string_pretty(self).map_err(ProjectError::Serialize)?;
+        std::fs::write(&path, content).map_err(ProjectError::Write)?;
         Ok(())
     }
 
@@ -262,48 +331,10 @@ fn recent_projects_path() -> PathBuf {
     }
 }
 
-/// 解析跨平台用户数据目录（不依赖外部 crate）：
-/// - Windows: %APPDATA% 或 %USERPROFILE%\AppData\Roaming
-/// - macOS:   ~/Library/Application Support
-/// - Linux:   $XDG_DATA_HOME 或 ~/.local/share
 pub fn dirs_data_dir() -> Option<PathBuf> {
-    // 跨平台数据目录解析（不依赖外部 crate）：
-    // - Windows: %APPDATA% 或 %USERPROFILE%\AppData\Roaming
-    // - macOS:   ~/Library/Application Support
-    // - Linux:   $XDG_DATA_HOME 或 ~/.local/share
-    #[cfg(target_os = "windows")]
-    {
-        if let Ok(appdata) = std::env::var("APPDATA") {
-            return Some(PathBuf::from(appdata));
-        }
-        if let Ok(home) = std::env::var("USERPROFILE") {
-            return Some(PathBuf::from(home).join("AppData").join("Roaming"));
-        }
-        return None;
-    }
-    #[cfg(target_os = "macos")]
-    {
-        if let Ok(home) = std::env::var("HOME") {
-            return Some(PathBuf::from(home).join("Library").join("Application Support"));
-        }
-        return None;
-    }
-    #[cfg(not(any(target_os = "windows", target_os = "macos")))]
-    {
-        if let Ok(xdg) = std::env::var("XDG_DATA_HOME") {
-            if !xdg.is_empty() {
-                return Some(PathBuf::from(xdg));
-            }
-        }
-        if let Ok(home) = std::env::var("HOME") {
-            let path = PathBuf::from(&home).join(".local").join("share");
-            if path.exists() {
-                return Some(path);
-            }
-            return Some(PathBuf::from(home));
-        }
-        None
-    }
+    // 使用 dirs crate 做跨平台数据目录解析，替代手写的 40 行环境变量逻辑。
+    // 修复了旧实现的 bug：Linux 下 ~/.local/share 不存在时回退到家目录根（污染）。
+    dirs::data_dir().or_else(dirs::data_local_dir)
 }
 
 /// 本地「不再显示」的项目警告忽略列表。

@@ -12,7 +12,8 @@ members = [
 ]
 
 [workspace.package]
-version = "1.0.89"
+# 版本号与 AKRS-Next 编辑器关于页 BUILD_NUMBER 保持一致（Build 0098）。
+version = "1.0.98"
 edition = "2024"
 license = "MIT"
 authors = ["Akizuki*Rustgal Team"]
@@ -28,6 +29,11 @@ akrs-pack = { path = "crates/akrs-pack" }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 codespan-reporting = "0.12"
+# thiserror：统一错误类型派生（#[derive(Error)] + #[error] + #[from]）。
+thiserror = "1"
+# log + env_logger：统一日志门面与初始化。
+log = "0.4"
+env_logger = "0.11"
 notify = "6"
 notify-debouncer-mini = "0.4"
 syn = { version = "2", features = ["full", "extra-traits"] }
@@ -35,13 +41,15 @@ quote = "1"
 proc-macro2 = { version = "1", features = ["span-locations"] }
 proc-macro-error2 = "2"
 macroquad = "0.3"
-# `default-features = false` drops eframe's `accesskit` feature, which on Linux
-# would otherwise pull in the `atspi`/`zbus` accessibility stack. This project
-# does not require accessibility support, so we keep only `glow` (rendering) +
-# `default_fonts`. (Originally also a workaround for Rust 1.75; no longer needed
-# on 1.92 but retained as a deliberate design choice.)
-eframe = { version = "0.21", default-features = false, features = ["glow", "default_fonts"] }
-egui = "0.21"
+# image: PNG 解码（编辑器中立绘预览用）。workspace 统一版本，避免锁文件碎片化。
+image = { version = "0.25", default-features = false, features = ["png"] }
+# eframe/egui 0.29：编辑器 GUI 框架（从 0.21 升级，移植自 AKRS-Next 分支）。
+# `default-features = false` 关闭 accesskit（Linux 拉 atspi/zbus）、wgpu（与
+# macroquad 的 OpenGL 无关，此处不需要）等不需要的特性。
+# 显式启用 glow（OpenGL 后端，与 macroquad 共存）、default_fonts、
+# wayland + x11（Linux 窗口系统支持）。
+eframe = { version = "0.29", default-features = false, features = ["default_fonts", "glow", "wayland", "x11"] }
+egui = "0.29"
 
 [patch.crates-io]
 macroquad = { path = "patches/macroquad" }

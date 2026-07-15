@@ -244,14 +244,8 @@ impl SceneState {
         pose: Option<String>,
         transform: SpriteTransform,
     ) {
-        // Remove existing instance of this character (re-enter replaces).
-        // 额外按 pose 资源名去重：即使角色名不一致，只要用了同一个立绘资源，
-        // 也移除旧的，防止「同名不同写法」或「资源名当角色名」导致两个立绘叠加。
-        let new_pose = pose.clone();
-        self.characters.retain(|c| {
-            c.name != name
-                && !(c.pose == new_pose && new_pose.is_some())
-        });
+        // Remove existing instance of this character (re-enter replaces)
+        self.characters.retain(|c| c.name != name);
         // 若提供了 size，则 scale 用之；否则默认 1.0
         let scale = transform.scale.unwrap_or(1.0);
         self.characters.push(CharacterState {
@@ -285,14 +279,7 @@ impl SceneState {
         position: Position,
         transform: SpriteTransform,
     ) {
-        // Remove existing instance of this character (re-enter replaces).
-        // 额外按 pose 资源名去重：即使角色名不一致，只要用了同一个立绘资源，
-        // 也移除旧的，防止「同名不同写法」或「资源名当角色名」导致两个立绘叠加。
-        let new_pose = pose.clone();
-        self.characters.retain(|c| {
-            c.name != name
-                && !(c.pose == new_pose && new_pose.is_some())
-        });
+        self.characters.retain(|c| c.name != name);
         let scale = transform.scale.unwrap_or(1.0);
         self.characters.push(CharacterState {
             name,
@@ -310,11 +297,9 @@ impl SceneState {
     pub fn character_exit(&mut self, name: &str) {
         let before_len = self.characters.len();
         self.characters.retain(|c| c.name != name);
-        // 匹配失败时打警告，帮助定位「立绘下不了场」问题：
-        // 最常见原因是入场用的名字与下场不一致（例如把立绘资源名当角色名）。
         if self.characters.len() == before_len {
-            eprintln!(
-                "[akrs] 警告：尝试让角色「{}」下场，但该角色不在场上（当前在场：{:?}）。\n\
+            log::warn!(
+                "尝试让角色「{}」下场，但该角色不在场上（当前在场：{:?}）。\n\
                  这通常是因为入场（+）与下场（-）的名字不一致——请检查剧本中\n\
                  立绘入场是否误把资源名当成了角色名（正确写法：+ 角色名 (立绘资源名)）。",
                 name,

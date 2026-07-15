@@ -76,7 +76,7 @@ jobs:
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
         with:
-          toolchain: "1.92.0"
+          toolchain: "1.96.1"
           targets: ${{ matrix.target }}
 
       - name: Cache cargo
@@ -135,19 +135,14 @@ jobs:
           if [ "${{ matrix.platform }}" = "windows" ]; then
             cp "$BIN_DIR/akrs.exe" "$STAGE/"
             cp "$BIN_DIR/akrs-game.exe" "$STAGE/"
-            cp "$BIN_DIR/akrs-editor.exe" "$STAGE/"
             find "$BIN_DIR/deps" -name "lewton.dll" -exec cp {} "$STAGE/" \; 2>/dev/null || true
             rm -f "$STAGE"/lewton-*.dll
             printf 'cd /d "%%~dp0"\r\nstart akrs-game.exe\r\n' > "$STAGE/启动游戏.bat"
-            printf 'cd /d "%%~dp0"\r\nstart akrs-editor.exe\r\n' > "$STAGE/启动编辑器.bat"
           else
             cp "$BIN_DIR/akrs" "$STAGE/"
             cp "$BIN_DIR/akrs-game" "$STAGE/"
-            cp "$BIN_DIR/akrs-editor" "$STAGE/"
             printf '#!/bin/bash\ncd "$(dirname "$0")"\n./akrs-game\n' > "$STAGE/启动游戏.sh"
             chmod +x "$STAGE/启动游戏.sh"
-            printf '#!/bin/bash\ncd "$(dirname "$0")"\n./akrs-editor\n' > "$STAGE/启动编辑器.sh"
-            chmod +x "$STAGE/启动编辑器.sh"
           fi
           cp scripts/demo.akrs "$STAGE/scripts/" 2>/dev/null || true
           cp assets/fonts/SourceHanSansSC-Regular-2.otf "$STAGE/assets/fonts/" 2>/dev/null || true
@@ -157,8 +152,7 @@ jobs:
           mkdir -p "$STAGE/assets/scripts/languages/ui"
           cp assets/scripts/languages/*.json "$STAGE/assets/scripts/languages/" 2>/dev/null || true
           cp assets/scripts/languages/ui/*.json "$STAGE/assets/scripts/languages/ui/" 2>/dev/null || true
-          cp LICENSE "$STAGE/" 2>/dev/null || true
-          printf 'Akizuki*Rustgal ${{ needs.resolve.outputs.version }} (%s)\n\n游戏:\n  Windows: 双击 启动游戏.bat\n  Linux/macOS: ./启动游戏.sh\n编辑器:\n  Windows: 双击 启动编辑器.bat\n  Linux/macOS: ./启动编辑器.sh\n命令行工具: akrs check scripts/demo.akrs\n' "${{ matrix.platform }}" > "$STAGE/README.txt"
+          printf 'Akizuki*Rustgal ${{ needs.resolve.outputs.version }} (%s)\n\nWindows: 双击 启动游戏.bat\nLinux/macOS: ./启动游戏.sh\n命令行工具: akrs check scripts/demo.akrs\n' "${{ matrix.platform }}" > "$STAGE/README.txt"
 
       - name: Archive
         id: archive
@@ -204,32 +198,5 @@ jobs:
           tag_name: ${{ needs.resolve.outputs.tag }}
           name: ${{ needs.resolve.outputs.tag }}
           prerelease: ${{ needs.resolve.outputs.prerelease }}
-          body: |
-            ## Akizuki*Rustgal 首个发行版
-
-            纯 Rust 打造的视觉小说引擎 —— 编译时剧本纠错、自定义 DSL、可视化编辑器、蓝图拖拽写剧本,单二进制三平台运行。
-
-            ### 这是什么
-
-            Akizuki*Rustgal 是一个从零开始、100% 纯 Rust 实现的视觉小说引擎。从词法分析、语法解析、类型检查到虚拟机、渲染器、编辑器,每一行代码都是 Rust,不依赖 Python / Lua / TJS 等任何脚本运行时。
-
-            ### 核心亮点
-
-            - **编译时剧本纠错** —— 未定义跳转、重复节名、缺失资源在 `cargo build` 阶段就报错
-            - **可视化编辑器** —— egui 驱动,语法高亮 + 立绘/背景/音乐实时预览 + 对照翻译模式
-            - **蓝图模式可视化写剧本** —— 类 UE 蓝图的节点编辑,拖拽引脚连线即可组织流程,完整支持触摸屏(双指缩放/单指平移连线/引脚放大),平板也能写剧本
-            - **过程宏编译期嵌入** —— `.akrs` 脚本在编译时嵌入 Rust,类型检查延伸到剧本层
-            - **满血 Rust 零运行时** —— 无 GC 停顿,单二进制分发,帧率稳定可预测
-
-            ### 包内含什么
-
-            每个平台压缩包内含:**游戏主程序**(akrs-game)+ **可视化编辑器**(akrs-editor)+ **命令行工具**(akrs)+ demo 剧本、字体、立绘、背景、四语言文件、LICENSE、启动脚本。Windows 双击 `.bat`、Linux/macOS 运行 `.sh` 即可。
-
-            ### 关于代码
-
-            本项目代码实现由 AI 负责,但我会对里面的每一行代码负责。
-
-            **许可证**:MIT
-
-            完整功能详见 [README.md](https://github.com/AkizukiKokona/Akizuki-Rustgal/blob/main/README.md)。
+          generate_release_notes: true
           files: artifacts/*

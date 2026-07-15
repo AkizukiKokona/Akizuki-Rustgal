@@ -288,6 +288,143 @@ impl<'a> Lexer<'a> {
                 c if c.is_alphabetic() => {
                     self.lex_ident();
                 }
+                // ── 全角符号兼容 ──────────────────────────────────
+                // 中文输入法下易误输入全角符号（＃＠＋－＊／：（），｜？＝＜＞），
+                // 这里将它们映射到对应的 ASCII 结构符号，避免词法报错。
+                '＃' => {
+                    let sp = self.current_linecol();
+                    let start = self.pos;
+                    self.advance();
+                    self.tokens.push(Token::new(TokenKind::SectionMark, self.make_span(start, sp)));
+                }
+                '＠' => {
+                    let sp = self.current_linecol();
+                    let start = self.pos;
+                    self.advance();
+                    self.tokens.push(Token::new(TokenKind::At, self.make_span(start, sp)));
+                }
+                '？' => {
+                    let sp = self.current_linecol();
+                    let start = self.pos;
+                    self.advance();
+                    self.tokens.push(Token::new(TokenKind::Question, self.make_span(start, sp)));
+                }
+                '｜' => {
+                    let sp = self.current_linecol();
+                    let start = self.pos;
+                    self.advance();
+                    self.tokens.push(Token::new(TokenKind::Pipe, self.make_span(start, sp)));
+                }
+                '＋' => {
+                    let sp = self.current_linecol();
+                    let start = self.pos;
+                    self.advance();
+                    if self.peek() == Some('＝') {
+                        self.advance();
+                        self.tokens.push(Token::new(TokenKind::PlusEq, self.make_span(start, sp)));
+                    } else {
+                        self.tokens.push(Token::new(TokenKind::Plus, self.make_span(start, sp)));
+                    }
+                }
+                '－' => {
+                    let sp = self.current_linecol();
+                    let start = self.pos;
+                    self.advance();
+                    if self.peek() == Some('＞') {
+                        self.advance();
+                        self.tokens.push(Token::new(TokenKind::FlowArrow, self.make_span(start, sp)));
+                    } else if self.peek() == Some('＝') {
+                        self.advance();
+                        self.tokens.push(Token::new(TokenKind::MinusEq, self.make_span(start, sp)));
+                    } else {
+                        self.tokens.push(Token::new(TokenKind::Minus2, self.make_span(start, sp)));
+                    }
+                }
+                '＊' => {
+                    let sp = self.current_linecol();
+                    let start = self.pos;
+                    self.advance();
+                    self.tokens.push(Token::new(TokenKind::Star, self.make_span(start, sp)));
+                }
+                '／' => {
+                    if self.peek_at(1) == Some('／') {
+                        // 全角注释 ／／
+                        while self.pos < self.chars.len() && self.chars[self.pos] != '\n' {
+                            self.advance();
+                        }
+                    } else {
+                        let sp = self.current_linecol();
+                        let start = self.pos;
+                        self.advance();
+                        self.tokens.push(Token::new(TokenKind::Slash, self.make_span(start, sp)));
+                    }
+                }
+                '：' => {
+                    let sp = self.current_linecol();
+                    let start = self.pos;
+                    self.advance();
+                    self.tokens.push(Token::new(TokenKind::Colon, self.make_span(start, sp)));
+                }
+                '（' => {
+                    let sp = self.current_linecol();
+                    let start = self.pos;
+                    self.advance();
+                    self.tokens.push(Token::new(TokenKind::LParen, self.make_span(start, sp)));
+                }
+                '）' => {
+                    let sp = self.current_linecol();
+                    let start = self.pos;
+                    self.advance();
+                    self.tokens.push(Token::new(TokenKind::RParen, self.make_span(start, sp)));
+                }
+                '，' => {
+                    let sp = self.current_linecol();
+                    let start = self.pos;
+                    self.advance();
+                    self.tokens.push(Token::new(TokenKind::Comma, self.make_span(start, sp)));
+                }
+                '＝' => {
+                    let sp = self.current_linecol();
+                    let start = self.pos;
+                    self.advance();
+                    if self.peek() == Some('＝') {
+                        self.advance();
+                        self.tokens.push(Token::new(TokenKind::EqEq, self.make_span(start, sp)));
+                    } else if self.peek() == Some('＞') {
+                        self.advance();
+                        self.tokens.push(Token::new(TokenKind::VisitArrow, self.make_span(start, sp)));
+                    } else {
+                        self.tokens.push(Token::new(TokenKind::Assign, self.make_span(start, sp)));
+                    }
+                }
+                '＜' => {
+                    let sp = self.current_linecol();
+                    let start = self.pos;
+                    self.advance();
+                    if self.peek() == Some('＝') {
+                        self.advance();
+                        self.tokens.push(Token::new(TokenKind::LtEq, self.make_span(start, sp)));
+                    } else {
+                        self.tokens.push(Token::new(TokenKind::Lt, self.make_span(start, sp)));
+                    }
+                }
+                '＞' => {
+                    let sp = self.current_linecol();
+                    let start = self.pos;
+                    self.advance();
+                    if self.peek() == Some('＝') {
+                        self.advance();
+                        self.tokens.push(Token::new(TokenKind::GtEq, self.make_span(start, sp)));
+                    } else {
+                        self.tokens.push(Token::new(TokenKind::Gt, self.make_span(start, sp)));
+                    }
+                }
+                // 中文引号也作为字符串边界兼容（开/闭均视为引号）
+                '\u{201C}' | '\u{201D}' | '\u{2018}' | '\u{2019}' => {
+                    if let Err(e) = self.lex_string(ch) {
+                        errors.push(e);
+                    }
+                }
                 _ => {
                     let sp = self.current_linecol();
                     let start = self.pos;
@@ -325,9 +462,19 @@ impl<'a> Lexer<'a> {
         self.advance(); // opening quote
         let mut value = String::new();
 
+        // 中文引号成对匹配：开引号与闭引号是不同字符，需统一识别。
+        // “(U+201C) 与 ”(U+201D) 互配；‘(U+2018) 与 ’(U+2019) 互配。
+        let is_close = |c: char| -> bool {
+            match (quote, c) {
+                ('\u{201C}', '\u{201D}') | ('\u{201D}', '\u{201C}') => true,
+                ('\u{2018}', '\u{2019}') | ('\u{2019}', '\u{2018}') => true,
+                _ => c == quote,
+            }
+        };
+
         while self.pos < self.chars.len() {
             let ch = self.chars[self.pos];
-            if ch == quote {
+            if is_close(ch) {
                 self.advance();
                 self.tokens.push(Token::new(TokenKind::String(value), self.make_span(start, sp)));
                 return Ok(());

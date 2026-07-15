@@ -5,6 +5,19 @@
 use serde::{Deserialize, Serialize};
 use std::path::Path;
 
+/// 设置持久化错误。
+///
+/// 用 `thiserror` 派生 `Error`/`Display`，替代原先的 `Result<(), String>`。
+#[derive(Debug, thiserror::Error)]
+pub enum SettingsError {
+    /// 序列化设置失败（serde_json 错误）。
+    #[error("failed to serialize settings: {0}")]
+    Serialize(serde_json::Error),
+    /// 写入设置文件失败（IO 错误）。
+    #[error("failed to write settings file: {0}")]
+    Write(std::io::Error),
+}
+
 /// 快进模式：控制快进时的行为。
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq)]
 pub enum SkipMode {
@@ -214,11 +227,9 @@ impl Settings {
     }
 
     /// Save settings to a JSON file.
-    pub fn save(&self, path: &Path) -> Result<(), String> {
-        let content = serde_json::to_string_pretty(self)
-            .map_err(|e| format!("failed to serialize settings: {}", e))?;
-        std::fs::write(path, content)
-            .map_err(|e| format!("failed to write settings file: {}", e))?;
+    pub fn save(&self, path: &Path) -> Result<(), SettingsError> {
+        let content = serde_json::to_string_pretty(self).map_err(SettingsError::Serialize)?;
+        std::fs::write(path, content).map_err(SettingsError::Write)?;
         Ok(())
     }
 
