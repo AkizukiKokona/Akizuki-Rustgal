@@ -16,8 +16,9 @@ members = [
 ]
 
 [workspace.package]
-# patch 段与编辑器关于页 BUILD_NUMBER 保持一致（本轮 0097 → 0098）。
-version = "1.0.98"
+# 2.0 系列：渲染后端从 macroquad 迁移至 wgpu 22，编辑器 eframe/egui 0.29 wgpu 后端。
+# 编译号 0098 保持不变（沿用 AKRS-Next 最后一次构建号）。
+version = "2.0.98"
 edition = "2024"
 license = "MIT"
 authors = ["Akizuki*Rustgal Team"]
