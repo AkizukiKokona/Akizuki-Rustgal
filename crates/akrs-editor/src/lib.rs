@@ -895,9 +895,9 @@ impl BlueprintState {
     /// 坐标空间：逻辑坐标（不含 zoom/pan）。仅在首尾引脚处允许接触节点，
     /// 曲线中段必须不穿过任何障碍节点矩形（采样 100 点检测）。
     ///
-    /// 控制点策略：放在 from 和 to 的 y 中点（不向外延伸），
-    /// 这样曲线从 from 平滑弯向 to，不会绕大圈。
-    /// 若穿过节点，从障碍节点的上方/下方找最近的空隙穿过。
+    /// 曲线形状（S 形）：从源点向下延伸、再向上弯过目标一点、再回落到目标。
+    /// 即 ctrl1 在源点下方，ctrl2 在目标点上方，形成"下→上→更高→回落"的波形。
+    /// 若穿过节点，逐步增大偏移使曲线绕开；仍穿过则从障碍上下空隙穿过。
     fn route_bezier_around(
         &self,
         from_pin: egui::Pos2, // 逻辑坐标
@@ -928,35 +928,47 @@ impl BlueprintState {
             true
         };
 
-        // 生成控制点：两个控制点的 y 坐标相同（在 from 和 to 的 y 中间），
-        // x 分别保持 from 和 to 的 x，形成平滑 S 形曲线。
-        let make_ctrls = |y: f32| -> [egui::Pos2; 2] {
-            [egui::pos2(from_pin.x, y), egui::pos2(to_pin.x, y)]
+        // S 形控制点：ctrl1 在源点下方（向下延伸），ctrl2 在目标点上方（从上方进入）
+        let make_ctrls = |offset: f32| -> [egui::Pos2; 2] {
+            [
+                egui::pos2(from_pin.x, from_pin.y + offset),
+                egui::pos2(to_pin.x, to_pin.y - offset),
+            ]
         };
 
-        // 默认：控制点在 from 和 to 的 y 中点
-        let mid_y = (from_pin.y + to_pin.y) * 0.5;
-        let default_ctrls = make_ctrls(mid_y);
+        // 默认偏移：与距离成比例，下限 60 保证曲线可见
+        let base_offset = ((to_pin.y - from_pin.y).abs() * 0.5).max(60.0);
+
+        // 优先尝试默认 S 形曲线
+        let default_ctrls = make_ctrls(base_offset);
         if curve_ok(default_ctrls[0], default_ctrls[1]) {
             return [from_pin, default_ctrls[0], default_ctrls[1], to_pin];
         }
 
-        // 默认曲线穿过节点，收集 x 范围内障碍节点的 top/bottom，
-        // 尝试从障碍上方或下方的空隙穿过。
+        // 增大偏移使曲线绕开节点（上限 400）
+        let mut offset = base_offset;
+        while offset < 400.0 {
+            offset += 50.0;
+            let ctrls = make_ctrls(offset);
+            if curve_ok(ctrls[0], ctrls[1]) {
+                return [from_pin, ctrls[0], ctrls[1], to_pin];
+            }
+        }
+
+        // 增大偏移仍穿过，从障碍节点上方/下方空隙穿过：
+        // 两个控制点放在同一空隙 y，形成"绕过障碍顶部/底部"的弧线
         let x_min = from_pin.x.min(to_pin.x);
         let x_max = from_pin.x.max(to_pin.x);
-        let gap = 15.0; // 与障碍节点的垂直间距
+        let gap = 15.0;
+        let mid_y = (from_pin.y + to_pin.y) * 0.5;
 
         let mut candidates: Vec<f32> = Vec::new();
         for r in &obstacles {
-            // 只考虑 x 范围与曲线水平跨度有重叠的障碍
             if r.right() > x_min && r.left() < x_max {
                 candidates.push(r.top() - gap);    // 障碍上方
                 candidates.push(r.bottom() + gap); // 障碍下方
             }
         }
-
-        // 按离 mid_y 近到远排序，优先选择最短绕行
         candidates.sort_by(|a, b| {
             (a - mid_y)
                 .abs()
@@ -965,13 +977,13 @@ impl BlueprintState {
         });
 
         for &y in &candidates {
-            let ctrls = make_ctrls(y);
+            let ctrls = [egui::pos2(from_pin.x, y), egui::pos2(to_pin.x, y)];
             if curve_ok(ctrls[0], ctrls[1]) {
                 return [from_pin, ctrls[0], ctrls[1], to_pin];
             }
         }
 
-        // 全部候选都穿过，退化为默认中点（允许穿过，至少视觉平滑）
+        // 全部候选都穿过，退化为默认 S 形（允许穿过，至少视觉平滑）
         [from_pin, default_ctrls[0], default_ctrls[1], to_pin]
     }
 
@@ -1110,7 +1122,12 @@ impl BlueprintState {
 
             match kind {
                 NodeKind::Section => {
-                    // 章节节点（始）：不与上一行顺序连，入线来自跳转语句
+                    // 章节节点（始）：若 prev_id 存在（正常顺序流，上一章自然结束），
+                    // 与 prev 连线；若 prev_id 为 None（前一条是跳转/终止语句），
+                    // 入线来自跳转语句，不顺序连。
+                    if let Some(prev) = prev_id {
+                        self.push_link(prev, id);
+                    }
                     prev_id = Some(id);
                 }
                 NodeKind::Choice => {
