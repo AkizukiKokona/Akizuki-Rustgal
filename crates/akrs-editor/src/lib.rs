@@ -2012,10 +2012,20 @@ enum FilePickerMode {
     Open,
 }
 
+/// 文件选择对话框的用途：确认选择后回填到哪个字段。
+#[derive(Debug, Clone, Copy, PartialEq)]
+enum FilePickerPurpose {
+    /// 打开 .akrs 脚本到编辑器（调用 open_file_path）。
+    OpenScript,
+    /// 为 Ren'Py 导入窗口选择 .rpy 源文件（回填 rpy_import_source）。
+    SelectRpySource,
+}
+
 /// 文件选择对话框状态。
 #[allow(dead_code)]
 struct FilePickerState {
     mode: FilePickerMode,
+    purpose: FilePickerPurpose,
     current_dir: PathBuf,
     entries: Vec<PickerEntry>,
     selected: Option<String>,
@@ -2358,6 +2368,7 @@ impl EditorApp {
         let entries = Self::read_picker_entries(&self.work_dir, "");
         self.file_picker = Some(FilePickerState {
             mode,
+            purpose: FilePickerPurpose::OpenScript,
             current_dir: self.work_dir.clone(),
             entries,
             selected: None,
@@ -6183,6 +6194,77 @@ impl EditorApp {
 
     // -- Ren'Py 剧本导入 -------------------------------------------------------
 
+    /// 从 `s` 中提取首个双引号字符串（处理 `\"` 转义）。
+    /// `s` 允许前导空白，首个非空白字符必须是 `"`。
+    /// 返回 `(字符串内容, 闭合引号之后的剩余文本)`；解析失败返回 `None`。
+    fn extract_first_quoted(s: &str) -> Option<(&str, &str)> {
+        let rest = s.trim_start();
+        let bytes = rest.as_bytes();
+        if bytes.first() != Some(&b'"') {
+            return None;
+        }
+        let after = &rest[1..]; // 跳过开头引号
+        let mut chars = after.char_indices();
+        while let Some((i, c)) = chars.next() {
+            if c == '\\' {
+                chars.next(); // 跳过被转义的字符
+                continue;
+            }
+            if c == '"' {
+                // i 是闭合引号在 after 中的字节偏移；引号是单字节，i+1 是合法边界
+                return Some((&after[..i], &after[i + 1..]));
+            }
+        }
+        None
+    }
+
+    /// 与 `extract_first_quoted` 类似，但同时接受单引号 `'...'` 与双引号 `"..."`。
+    /// 用于解析 `Character("Name")` / `Character('Name')` 中的名字字面量。
+    fn extract_first_string_literal(s: &str) -> Option<(&str, &str)> {
+        let rest = s.trim_start();
+        let bytes = rest.as_bytes();
+        let quote = match bytes.first() {
+            Some(&b'"') => b'"',
+            Some(&b'\'') => b'\'',
+            _ => return None,
+        };
+        let after = &rest[1..]; // 跳过开头引号
+        let mut chars = after.char_indices();
+        while let Some((i, c)) = chars.next() {
+            if c == '\\' {
+                chars.next(); // 跳过被转义的字符
+                continue;
+            }
+            if c == quote as char {
+                // 引号是单字节 ASCII，i+1 是合法边界
+                return Some((&after[..i], &after[i + 1..]));
+            }
+        }
+        None
+    }
+
+    /// 若 `s` 以合法 ASCII 标识符（`[A-Za-z_][A-Za-z0-9_]*`）开头，
+    /// 返回 `(标识符, 标识符之后的剩余文本)`；否则返回 `None`。
+    /// 用于识别 Ren'Py say 语句形式3：`e "对话"`（变量名 + 字符串）。
+    /// 标识符仅限 ASCII 字节，因此切割边界始终是合法 UTF-8 边界。
+    fn split_leading_identifier(s: &str) -> Option<(&str, &str)> {
+        let bytes = s.as_bytes();
+        let first = *bytes.first()?;
+        if first != b'_' && !first.is_ascii_alphabetic() {
+            return None;
+        }
+        let mut end = 1;
+        while end < bytes.len() {
+            let b = bytes[end];
+            if b == b'_' || b.is_ascii_alphanumeric() {
+                end += 1;
+            } else {
+                break;
+            }
+        }
+        Some((&s[..end], &s[end..]))
+    }
+
     /// 从 Ren'Py .rpy 文件转换为 .akrs 格式并保存。
     /// 仅转换可直接映射的语法，不支持的功能会产生警告。
     fn convert_rpy_to_akrs(&mut self, source: &Path, target: &Path) {
@@ -6198,10 +6280,47 @@ impl EditorApp {
         let mut akrs_lines: Vec<String> = Vec::new();
         let mut warnings: Vec<String> = Vec::new();
 
-        // 检测剧本主题（label/start）
-        let has_label = content.contains("label start:") || content.contains("label start:");
+        // 检测剧本主题（label start）。
+        // Ren'Py 8.5 的入口为 `label start:`；容忍冒号前后的空白。
+        let has_label = content.lines().any(|l| l.trim().starts_with("label start"));
         if !has_label {
             warnings.push("未检测到 'label start:'，可能不是标准的 Ren'Py 剧本文件".to_string());
+        }
+
+        // 预扫描：从 `define X = Character("Name", ...)` 与 `$ X = Character('Name', ...)`
+        // 语句中提取角色变量名 -> 显示名映射。这是 Ren'Py 8.5 最常见的角色定义方式，
+        // 用于把 say 语句形式3 `e "对话"` 转换为 `Eileen: "对话"`。
+        // Character(None, ...) 视为旁白（显示名为空字符串）。
+        let mut char_names: HashMap<String, String> = HashMap::new();
+        for line in content.lines() {
+            let t = line.trim();
+            let assignment = t
+                .strip_prefix("define ")
+                .or_else(|| t.strip_prefix("$ "));
+            let Some(rest) = assignment.map(str::trim) else {
+                continue;
+            };
+            // 必须形如 `<var> = Character(`；var 为单一 ASCII 标识符
+            let Some((lhs, rhs)) = rest.split_once('=') else {
+                continue;
+            };
+            let var = lhs.trim();
+            let is_single_ident = Self::split_leading_identifier(var)
+                .is_some_and(|(id, tail)| tail.is_empty() && id == var);
+            if !is_single_ident {
+                continue;
+            }
+            let rhs_trimmed = rhs.trim();
+            let Some(args) = rhs_trimmed.strip_prefix("Character(") else {
+                continue;
+            };
+            let args_trimmed = args.trim_start();
+            if args_trimmed.starts_with("None") {
+                // Character(None, ...) -> 旁白（无名字）
+                char_names.insert(var.to_string(), String::new());
+            } else if let Some((name, _)) = Self::extract_first_string_literal(args_trimmed) {
+                char_names.insert(var.to_string(), name.to_string());
+            }
         }
 
         // 逐行转换
@@ -6272,57 +6391,95 @@ impl EditorApp {
                 continue;
             }
 
-            // 对话 "说话人 \"对话内容\""
-            if trimmed.starts_with('"') && trimmed.contains("\" \"") {
-                // 格式如: "说话人 \"对话\""
-                // 简化处理：提取说话人和对话
-                let parts: Vec<&str> = trimmed.splitn(2, "\" \"").collect();
-                if parts.len() == 2 {
-                    let speaker = parts[0].trim_start_matches('"').trim();
-                    let dialogue = parts[1].trim_end_matches('"').trim();
-                    akrs_lines.push(format!("{}: \"{}\"", speaker, dialogue));
-                    continue;
-                }
-            }
-
-            // narrate 旁白（无说话人的字符串）
-            if trimmed.starts_with('"') && trimmed.ends_with('"') {
-                let narration = trimmed.trim_matches('"');
-                akrs_lines.push(format!("\"{}\"", narration));
-                continue;
-            }
-
-            // menu -> ? 选择分支
-            if trimmed.starts_with("menu:") {
+            // menu -> ? 选择分支（menu: 或 menu label_name:）
+            if trimmed.starts_with("menu:") || trimmed.starts_with("menu ") {
                 akrs_lines.push("? \"\"".to_string());
                 continue;
             }
 
-            // 菜单选项（以字符串开头后冒号）-> | 选项
-            if trimmed.starts_with('"') && trimmed.contains(':') && !trimmed.contains("\" \"") {
-                // 格式如: "选项文本":（后接 jump）
-                let parts: Vec<&str> = trimmed.splitn(2, ':').collect();
-                if parts.len() == 2 {
-                    let option_text = parts[0].trim_matches('"').trim();
-                    akrs_lines.push(format!("| \"{}\"", option_text));
-                    // 如果有 jump，映射为 ->
-                    let rest = parts[1].trim();
-                    if rest.starts_with("jump ") {
-                        let target_label = rest.strip_prefix("jump ").unwrap_or("").trim();
-                        akrs_lines.push(format!("    -> {}", target_label));
+            // return -> 剧本结束
+            if trimmed.starts_with("return") {
+                akrs_lines.push("~~".to_string());
+                continue;
+            }
+            // jump -> 跳转
+            if trimmed.starts_with("jump ") {
+                let target = trimmed.strip_prefix("jump ").unwrap_or("").trim();
+                akrs_lines.push(format!("-> {}", target));
+                continue;
+            }
+
+            // 形式3：`<变量> "对话"`（Ren'Py 8.5 最常见的 say 语句）
+            // 变量通过预扫描的 char_names 映射到显示名；未在映射中的变量回退用变量名本身。
+            // 必须放在所有关键字分支之后，以免误吞 scene/show/jump 等关键字开头的行。
+            if let Some((var, after_ident)) = Self::split_leading_identifier(trimmed) {
+                let rest = after_ident.trim_start();
+                if let Some((dialogue, after_quote)) = Self::extract_first_quoted(rest) {
+                    let speaker = char_names
+                        .get(var)
+                        .cloned()
+                        .unwrap_or_else(|| var.to_string());
+                    let after_trim = after_quote.trim();
+                    if after_trim.starts_with("with ") {
+                        warnings.push(format!("对话过渡未转换：{}", trimmed));
+                    } else if after_trim.starts_with('(') {
+                        // say 参数（如 `(what_size=32)`），akrs 无对应概念，忽略
+                    }
+                    if speaker.is_empty() {
+                        // Character(None) -> 旁白
+                        akrs_lines.push(format!("\"{}\"", dialogue));
+                    } else {
+                        akrs_lines.push(format!("{}: \"{}\"", speaker, dialogue));
                     }
                     continue;
                 }
             }
 
-            // return / jump -> -> 或结束
-            if trimmed.starts_with("return") {
-                akrs_lines.push("~~".to_string());
-                continue;
-            }
-            if trimmed.starts_with("jump ") {
-                let target = trimmed.strip_prefix("jump ").unwrap_or("").trim();
-                akrs_lines.push(format!("-> {}", target));
+            // 字符串开头的 say 语句：形式1（旁白）/ 形式2（"名字" "对话"）/ 形式4（带 with）/ 菜单选项
+            if trimmed.starts_with('"') {
+                if let Some((first, rest1)) = Self::extract_first_quoted(trimmed) {
+                    let rest1_trim = rest1.trim_start();
+                    if rest1_trim.starts_with('"') {
+                        // 形式2："说话人" "对话内容"
+                        if let Some((dialogue, after2)) = Self::extract_first_quoted(rest1_trim) {
+                            let after2_trim = after2.trim();
+                            if after2_trim.starts_with("with ") {
+                                warnings.push(format!("对话过渡未转换：{}", trimmed));
+                            }
+                            akrs_lines.push(format!("{}: \"{}\"", first, dialogue));
+                            continue;
+                        }
+                    } else if rest1_trim.starts_with("with ") {
+                        // 形式4："旁白" with <过渡>（akrs 文本无过渡，仅警告）
+                        warnings.push(format!("旁白过渡未转换：{}", trimmed));
+                        akrs_lines.push(format!("\"{}\"", first));
+                        continue;
+                    } else if rest1_trim.starts_with(':') {
+                        // 菜单选项："选项文本":（后接 jump，可能在下一行）
+                        akrs_lines.push(format!("| \"{}\"", first));
+                        let after_colon = rest1_trim[1..].trim();
+                        if after_colon.starts_with("jump ") {
+                            let target_label = after_colon
+                                .strip_prefix("jump ")
+                                .unwrap_or("")
+                                .trim();
+                            akrs_lines.push(format!("    -> {}", target_label));
+                        }
+                        continue;
+                    } else if rest1_trim.is_empty() {
+                        // 形式1：旁白
+                        akrs_lines.push(format!("\"{}\"", first));
+                        continue;
+                    } else {
+                        // 带未识别尾部的旁白，保留文本并警告
+                        warnings.push(format!("未识别的尾部内容：{}", trimmed));
+                        akrs_lines.push(format!("\"{}\"", first));
+                        continue;
+                    }
+                }
+                // 引号未闭合：按原样保留为注释
+                akrs_lines.push(format!("// 未转换: {}", trimmed));
+                warnings.push(format!("引号未闭合：{}", trimmed));
                 continue;
             }
 
@@ -6351,6 +6508,10 @@ impl EditorApp {
                 || trimmed.starts_with("default ")
                 || trimmed.starts_with("init ")
             {
+                // Character 定义已在预扫描中提取映射，此处静默跳过；其余定义/初始化产生警告。
+                if trimmed.contains("Character(") {
+                    continue;
+                }
                 warnings.push(format!("定义/初始化块未转换：{}", trimmed));
                 continue;
             }
@@ -7074,6 +7235,7 @@ impl eframe::App for EditorApp {
                                 });
                                 self.file_picker = Some(FilePickerState {
                                     mode: FilePickerMode::Open,
+                                    purpose: FilePickerPurpose::SelectRpySource,
                                     current_dir: start_dir,
                                     entries: picked_entries,
                                     selected: None,
@@ -7237,8 +7399,23 @@ impl eframe::App for EditorApp {
                 close = true;
             }
             if let Some(path) = confirm {
+                let purpose = self
+                    .file_picker
+                    .as_ref()
+                    .map(|fp| fp.purpose)
+                    .unwrap_or(FilePickerPurpose::OpenScript);
                 if path.is_file() {
-                    self.open_file_path(&path);
+                    match purpose {
+                        // 为 Ren'Py 导入窗口选择 .rpy 源文件：回填源路径，
+                        // 不要把 .rpy 当 .akrs 打开到编辑器。
+                        FilePickerPurpose::SelectRpySource => {
+                            self.rpy_import_source = Some(path.clone());
+                            self.status = format!("已选择源文件：{}", path.display());
+                        }
+                        FilePickerPurpose::OpenScript => {
+                            self.open_file_path(&path);
+                        }
+                    }
                 }
                 self.file_picker = None;
             }
@@ -9115,5 +9292,112 @@ mod tests {
         let mut app = EditorApp::default();
         app.new_file();
         assert!(!app.show_welcome, "welcome panel should hide after new file");
+    }
+
+    #[test]
+    fn split_leading_identifier_basic() {
+        assert_eq!(
+            EditorApp::split_leading_identifier("e \"hi\""),
+            Some(("e", " \"hi\""))
+        );
+        assert_eq!(EditorApp::split_leading_identifier("narrator"), Some(("narrator", "")));
+        assert_eq!(
+            EditorApp::split_leading_identifier("_foo123 bar"),
+            Some(("_foo123", " bar"))
+        );
+        assert_eq!(EditorApp::split_leading_identifier("\"hi\""), None);
+        assert_eq!(EditorApp::split_leading_identifier("9bad"), None);
+        assert_eq!(EditorApp::split_leading_identifier(""), None);
+    }
+
+    #[test]
+    fn extract_first_string_literal_both_quotes() {
+        assert_eq!(
+            EditorApp::extract_first_string_literal("\"Eileen\", rest"),
+            Some(("Eileen", ", rest"))
+        );
+        assert_eq!(
+            EditorApp::extract_first_string_literal("'Eileen')"),
+            Some(("Eileen", ")"))
+        );
+        assert_eq!(EditorApp::extract_first_string_literal("None)"), None);
+    }
+
+    #[test]
+    fn rpy_import_variable_dialogue_form3() {
+        // Ren'Py 8.5 最常见的 say 语句形式：`e "对话"`，其中 e 由 define 定义。
+        // 回归测试：此前转换器不识别此形式，每行对话都变成 `// 未转换: e "..."`，
+        // 导致导入产物全是注释、无法使用（用户报告的"导入失败"）。
+        let src = concat!(
+            "define e = Character(\"Eileen\", who_color=\"#c8ffc8\")\n",
+            "label start:\n",
+            "    scene bg room\n",
+            "    show eileen happy\n",
+            "    e \"You've created a new Ren'Py game.\"\n",
+            "    e \"Once you add a story, you can release it to the world!\"\n",
+            "    \"You can also use narration.\"\n",
+            "    \"Eileen\" \"Or explicit character names.\"\n",
+            "    return\n",
+        );
+        let dir = std::env::temp_dir();
+        let source = dir.join("akrs_rpy_test_form3.rpy");
+        let target = dir.join("akrs_rpy_test_form3.akrs");
+        std::fs::write(&source, src).unwrap();
+        let mut app = EditorApp::default();
+        app.convert_rpy_to_akrs(&source, &target);
+        let out = std::fs::read_to_string(&target).unwrap();
+        assert!(
+            out.contains("Eileen: \"You've created a new Ren'Py game.\""),
+            "形式3 e \"对话\" 应映射为 Eileen: \"对话\"，实际输出:\n{}",
+            out
+        );
+        assert!(
+            out.contains("Eileen: \"Once you add a story, you can release it to the world!\""),
+            "第二条 e 对话应映射，实际输出:\n{}",
+            out
+        );
+        assert!(
+            out.contains("\"You can also use narration.\""),
+            "形式1 旁白应保留，实际输出:\n{}",
+            out
+        );
+        assert!(
+            out.contains("Eileen: \"Or explicit character names.\""),
+            "形式2 \"名字\" \"对话\" 应映射，实际输出:\n{}",
+            out
+        );
+        assert!(
+            !out.contains("// 未转换: e "),
+            "不应再出现 e \"对话\" 被标记为未转换，实际输出:\n{}",
+            out
+        );
+        let _ = std::fs::remove_file(&source);
+        let _ = std::fs::remove_file(&target);
+    }
+
+    #[test]
+    fn rpy_import_old_style_dollar_character() {
+        // 旧版教程风格：`$ e = Character('Eileen')`（单引号，$ 前缀）。
+        // 验证预扫描同样能从此形式提取角色名映射。
+        let src = concat!(
+            "label start:\n",
+            "    $ e = Character('Eileen')\n",
+            "    e \"Hello, world.\"\n",
+            "    return\n",
+        );
+        let dir = std::env::temp_dir();
+        let source = dir.join("akrs_rpy_test_oldstyle.rpy");
+        let target = dir.join("akrs_rpy_test_oldstyle.akrs");
+        std::fs::write(&source, src).unwrap();
+        let mut app = EditorApp::default();
+        app.convert_rpy_to_akrs(&source, &target);
+        let out = std::fs::read_to_string(&target).unwrap();
+        assert!(
+            out.contains("Eileen: \"Hello, world.\""),
+            "$ 单引号 Character 定义也应映射，实际输出:\n{}",
+            out
+        );
+        let _ = std::fs::remove_file(&source);
+        let _ = std::fs::remove_file(&target);
     }
 }
