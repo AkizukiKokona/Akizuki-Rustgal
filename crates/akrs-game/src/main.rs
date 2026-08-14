@@ -9,6 +9,14 @@
 //!   akrs-game --project <dir>  — run from project directory
 
 #![cfg_attr(target_os = "windows", windows_subsystem = "windows")]
+// The cdylib lib target (Android) only exercises its code through quad_main,
+// while the desktop bin only exercises it through main(); compiling the other
+// target on a given platform triggers dead-code warnings. Both entry points
+// are reachable in their respective build, so silence those warnings.
+#![allow(dead_code)]
+
+#[cfg(target_os = "android")]
+mod android;
 
 use akrs_core::ProjectConfig;
 use akrs_render::window_conf;
@@ -152,4 +160,17 @@ async fn main() {
     }
 
     akrs_render::run(engine, &project_config).await;
+}
+
+// ─── Android entry point ───────────────────────────────────────────────────
+//
+// Android's NativeActivity dlopens libakrs_game.so and calls
+// ANativeActivity_onCreate (implemented in patches/miniquad), which invokes
+// this `quad_main` function. We extract the bundled assets into the internal
+// storage and then run the regular macroquad main loop.
+#[cfg(target_os = "android")]
+#[unsafe(no_mangle)]
+pub extern "C" fn quad_main() {
+    crate::android::setup();
+    main();
 }

@@ -212,8 +212,12 @@ fn shade(c: Color, factor: f32) -> Color {
 
 /// Candidate system font paths, searched in order when the bundled font is
 /// missing or unreadable.  The first existing file is loaded.
+/// On Android system fonts are not accessible from native code; the font is
+/// always taken from bundled assets, so this returns nothing there.
+#[cfg(not(target_os = "android"))]
 fn system_font_candidates() -> Vec<(&'static str, PathBuf)> {
     let mut cands: Vec<(&'static str, PathBuf)> = Vec::new();
+    // On Android no system-font search is possible, so nothing is pushed.
 
     #[cfg(target_os = "windows")]
     {
@@ -245,7 +249,8 @@ fn system_font_candidates() -> Vec<(&'static str, PathBuf)> {
         cands.push(("文泉驿正黑", PathBuf::from("/usr/share/fonts/wenquanyi/wqy-zenhei/wqy-zenhei.ttc")));
     }
 
-    // Also check user-level font directories on every platform.
+    // Also check user-level font directories on every desktop platform.
+    #[cfg(not(target_os = "android"))]
     if let Some(home) = dirs_or_home() {
         #[cfg(target_os = "windows")]
         cands.push(("用户字体", home.join("AppData/Local/Microsoft/Windows/Fonts/msyh.ttc")));
@@ -262,6 +267,7 @@ fn system_font_candidates() -> Vec<(&'static str, PathBuf)> {
 }
 
 /// Best-effort `HOME` / user-profile resolution without external crates.
+#[cfg(not(target_os = "android"))]
 fn dirs_or_home() -> Option<PathBuf> {
     std::env::var_os("HOME")
         .or_else(|| std::env::var_os("USERPROFILE"))
@@ -312,7 +318,10 @@ fn load_font_with_fallback() -> (Option<Font>, Option<Font>) {
     }
 
     let mut primary: Option<Font> = None;
+    #[cfg(not(target_os = "android"))]
     let mut fallback: Option<Font> = None;
+    #[cfg(target_os = "android")]
+    let fallback: Option<Font> = None;
 
     // 1. 运行时 OTF 字体文件（最高优先级，覆盖所有 CJK 字形）。
     let runtime_font_path = "assets/fonts/SourceHanSansSC-Regular-2.otf";
@@ -331,6 +340,8 @@ fn load_font_with_fallback() -> (Option<Font>, Option<Font>) {
     }
 
     // 2. 系统字体——填充 primary（如果仍为 None）和/或 fallback。
+    //    Android 无系统字体访问，跳过（字体来自打包资源）。
+    #[cfg(not(target_os = "android"))]
     for (name, path) in system_font_candidates() {
         if !path.exists() {
             continue;
@@ -821,6 +832,7 @@ enum ButtonAction {
 /// 窗口配置 for macroquad。
 /// 启用高 DPI 渲染以避免"假高清"模糊问题。
 /// 窗口尺寸约为屏幕面积的 1/2，系统自动居中。
+#[cfg(not(target_os = "android"))]
 pub fn window_conf() -> macroquad::miniquad::conf::Conf {
     let (screen_w, screen_h) = get_screen_size();
     // 窗口创建前 DPI 未知，按 1.0 保守估算；启动后 run() 内会根据真实
@@ -839,8 +851,24 @@ pub fn window_conf() -> macroquad::miniquad::conf::Conf {
     }
 }
 
+/// Android 窗口配置：全屏运行，尺寸由系统 surface 决定。
+#[cfg(target_os = "android")]
+pub fn window_conf() -> macroquad::miniquad::conf::Conf {
+    macroquad::miniquad::conf::Conf {
+        window_title: "Akizuki*Rustgal".to_string(),
+        window_width: 0,
+        window_height: 0,
+        fullscreen: true,
+        // 启用高 DPI 支持，确保渲染分辨率与显示分辨率匹配
+        high_dpi: true,
+        ..Default::default()
+    }
+}
+
 /// Try to load the kokona.png icon; fall back to a programmatically-generated
 /// crescent-moon icon if the PNG raw-RGBA data is missing or mismatched.
+/// (Desktop only — Android ignores window icons.)
+#[cfg(not(target_os = "android"))]
 fn load_kokona_icon_or_fallback() -> macroquad::miniquad::conf::Icon {
     let small: [u8; 16 * 16 * 4] = match icon_bytes_from_raw(include_bytes!("../../../assets/icon_kokona_16.bin")) {
         Ok(b) => b,
@@ -858,6 +886,7 @@ fn load_kokona_icon_or_fallback() -> macroquad::miniquad::conf::Icon {
 }
 
 /// Convert a raw byte slice to a fixed-size RGBA array.
+#[cfg(not(target_os = "android"))]
 fn icon_bytes_from_raw<const N: usize>(data: &[u8]) -> Result<[u8; N], ()> {
     if data.len() != N {
         return Err(());
@@ -868,24 +897,28 @@ fn icon_bytes_from_raw<const N: usize>(data: &[u8]) -> Result<[u8; N], ()> {
 }
 
 /// Programmatic fallback icon: a crescent moon on an indigo background.
+#[cfg(not(target_os = "android"))]
 fn make_icon_16() -> [u8; 16 * 16 * 4] {
     let mut buf = [0u8; 16 * 16 * 4];
     for y in 0..16u32 { for x in 0..16u32 { let i = ((y*16+x)*4) as usize; let (r,g,b) = pixel_color(x as f32/16.0, y as f32/16.0); buf[i]=r; buf[i+1]=g; buf[i+2]=b; buf[i+3]=255; }}
     buf
 }
 
+#[cfg(not(target_os = "android"))]
 fn make_icon_32() -> [u8; 32 * 32 * 4] {
     let mut buf = [0u8; 32 * 32 * 4];
     for y in 0..32u32 { for x in 0..32u32 { let i = ((y*32+x)*4) as usize; let (r,g,b) = pixel_color(x as f32/32.0, y as f32/32.0); buf[i]=r; buf[i+1]=g; buf[i+2]=b; buf[i+3]=255; }}
     buf
 }
 
+#[cfg(not(target_os = "android"))]
 fn make_icon_64() -> [u8; 64 * 64 * 4] {
     let mut buf = [0u8; 64 * 64 * 4];
     for y in 0..64u32 { for x in 0..64u32 { let i = ((y*64+x)*4) as usize; let (r,g,b) = pixel_color(x as f32/64.0, y as f32/64.0); buf[i]=r; buf[i+1]=g; buf[i+2]=b; buf[i+3]=255; }}
     buf
 }
 
+#[cfg(not(target_os = "android"))]
 fn pixel_color(fx: f32, fy: f32) -> (u8, u8, u8) {
     let (mut r, mut g, mut b) = (40u8, 30u8, 80u8);
     // Crescent moon
@@ -1111,6 +1144,8 @@ pub async fn run(mut engine: Engine, project_config: &ProjectConfig) {
     // 应用项目配置的初始窗口大小和全屏状态。
     // 窗口标题受限于 miniquad 0.3 无运行时 API，暂无法动态修改，
     // 保留在 ProjectConfig.window_title 字段中，待后续升级启用。
+    // Android 上窗口由系统 surface 全屏管理，无需也**不能**调整尺寸。
+    #[cfg(not(target_os = "android"))]
     if project_config.start_fullscreen {
         set_fullscreen(true);
     } else {

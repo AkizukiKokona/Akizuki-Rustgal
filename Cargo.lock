@@ -38,7 +38,7 @@ dependencies = [
 
 [[package]]
 name = "akrs-cli"
-version = "1.0.89"
+version = "1.0.90"
 dependencies = [
  "akrs-core",
  "akrs-macros",
@@ -48,7 +48,7 @@ dependencies = [
 
 [[package]]
 name = "akrs-core"
-version = "1.0.89"
+version = "1.0.90"
 dependencies = [
  "codespan-reporting",
  "serde",
@@ -57,7 +57,7 @@ dependencies = [
 
 [[package]]
 name = "akrs-editor"
-version = "1.0.89"
+version = "1.0.90"
 dependencies = [
  "akrs-core",
  "akrs-runtime",
@@ -69,17 +69,18 @@ dependencies = [
 
 [[package]]
 name = "akrs-game"
-version = "1.0.89"
+version = "1.0.90"
 dependencies = [
  "akrs-core",
  "akrs-render",
  "akrs-runtime",
  "macroquad",
+ "miniquad",
 ]
 
 [[package]]
 name = "akrs-macros"
-version = "1.0.89"
+version = "1.0.90"
 dependencies = [
  "akrs-core",
  "proc-macro-error2",
@@ -92,11 +93,11 @@ dependencies = [
 
 [[package]]
 name = "akrs-pack"
-version = "1.0.89"
+version = "1.0.90"
 
 [[package]]
 name = "akrs-render"
-version = "1.0.89"
+version = "1.0.90"
 dependencies = [
  "akrs-core",
  "akrs-runtime",
@@ -106,7 +107,7 @@ dependencies = [
 
 [[package]]
 name = "akrs-runtime"
-version = "1.0.89"
+version = "1.0.90"
 dependencies = [
  "akrs-core",
  "notify",
@@ -1097,8 +1098,6 @@ dependencies = [
 [[package]]
 name = "miniquad"
 version = "0.3.16"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c1251d63dfea7109063b2cec354253e8bf150e7878837a6ac0f9185d6a2518b6"
 dependencies = [
  "libc",
  "ndk-sys 0.2.2",

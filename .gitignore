@@ -2,3 +2,7 @@
 /saves/
 /.uploads/
 *.rs.bk
+# 编辑器导出目录（桌面构建产物 / APK）
+/build/
+# Android 打包暂存目录（cargo-apk 资产）
+/crates/akrs-game/build/

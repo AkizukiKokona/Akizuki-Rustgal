@@ -1,0 +1,44 @@
+{
+  "title": "Akizuki*Rustgal",
+  "subtitle": "夏夜观心Extra",
+  "description": "",
+  "author": "",
+  "main_script": "scripts/demo.akrs",
+  "window_title": "",
+  "start_fullscreen": false,
+  "default_resolution": [
+    1920,
+    1080
+  ],
+  "language": "zh-CN",
+  "version": "0.1.0",
+  "title_background": "",
+  "title_music": "",
+  "theme": {
+    "primary": [
+      20,
+      15,
+      23,
+      247
+    ],
+    "secondary": [
+      5,
+      5,
+      5,
+      230
+    ],
+    "text": [
+      255,
+      255,
+      255,
+      255
+    ],
+    "dialogue": [
+      140,
+      199,
+      242,
+      255
+    ]
+  },
+  "warning": "demo为心夏同人作品，角色立绘及背景等版权属于创梦天地"
+}

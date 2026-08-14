@@ -8,8 +8,49 @@ license.workspace = true
 name = "akrs-game"
 path = "src/main.rs"
 
+# Android: cargo-apk builds only the lib artifact (crate-type cdylib) and
+# repackages it as libakrs_game.so inside the APK. Desktop builds keep using
+# the [[bin]] target; both share src/main.rs.
+[lib]
+name = "akrs_game"
+path = "src/main.rs"
+crate-type = ["cdylib"]
+
 [dependencies]
 akrs-core = { workspace = true }
 akrs-runtime = { workspace = true }
 akrs-render = { workspace = true }
 macroquad = { workspace = true }
+# Direct access to miniquad's Android helpers (asset loading + internal
+# storage path). Resolved to patches/miniquad via [patch.crates-io].
+miniquad = "0.3.16"
+
+[package.metadata.android]
+apk_name = "AkizukiRustgal"
+package = "com.akizuki.rustgal"
+build_targets = ["aarch64-linux-android"]
+# version_code / version_name are derived from the package version (1.0.90 ->
+# version code 0x0100005A); do not set them here.
+# Directory staged by the editor before `cargo apk build`: contains
+# assets/, scripts/, project.json, kokona.png and manifest.txt.
+assets = "build/apk_assets"
+
+[package.metadata.android.sdk]
+min_sdk_version = 23
+
+[package.metadata.android.application]
+label = "Akizuki*Rustgal"
+has_code = true
+
+[package.metadata.android.application.activity]
+name = "android.app.NativeActivity"
+orientation = "sensorLandscape"
+
+[[package.metadata.android.application.activity.meta_data]]
+name = "android.app.lib_name"
+value = "akrs_game"
+
+# Release signing keystore (generated with keytool, file is gitignored).
+[package.metadata.android.signing.release]
+path = "build/release.keystore"
+keystore_password = "akizuki-rustgal-0090"

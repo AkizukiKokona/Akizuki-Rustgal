@@ -12,7 +12,7 @@ members = [
 ]
 
 [workspace.package]
-version = "1.0.89"
+version = "1.0.90"
 edition = "2024"
 license = "MIT"
 authors = ["Akizuki*Rustgal Team"]
@@ -45,6 +45,10 @@ egui = "0.21"
 
 [patch.crates-io]
 macroquad = { path = "patches/macroquad" }
+# Vendored fork of miniquad 0.3.16: adds a NativeActivity-based Android
+# entry point (no Java code required in the APK) plus internal-storage
+# helpers used by akrs-game on Android.
+miniquad = { path = "patches/miniquad" }
 
 [profile.release]
 opt-level = 3

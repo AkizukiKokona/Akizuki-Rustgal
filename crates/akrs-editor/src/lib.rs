@@ -1225,6 +1225,7 @@ enum BuildPlatform {
     Windows,
     Linux,
     MacOS,
+    Android,
 }
 
 impl BuildPlatform {
@@ -1233,6 +1234,7 @@ impl BuildPlatform {
             Self::Windows => "Windows (.exe)",
             Self::Linux => "Linux",
             Self::MacOS => "macOS",
+            Self::Android => "Android (.apk)",
         }
     }
 
@@ -1241,11 +1243,12 @@ impl BuildPlatform {
             Self::Windows => "x86_64-pc-windows-gnu",
             Self::Linux => "x86_64-unknown-linux-gnu",
             Self::MacOS => "x86_64-apple-darwin",
+            Self::Android => "aarch64-linux-android",
         }
     }
 
-    fn all() -> [Self; 3] {
-        [Self::Windows, Self::Linux, Self::MacOS]
+    fn all() -> [Self; 4] {
+        [Self::Windows, Self::Linux, Self::MacOS, Self::Android]
     }
 }
 
@@ -2129,9 +2132,145 @@ impl EditorApp {
         self.build.succeeded.clear();
         self.build.failed.clear();
         self.build.log_follow = true;
-        self.build.queue = platforms;
+
+        // Android 打包：先暂存 APK 资产并检测工具链；不满足则仅跳过 Android，
+        // 其余平台照常打包。
+        let mut to_build = platforms;
+        if let Some(pos) = to_build.iter().position(|p| *p == BuildPlatform::Android) {
+            let android_ready = self.stage_apk_assets() && self.check_android_toolchain();
+            if !android_ready {
+                to_build.remove(pos);
+                self.build.failed.push((
+                    BuildPlatform::Android,
+                    "Android 工具链缺失或资产暂存失败（见上方日志）".to_string(),
+                ));
+            }
+        }
+
+        self.build.queue = to_build;
         self.build.log_line("开始打包流程...");
         self.status = "正在打包...".to_string();
+    }
+
+    /// 将项目内容（assets/scripts/project.json/kokona.png）暂存到
+    /// crates/akrs-game/build/apk_assets，并生成 manifest.txt（全部文件的
+    /// 相对路径列表）。cargo-apk 会把该目录整体打进 APK 的 assets/，
+    /// 游戏首次启动时据此解压到内部存储。
+    fn stage_apk_assets(&mut self) -> bool {
+        let staging = self.work_dir.join("crates/akrs-game/build/apk_assets");
+        if let Err(e) = std::fs::remove_dir_all(&staging) {
+            // 目录不存在是正常的
+            if e.kind() != std::io::ErrorKind::NotFound {
+                self.build
+                    .log_line(format!("✗ 无法清理 APK 暂存目录: {}", e));
+                return false;
+            }
+        }
+        if let Err(e) = std::fs::create_dir_all(&staging) {
+            self.build.log_line(format!("✗ 无法创建 APK 暂存目录: {}", e));
+            return false;
+        }
+
+        let scripts_src = self
+            .build
+            .snapshot_dir
+            .clone()
+            .unwrap_or_else(|| self.project_root().join("scripts"));
+        if scripts_src.exists() {
+            copy_dir_recursive(&scripts_src, &staging.join("scripts"));
+        }
+
+        let assets_src = self.project_root().join("assets");
+        if assets_src.exists() {
+            copy_dir_recursive(&assets_src, &staging.join("assets"));
+        }
+
+        for extra in ["project.json", "kokona.png"] {
+            let src = self.project_root().join(extra);
+            if src.exists() {
+                let _ = std::fs::copy(&src, staging.join(extra));
+            }
+        }
+
+        // manifest.txt：所有暂存文件的相对路径（/ 分隔），供 APK 解压。
+        let mut files = Vec::new();
+        collect_relative_files(&staging, &mut files);
+        files.sort();
+        let mut content = String::new();
+        for f in &files {
+            content.push_str(f);
+            content.push('\n');
+        }
+        if let Err(e) = std::fs::write(staging.join("manifest.txt"), content) {
+            self.build
+                .log_line(format!("✗ 无法写入 manifest.txt: {}", e));
+            return false;
+        }
+
+        self.build.log_line(format!(
+            "✓ APK 资产已暂存: {} 个文件 -> {}",
+            files.len(),
+            staging.display()
+        ));
+        true
+    }
+
+    /// 检测 Android 打包所需工具链，并在日志中给出引导信息。
+    /// 需要：cargo-apk、Android NDK（ANDROID_NDK_HOME/ANDROID_NDK_ROOT）、
+    /// Android SDK（ANDROID_HOME/ANDROID_SDK_ROOT）、rustup 目标。
+    fn check_android_toolchain(&mut self) -> bool {
+        let mut ok = true;
+
+        let cargo_apk_ok = Command::new("cargo")
+            .args(["apk", "--version"])
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status()
+            .map(|s| s.success())
+            .unwrap_or(false);
+        if cargo_apk_ok {
+            self.build.log_line("✓ cargo-apk 已安装");
+        } else {
+            ok = false;
+            self.build.log_line("✗ cargo-apk 未安装 —— 运行: cargo install cargo-apk");
+        }
+
+        let ndk = std::env::var("ANDROID_NDK_HOME")
+            .ok()
+            .or_else(|| std::env::var("ANDROID_NDK_ROOT").ok());
+        match ndk {
+            Some(p) => self.build.log_line(format!("✓ Android NDK: {}", p)),
+            None => {
+                ok = false;
+                self.build.log_line(
+                    "✗ 未找到 Android NDK —— 请安装 NDK 并设置环境变量 ANDROID_NDK_HOME",
+                );
+            }
+        }
+
+        let sdk = std::env::var("ANDROID_HOME")
+            .ok()
+            .or_else(|| std::env::var("ANDROID_SDK_ROOT").ok());
+        match sdk {
+            Some(p) => self.build.log_line(format!("✓ Android SDK: {}", p)),
+            None => {
+                ok = false;
+                self.build.log_line(
+                    "✗ 未找到 Android SDK —— 请安装 Android Studio/cmdline-tools 并设置 ANDROID_HOME",
+                );
+            }
+        }
+
+        if ok {
+            self.build
+                .log_line("✓ Android 工具链就绪（构建时还会自动安装 rustup 目标）");
+        } else {
+            self.build
+                .log_line("→ 安装指引: 1) Android Studio 安装 SDK+NDK 2) 设置环境变量 ANDROID_HOME/ANDROID_NDK_HOME 3) cargo install cargo-apk 4) rustup target add aarch64-linux-android");
+            self.build
+                .log_line("→ 如构建报错 Platform N is not installed，运行: sdkmanager \"platforms;android-N\"");
+        }
+        ok
     }
 
     /// 每帧调用，推进构建队列。
@@ -2190,22 +2329,38 @@ impl EditorApp {
         if self.build.building.is_none() && !self.build.queue.is_empty() {
             let platform = self.build.queue.remove(0);
             self.build.building = Some(platform);
-            self.build
-                .log_line(format!("→ 正在构建 {} (target: {})...", platform.label(), platform.target()));
+            if platform == BuildPlatform::Android {
+                self.build.log_line(format!(
+                    "→ 正在构建 Android (cargo apk, target: {})...",
+                    platform.target()
+                ));
+            } else {
+                self.build
+                    .log_line(format!("→ 正在构建 {} (target: {})...", platform.label(), platform.target()));
+            }
 
-            // 确保安装了目标平台
-            let _ = Command::new("cargo")
-                .args(["rustup", "target", "add", platform.target()])
-                .current_dir(&self.work_dir)
+            // 确保安装了目标平台（Android 的 rustup 目标在工具链检测后自动补充）
+            let _ = Command::new("rustup")
+                .args(["target", "add", platform.target()])
                 .stdout(Stdio::null())
                 .stderr(Stdio::null())
                 .status();
 
-            match Command::new("cargo")
-                .arg("build")
-                .arg("--release")
-                .arg("--target")
-                .arg(platform.target())
+            let mut cmd = Command::new("cargo");
+            if platform == BuildPlatform::Android {
+                // --lib: 本 crate 同时有 [[bin]] 与 [lib] (cdylib)，
+                // cargo-apk 0.10 只能处理 cdylib 产物，必须只构建 lib。
+                cmd.args(["apk", "build", "--release", "-p", "akrs-game", "--lib"])
+                    .arg("--target")
+                    .arg(platform.target());
+            } else {
+                cmd.arg("build")
+                    .arg("--release")
+                    .arg("--target")
+                    .arg(platform.target());
+            }
+
+            match cmd
                 .current_dir(&self.work_dir)
                 .stdout(Stdio::piped())
                 .stderr(Stdio::piped())
@@ -2265,10 +2420,35 @@ impl EditorApp {
                 BuildPlatform::Windows => "windows",
                 BuildPlatform::Linux => "linux",
                 BuildPlatform::MacOS => "macos",
+                BuildPlatform::Android => "android",
             }
         ));
 
         let _ = std::fs::create_dir_all(&output_dir);
+
+        // Android：收集 cargo-apk 产出的 APK（assets 已打进包内，无需再拷贝）。
+        // cargo-apk 0.10 将 APK 放在 target/release/apk（基础 target 目录），
+        // 但为兼容不同版本，直接在 target/ 下递归查找。
+        if platform == BuildPlatform::Android {
+            let mut apks = Vec::new();
+            find_apks(&self.work_dir.join("target"), &mut apks);
+            if apks.is_empty() {
+                self.build
+                    .log_line(format!("  警告: 未在 {} 下找到 APK 产物", target_dir.display()));
+                return;
+            }
+            for apk in &apks {
+                let file_name = apk.file_name().unwrap_or_default().to_string_lossy().into_owned();
+                if let Err(e) = std::fs::copy(apk, output_dir.join(&file_name)) {
+                    self.build
+                        .log_line(format!("  警告: APK {} 复制失败: {}", file_name, e));
+                } else {
+                    self.build
+                        .log_line(format!("  产物 {} 已复制到: {}", file_name, output_dir.display()));
+                }
+            }
+            return;
+        }
 
         // 从 Cargo.toml 动态读取二进制目标名
         let bin_names = read_binary_names(&self.work_dir);
@@ -5936,6 +6116,27 @@ impl eframe::App for EditorApp {
                         }
                     });
 
+                    // Android 打包提示与工具链检测
+                    if self.build.selected.get(&BuildPlatform::Android).copied().unwrap_or(false) {
+                        ui.add_space(4.0);
+                        ui.horizontal(|ui| {
+                            ui.label(
+                                egui::RichText::new(
+                                    "Android 需要: cargo-apk、Android SDK+NDK（ANDROID_HOME / ANDROID_NDK_HOME）、rustup target aarch64-linux-android；assets/scripts 将自动暂存进 APK。",
+                                )
+                                .size(12.0)
+                                .color(egui::Color32::from_rgb(230, 180, 90)),
+                            );
+                            if ui.button("检测环境").clicked() {
+                                let msg = String::from("── Android 环境检测 ──\n");
+                                self.build.log.push_str(&msg);
+                                self.check_android_toolchain();
+                                self.build.log.push_str("\n");
+                            }
+                        });
+                        ui.add_space(4.0);
+                    }
+
                     ui.add_space(4.0);
                     ui.horizontal(|ui| {
                         ui.label("导出目录：");
@@ -6600,6 +6801,39 @@ fn copy_dir_recursive(src: &Path, dst: &Path) {
                 copy_dir_recursive(&path, &dest);
             } else {
                 let _ = std::fs::copy(&path, &dest);
+            }
+        }
+    }
+}
+
+/// 收集 `root` 下的全部文件，以 `/` 分隔的相对路径存入 `out`。
+/// 用于生成 APK 的 manifest.txt。
+fn collect_relative_files(root: &Path, out: &mut Vec<String>) {
+    if let Ok(entries) = std::fs::read_dir(root) {
+        for entry in entries.flatten() {
+            let path = entry.path();
+            let rel = path
+                .strip_prefix(root)
+                .map(|p| p.components().map(|c| c.as_os_str().to_string_lossy()).collect::<Vec<_>>().join("/"))
+                .unwrap_or_default();
+            if path.is_dir() {
+                collect_relative_files(&path, out);
+            } else if !rel.is_empty() {
+                out.push(rel);
+            }
+        }
+    }
+}
+
+/// 在目录下递归查找 `.apk` 文件（cargo-apk 的产物位置不固定，按扩展名收集）。
+fn find_apks(dir: &Path, out: &mut Vec<PathBuf>) {
+    if let Ok(entries) = std::fs::read_dir(dir) {
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.is_dir() {
+                find_apks(&path, out);
+            } else if path.extension().map(|e| e == "apk").unwrap_or(false) {
+                out.push(path);
             }
         }
     }
